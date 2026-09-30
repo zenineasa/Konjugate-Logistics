@@ -1,0 +1,252 @@
+{
+    "copyright": "Copyright © 2026 Zenin Easa Panthakkalakath",
+    "id": "warehouse",
+    "kind": "node",
+    "name": "Warehouse",
+    "domains": [
+        "logistics"
+    ],
+    "description": "A warehouse with its inbound lane. Containers dispatched to it travel through three in-transit stages (an Erlang-3 lead time, so transit times spread out realistically and every container in transit is counted) before reaching on-hand stock; the lane is expedited while stock is below a threshold. It forecasts demand by exponential smoothing and sets its order rate by an order-up-to rule: order the forecast plus a correction towards forecast x (lead time + stock cover), but only while the inventory position (on hand plus in transit) is below target. Lead times are per warehouse; stock cover, adjustment and smoothing times are shared by every warehouse in the model.",
+    "shape": "box",
+    "color": "#c16f55",
+    "states": [
+        {
+            "symbol": "onHand",
+            "label": "On hand",
+            "initialValue": 210,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "lane1",
+            "label": "In transit, stage 1",
+            "initialValue": 46.666666666666664,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "lane2",
+            "label": "In transit, stage 2",
+            "initialValue": 46.666666666666664,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "lane3",
+            "label": "In transit, stage 3",
+            "initialValue": 46.666666666666664,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "forecast",
+            "label": "Demand forecast",
+            "initialValue": 70,
+            "unit": "TEU/day"
+        },
+        {
+            "symbol": "orderRate",
+            "label": "Order rate",
+            "initialValue": 70,
+            "unit": "TEU/day"
+        }
+    ],
+    "sharedParameters": [
+        {
+            "key": "leadTime",
+            "name": "Lead time",
+            "symbol": "leadTime",
+            "value": 2,
+            "unit": "day",
+            "scope": "instance"
+        },
+        {
+            "key": "expeditedLeadTime",
+            "name": "Expedited lead time",
+            "symbol": "expeditedLeadTime",
+            "value": 1,
+            "unit": "day",
+            "scope": "instance"
+        },
+        {
+            "key": "expediteBelow",
+            "name": "Expedite below",
+            "symbol": "expediteBelow",
+            "value": 80,
+            "unit": "TEU",
+            "scope": "instance"
+        },
+        {
+            "key": "coverDays",
+            "name": "Stock cover target",
+            "symbol": "coverDays",
+            "value": 3,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
+            "key": "adjustDays",
+            "name": "Inventory adjustment time",
+            "symbol": "adjustDays",
+            "value": 4,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
+            "key": "smoothingDays",
+            "name": "Demand smoothing time",
+            "symbol": "smoothingDays",
+            "value": 5,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
+            "key": "secondsPerDay",
+            "name": "Seconds per day",
+            "symbol": "secondsPerDay",
+            "value": 86400,
+            "unit": "s/day",
+            "scope": "project"
+        }
+    ],
+    "sourceTerms": [
+        {
+            "state": "lane1",
+            "expression": "-\\frac{3}{\\mathrm{secondsPerDay}} \\cdot \\begin{cases} \\frac{1}{\\mathrm{expeditedLeadTime}} & \\mathrm{onHand} < \\mathrm{expediteBelow} \\\\ \\frac{1}{\\mathrm{leadTime}} & \\text{otherwise} \\end{cases} \\cdot \\mathrm{lane1}",
+            "parameters": [
+                {
+                    "name": "Lead time",
+                    "symbol": "leadTime",
+                    "shared": "leadTime"
+                },
+                {
+                    "name": "Expedited lead time",
+                    "symbol": "expeditedLeadTime",
+                    "shared": "expeditedLeadTime"
+                },
+                {
+                    "name": "Expedite below",
+                    "symbol": "expediteBelow",
+                    "shared": "expediteBelow"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "lane2",
+            "expression": "\\frac{3}{\\mathrm{secondsPerDay}} \\cdot \\begin{cases} \\frac{1}{\\mathrm{expeditedLeadTime}} & \\mathrm{onHand} < \\mathrm{expediteBelow} \\\\ \\frac{1}{\\mathrm{leadTime}} & \\text{otherwise} \\end{cases} \\cdot (\\mathrm{lane1} - \\mathrm{lane2})",
+            "parameters": [
+                {
+                    "name": "Lead time",
+                    "symbol": "leadTime",
+                    "shared": "leadTime"
+                },
+                {
+                    "name": "Expedited lead time",
+                    "symbol": "expeditedLeadTime",
+                    "shared": "expeditedLeadTime"
+                },
+                {
+                    "name": "Expedite below",
+                    "symbol": "expediteBelow",
+                    "shared": "expediteBelow"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "lane3",
+            "expression": "\\frac{3}{\\mathrm{secondsPerDay}} \\cdot \\begin{cases} \\frac{1}{\\mathrm{expeditedLeadTime}} & \\mathrm{onHand} < \\mathrm{expediteBelow} \\\\ \\frac{1}{\\mathrm{leadTime}} & \\text{otherwise} \\end{cases} \\cdot (\\mathrm{lane2} - \\mathrm{lane3})",
+            "parameters": [
+                {
+                    "name": "Lead time",
+                    "symbol": "leadTime",
+                    "shared": "leadTime"
+                },
+                {
+                    "name": "Expedited lead time",
+                    "symbol": "expeditedLeadTime",
+                    "shared": "expeditedLeadTime"
+                },
+                {
+                    "name": "Expedite below",
+                    "symbol": "expediteBelow",
+                    "shared": "expediteBelow"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "onHand",
+            "expression": "\\frac{3}{\\mathrm{secondsPerDay}} \\cdot \\begin{cases} \\frac{1}{\\mathrm{expeditedLeadTime}} & \\mathrm{onHand} < \\mathrm{expediteBelow} \\\\ \\frac{1}{\\mathrm{leadTime}} & \\text{otherwise} \\end{cases} \\cdot \\mathrm{lane3}",
+            "parameters": [
+                {
+                    "name": "Lead time",
+                    "symbol": "leadTime",
+                    "shared": "leadTime"
+                },
+                {
+                    "name": "Expedited lead time",
+                    "symbol": "expeditedLeadTime",
+                    "shared": "expeditedLeadTime"
+                },
+                {
+                    "name": "Expedite below",
+                    "symbol": "expediteBelow",
+                    "shared": "expediteBelow"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "forecast",
+            "expression": "-\\frac{\\mathrm{forecast}}{\\mathrm{secondsPerDay} \\cdot \\mathrm{smoothingDays}}",
+            "parameters": [
+                {
+                    "name": "Demand smoothing time",
+                    "symbol": "smoothingDays",
+                    "shared": "smoothingDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "orderRate",
+            "setsValue": true,
+            "expression": "\\begin{cases} \\mathrm{forecast} + \\frac{\\mathrm{forecast} \\cdot (\\mathrm{leadTime} + \\mathrm{coverDays}) - (\\mathrm{onHand} + \\mathrm{lane1} + \\mathrm{lane2} + \\mathrm{lane3})}{\\mathrm{adjustDays}} & \\mathrm{onHand} + \\mathrm{lane1} + \\mathrm{lane2} + \\mathrm{lane3} < \\mathrm{forecast} \\cdot (\\mathrm{leadTime} + \\mathrm{coverDays} + \\mathrm{adjustDays}) \\\\ 0 & \\text{otherwise} \\end{cases}",
+            "parameters": [
+                {
+                    "name": "Lead time",
+                    "symbol": "leadTime",
+                    "shared": "leadTime"
+                },
+                {
+                    "name": "Stock cover target",
+                    "symbol": "coverDays",
+                    "shared": "coverDays"
+                },
+                {
+                    "name": "Inventory adjustment time",
+                    "symbol": "adjustDays",
+                    "shared": "adjustDays"
+                }
+            ]
+        }
+    ]
+}

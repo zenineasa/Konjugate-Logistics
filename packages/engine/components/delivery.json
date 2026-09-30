@@ -1,0 +1,187 @@
+{
+    "copyright": "Copyright © 2026 Zenin Easa Panthakkalakath",
+    "id": "delivery",
+    "kind": "bundle",
+    "name": "Delivery",
+    "domains": [
+        "logistics"
+    ],
+    "description": "Serves a demand zone from a warehouse: ships towards clearing the zone's backlog within the response time, drawing at most this lane's allocation share of the warehouse's stock per draw-down time, and only while the warehouse holds more than the serve-only-above level (0 serves the zone until the warehouse is empty; a higher level protects stock for other zones). Two matched edges move the shipment out of the warehouse into the zone's deliveries and clear the same amount from its backlog, and a third feeds the zone's demand into the warehouse's forecast. Select the warehouse and the demand zone, then click this bundle.",
+    "color": "#73b9c2",
+    "endpoints": [
+        {
+            "id": "warehouse",
+            "label": "Warehouse"
+        },
+        {
+            "id": "zone",
+            "label": "Demand zone"
+        }
+    ],
+    "sharedParameters": [
+        {
+            "key": "share",
+            "name": "Allocation share",
+            "symbol": "share",
+            "value": 1,
+            "unit": "",
+            "scope": "instance"
+        },
+        {
+            "key": "safetyStock",
+            "name": "Serve only above",
+            "symbol": "safetyStock",
+            "value": 0,
+            "unit": "TEU",
+            "scope": "instance"
+        },
+        {
+            "key": "responseDays",
+            "name": "Order response time",
+            "symbol": "responseDays",
+            "value": 0.5,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
+            "key": "drawDownDays",
+            "name": "Stock draw-down time",
+            "symbol": "drawDownDays",
+            "value": 1,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
+            "key": "smoothingDays",
+            "name": "Demand smoothing time",
+            "symbol": "smoothingDays",
+            "value": 5,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
+            "key": "secondsPerDay",
+            "name": "Seconds per day",
+            "symbol": "secondsPerDay",
+            "value": 86400,
+            "unit": "s/day",
+            "scope": "project"
+        }
+    ],
+    "edges": [
+        {
+            "name": "Deliver",
+            "from": "warehouse",
+            "to": "zone",
+            "bidirectional": true,
+            "ports": {
+                "source": "onHand",
+                "target": [
+                    "delivered",
+                    "backlog"
+                ]
+            },
+            "output": {
+                "role": "target",
+                "state": "delivered"
+            },
+            "latex": "\\begin{cases} \\frac{1}{\\mathrm{secondsPerDay}} \\cdot \\min(\\frac{\\mathrm{targetBacklog}}{\\mathrm{responseDays}}, \\frac{\\mathrm{share} \\cdot \\mathrm{sourceOnHand}}{\\mathrm{drawDownDays}}) & \\mathrm{sourceOnHand} > \\mathrm{safetyStock} \\\\ 0 & \\text{otherwise} \\end{cases}",
+            "parameters": [
+                {
+                    "name": "Allocation share",
+                    "symbol": "share",
+                    "shared": "share"
+                },
+                {
+                    "name": "Serve only above",
+                    "symbol": "safetyStock",
+                    "shared": "safetyStock"
+                },
+                {
+                    "name": "Order response time",
+                    "symbol": "responseDays",
+                    "shared": "responseDays"
+                },
+                {
+                    "name": "Stock draw-down time",
+                    "symbol": "drawDownDays",
+                    "shared": "drawDownDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Clear backlog",
+            "from": "warehouse",
+            "to": "zone",
+            "ports": {
+                "source": "onHand",
+                "target": [
+                    "backlog"
+                ]
+            },
+            "output": {
+                "role": "target",
+                "state": "backlog"
+            },
+            "latex": "-(\\begin{cases} \\frac{1}{\\mathrm{secondsPerDay}} \\cdot \\min(\\frac{\\mathrm{targetBacklog}}{\\mathrm{responseDays}}, \\frac{\\mathrm{share} \\cdot \\mathrm{sourceOnHand}}{\\mathrm{drawDownDays}}) & \\mathrm{sourceOnHand} > \\mathrm{safetyStock} \\\\ 0 & \\text{otherwise} \\end{cases})",
+            "parameters": [
+                {
+                    "name": "Allocation share",
+                    "symbol": "share",
+                    "shared": "share"
+                },
+                {
+                    "name": "Serve only above",
+                    "symbol": "safetyStock",
+                    "shared": "safetyStock"
+                },
+                {
+                    "name": "Order response time",
+                    "symbol": "responseDays",
+                    "shared": "responseDays"
+                },
+                {
+                    "name": "Stock draw-down time",
+                    "symbol": "drawDownDays",
+                    "shared": "drawDownDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Demand signal",
+            "from": "zone",
+            "to": "warehouse",
+            "ports": {
+                "source": "demandRate",
+                "target": "forecast"
+            },
+            "output": {
+                "role": "target",
+                "state": "forecast"
+            },
+            "latex": "\\frac{\\mathrm{sourceDemandRate}}{\\mathrm{secondsPerDay} \\cdot \\mathrm{smoothingDays}}",
+            "parameters": [
+                {
+                    "name": "Demand smoothing time",
+                    "symbol": "smoothingDays",
+                    "shared": "smoothingDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        }
+    ]
+}

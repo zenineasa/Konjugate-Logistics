@@ -1,0 +1,40 @@
+{
+    "copyright": "Copyright © 2026 Zenin Easa Panthakkalakath",
+    "pluginId": "konjugate.logistics.engine",
+    "name": "Konjugate Logistics Engine",
+    "version": "0.1.0",
+    "apiVersion": 1,
+    "contributes": [
+        {
+            "kind": "component",
+            "componentId": "port",
+            "apiVersion": 1,
+            "entry": "components/port.json"
+        },
+        {
+            "kind": "component",
+            "componentId": "warehouse",
+            "apiVersion": 1,
+            "entry": "components/warehouse.json"
+        },
+        {
+            "kind": "component",
+            "componentId": "demandZone",
+            "apiVersion": 1,
+            "entry": "components/demandZone.json"
+        },
+        {
+            "kind": "component",
+            "componentId": "portDispatch",
+            "apiVersion": 1,
+            "entry": "components/portDispatch.json"
+        },
+        {
+            "kind": "component",
+            "componentId": "delivery",
+            "apiVersion": 1,
+            "entry": "components/delivery.json"
+        }
+    ],
+    "permissions": []
+}

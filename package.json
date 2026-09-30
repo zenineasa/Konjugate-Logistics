@@ -1,0 +1,16 @@
+{
+  "name": "konjugate-logistics",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Logistics toolbox for Konjugate.",
+  "license": "AGPL-3.0-only",
+  "copyright": "Copyright © 2026 Zenin Easa Panthakkalakath",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "install:dev": "node scripts/build.mjs && node scripts/installDev.mjs",
+    "test": "node --test tests/unit/*.test.mjs",
+    "test:engine": "node tests/engine/portNetwork.mjs",
+    "test:interaction": "node scripts/build.mjs && node tests/interaction/run.mjs"
+  }
+}

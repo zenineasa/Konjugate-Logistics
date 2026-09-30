@@ -1,0 +1,56 @@
+{
+    "copyright": "Copyright © 2026 Zenin Easa Panthakkalakath",
+    "id": "port",
+    "kind": "node",
+    "name": "Port",
+    "domains": [
+        "logistics"
+    ],
+    "description": "A container port's yard. Vessels discharge into the yard at a steady rate (TEU per day); Port dispatch bundles release containers from it to warehouses. Time t is in seconds, so every per-day rate is divided by the shared Seconds per day.",
+    "shape": "box",
+    "color": "#2e7591",
+    "states": [
+        {
+            "symbol": "yard",
+            "label": "Yard stock",
+            "initialValue": 300,
+            "unit": "TEU"
+        }
+    ],
+    "sharedParameters": [
+        {
+            "key": "vesselArrivals",
+            "name": "Vessel arrivals",
+            "symbol": "vesselArrivals",
+            "value": 100,
+            "unit": "TEU/day",
+            "scope": "instance"
+        },
+        {
+            "key": "secondsPerDay",
+            "name": "Seconds per day",
+            "symbol": "secondsPerDay",
+            "value": 86400,
+            "unit": "s/day",
+            "scope": "project"
+        }
+    ],
+    "sourceTerms": [
+        {
+            "state": "yard",
+            "expression": "\\frac{\\mathrm{vesselArrivals}}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Vessel arrivals",
+                    "symbol": "vesselArrivals",
+                    "shared": "vesselArrivals"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        }
+    ]
+}

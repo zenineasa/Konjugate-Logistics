@@ -1,0 +1,123 @@
+{
+    "copyright": "Copyright © 2026 Zenin Easa Panthakkalakath",
+    "id": "demandZone",
+    "kind": "node",
+    "name": "Demand zone",
+    "domains": [
+        "logistics"
+    ],
+    "description": "A group of customers ordering at a steady rate, with an optional demand step: from the step day on, demand is multiplied by the step multiplier (1 for no step; both are shared by every zone). Orders add to the backlog; Delivery bundles clear it. Delivered and ordered are running totals, so backlog always equals its starting value plus ordered minus delivered.",
+    "shape": "sphere",
+    "color": "#52727a",
+    "states": [
+        {
+            "symbol": "backlog",
+            "label": "Backlog",
+            "initialValue": 15,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "delivered",
+            "label": "Delivered (cumulative)",
+            "initialValue": 0,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "ordered",
+            "label": "Ordered (cumulative)",
+            "initialValue": 0,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "demandRate",
+            "label": "Demand rate",
+            "initialValue": 30,
+            "unit": "TEU/day"
+        }
+    ],
+    "sharedParameters": [
+        {
+            "key": "baseDemand",
+            "name": "Base demand",
+            "symbol": "baseDemand",
+            "value": 30,
+            "unit": "TEU/day",
+            "scope": "instance"
+        },
+        {
+            "key": "stepMultiplier",
+            "name": "Demand step multiplier",
+            "symbol": "stepMultiplier",
+            "value": 1,
+            "unit": "",
+            "scope": "project"
+        },
+        {
+            "key": "stepDay",
+            "name": "Demand step day",
+            "symbol": "stepDay",
+            "value": 20,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
+            "key": "secondsPerDay",
+            "name": "Seconds per day",
+            "symbol": "secondsPerDay",
+            "value": 86400,
+            "unit": "s/day",
+            "scope": "project"
+        }
+    ],
+    "sourceTerms": [
+        {
+            "state": "demandRate",
+            "setsValue": true,
+            "expression": "\\mathrm{baseDemand} \\cdot \\begin{cases} \\mathrm{stepMultiplier} & t \\ge \\mathrm{stepDay} \\cdot \\mathrm{secondsPerDay} \\\\ 1 & \\text{otherwise} \\end{cases}",
+            "parameters": [
+                {
+                    "name": "Base demand",
+                    "symbol": "baseDemand",
+                    "shared": "baseDemand"
+                },
+                {
+                    "name": "Demand step multiplier",
+                    "symbol": "stepMultiplier",
+                    "shared": "stepMultiplier"
+                },
+                {
+                    "name": "Demand step day",
+                    "symbol": "stepDay",
+                    "shared": "stepDay"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "backlog",
+            "expression": "\\frac{\\mathrm{demandRate}}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "ordered",
+            "expression": "\\frac{\\mathrm{demandRate}}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        }
+    ]
+}
