@@ -42,6 +42,10 @@ const isClosed = (geometry) => geometry.length > 3
 export function readOverpass(answer) {
     const parsed = typeof answer === 'string' ? JSON.parse(answer) : answer;
     if (!Array.isArray(parsed?.elements)) throw new Error('This is not an Overpass answer: it has no elements.');
+    // Overpass reports a timeout or memory limit in a remark, with whatever it managed to collect: incomplete, so refused.
+    if (typeof parsed.remark === 'string' && /error|timed out|out of memory/i.test(parsed.remark)) {
+        throw new Error(`OpenStreetMap's server stopped before it finished (${parsed.remark.replace(/\s+/g, ' ').trim().slice(0, 160)}). Choose a smaller area and fetch again.`);
+    }
     const features = [];
     for (const element of parsed.elements) {
         const feature = { osmType: element.type, osmId: element.id, tags: element.tags ?? {}, point: null, ring: null, rings: null, line: null, nodes: element.nodes ?? null, bounds: element.bounds ?? null };

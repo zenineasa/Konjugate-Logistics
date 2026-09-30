@@ -22,9 +22,11 @@ const scratch = await mkdtemp(join(tmpdir(), 'konjugate-logistics-thumbnails-'))
 const userData = join(scratch, 'userData');
 await installBuiltPackages(userData);
 
+// Extra Electron switches, for example to run without a GPU: KONJUGATE_ELECTRON_ARGS='--no-sandbox --use-gl=angle --use-angle=swiftshader'.
+const extraArgs = (process.env.KONJUGATE_ELECTRON_ARGS ?? '').split(' ').filter(Boolean);
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
-const app = await electron.launch({ executablePath: electronPath, args: [konjugateDir, `--user-data-dir=${userData}`], env });
+const app = await electron.launch({ executablePath: electronPath, args: [konjugateDir, ...extraArgs, `--user-data-dir=${userData}`], env });
 try {
     const window = await app.firstWindow();
     await window.waitForLoadState('domcontentloaded');

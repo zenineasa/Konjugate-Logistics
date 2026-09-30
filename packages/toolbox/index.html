@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+    <title>Logistics Toolbox</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <main class="layout">
+        <aside class="panel" id="panel">
+            <section class="step" id="stepRegion">
+                <h2><span class="stepNumber">1</span> Region</h2>
+                <form id="searchForm" class="row">
+                    <input id="searchInput" type="search" placeholder="A port, city or area" autocomplete="off" aria-label="Search for a place">
+                    <button class="button" type="submit" id="searchButton">Search</button>
+                </form>
+                <ul class="results" id="searchResults" hidden></ul>
+                <div class="chosen" id="chosenRegion" hidden>
+                    <div class="chosenName" id="chosenName"></div>
+                    <label class="row small">Include
+                        <select id="marginSelect">
+                            <option value="0">the place itself</option>
+                            <option value="10">10 km around it</option>
+                            <option value="25" selected>25 km around it</option>
+                            <option value="50">50 km around it</option>
+                        </select>
+                    </label>
+                    <div class="muted small" id="areaSize"></div>
+                    <button class="button primary" type="button" id="fetchButton">Fetch map data</button>
+                </div>
+                <ul class="progress" id="fetchProgress" hidden></ul>
+                <div class="row small">
+                    <button class="link" type="button" id="sampleButton">Use the sample region</button>
+                    <span class="muted">·</span>
+                    <button class="link" type="button" id="sitesButton">Add your own sites (CSV)</button>
+                </div>
+                <div id="regionStatus"></div>
+            </section>
+
+            <section class="step" id="stepCoverage" hidden>
+                <h2><span class="stepNumber">2</span> What the map data shows</h2>
+                <div id="coverageSummary" class="coverage"></div>
+                <div id="notices"></div>
+            </section>
+
+            <section class="step" id="stepCurate" hidden>
+                <h2><span class="stepNumber">3</span> Keep what matters</h2>
+                <p class="muted small">Tick sites here or click them on the map. Drag a kept site to move it. Most significant first.</p>
+                <div class="tabs" role="tablist" id="kindTabs">
+                    <button type="button" role="tab" data-group="ports" class="active">Ports <span class="count" data-count="ports"></span></button>
+                    <button type="button" role="tab" data-group="zones">Logistics zones <span class="count" data-count="zones"></span></button>
+                    <button type="button" role="tab" data-group="towns">Towns <span class="count" data-count="towns"></span></button>
+                </div>
+                <div class="row small">
+                    <label>Keep the top <input type="number" id="topN" min="0" max="99" step="1"></label>
+                    <button class="link" type="button" id="applyTop">Apply</button>
+                </div>
+                <div class="row small" id="portVolumeRow">
+                    <label>Assumed volume per port <input type="number" id="portVolume" min="1" step="10"> TEU/day</label>
+                </div>
+                <ul class="candidates" id="candidateList"></ul>
+            </section>
+
+            <section class="step" id="stepBuild" hidden>
+                <h2><span class="stepNumber">4</span> Model</h2>
+                <div class="row">
+                    <button class="button primary" type="button" id="buildButton">Build model</button>
+                    <button class="button" type="button" id="showButton" disabled>Show in Konjugate</button>
+                </div>
+                <label class="row small"><input type="checkbox" id="keepInStep" checked> Keep the canvas in step with changes here</label>
+                <div id="buildStatus"></div>
+                <div id="buildResult"></div>
+            </section>
+        </aside>
+
+        <section class="mapArea">
+            <div class="mapTools">
+                <span class="muted small">Add a site:</span>
+                <button type="button" class="tool" data-add="port">Port</button>
+                <button type="button" class="tool" data-add="zone">Warehouse</button>
+                <button type="button" class="tool" data-add="town">Customer</button>
+                <span class="spacer"></span>
+                <button type="button" class="tool" id="fitButton">Fit</button>
+            </div>
+            <svg id="map" role="img" aria-label="Map of the region"></svg>
+            <form class="addSite" id="addSiteForm" hidden>
+                <input id="addSiteName" placeholder="Name" required>
+                <button class="button primary small" type="submit">Add</button>
+                <button class="button small" type="button" id="addSiteCancel">Cancel</button>
+            </form>
+            <div class="legend">
+                <span><i class="swatch port"></i>Port</span>
+                <span><i class="swatch zone"></i>Logistics zone</span>
+                <span><i class="swatch town"></i>Town</span>
+                <span><i class="swatch lane"></i>Road lane</span>
+                <span class="attribution" id="attribution">Map data © OpenStreetMap contributors</span>
+            </div>
+            <div class="mapEmpty" id="mapEmpty">Search for a place, or use the sample region, to see its ports, logistics sites and towns here.</div>
+        </section>
+    </main>
+    <script type="module" src="toolbox.mjs"></script>
+</body>
+</html>

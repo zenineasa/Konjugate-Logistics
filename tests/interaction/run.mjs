@@ -43,6 +43,8 @@ const runConfiguration = { id: 1, name: `${days} days`, globalTimeStep: 0.05 * d
 const edits = { leadTime2: 3, planningLeadTime2: 3.5, fleetSize: 200 };
 const engineExecutable = konjugateModule(join('out', 'engine', process.platform === 'win32' ? 'konjugateEngine.exe' : 'konjugateEngine'));
 
+// Extra Electron switches, for example to run without a GPU: KONJUGATE_ELECTRON_ARGS='--no-sandbox --use-gl=angle --use-angle=swiftshader'.
+const extraArgs = (process.env.KONJUGATE_ELECTRON_ARGS ?? '').split(' ').filter(Boolean);
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
 const scratch = await mkdtemp(join(tmpdir(), 'konjugate-logistics-'));
@@ -105,7 +107,7 @@ function containerTotal(document, values) {
 // Launches Konjugate (on `projectPath` when given), remembering every engine job so results can be
 // read back by id; the caller closes the app.
 async function launch(projectPath = null) {
-    const app = await electron.launch({ executablePath: electronPath, args: [konjugateDir, `--user-data-dir=${userData}`, ...(projectPath ? [projectPath] : [])], env });
+    const app = await electron.launch({ executablePath: electronPath, args: [konjugateDir, ...extraArgs, `--user-data-dir=${userData}`, ...(projectPath ? [projectPath] : [])], env });
     await app.evaluate(({ ipcMain }) => {
         globalThis.logisticsJobIds = [];
         const original = ipcMain._invokeHandlers.get('engineStart');

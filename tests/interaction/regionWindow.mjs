@@ -1,0 +1,143 @@
+/* Copyright © 2026 Zenin Easa Panthakkalakath */
+
+// The Logistics Toolbox window in the real app, offline: the main process's fetch is replaced so the place
+// search and the five OpenStreetMap queries are answered from the synthetic region
+// (tests/fixtures/syntheticRegion.mjs). Through the window:
+//   - the sample region discovers without any network
+//   - a place search and "Fetch map data" send one query per kind for the chosen area, and discovery shows
+//     the candidates, the coverage report and its notices
+//   - a port's volume is set, the model is built and appears in the canvas with the importer's node count
+//   - dragging a kept site on the map rebuilds the model with new lane distances
+//   - a customer added on the map is served in the rebuilt model
+// Uses Playwright from the Konjugate checkout, as the other interaction test does.
+
+import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { installBuiltPackages } from '../../scripts/installDev.mjs';
+import { konjugateDir, konjugateModule } from '../../scripts/konjugatePaths.mjs';
+import { syntheticRegion } from '../fixtures/syntheticRegion.mjs';
+
+const require = createRequire(join(konjugateDir, 'package.json'));
+const { _electron: electron } = require('playwright');
+const electronPath = require('electron');
+const { encodeProjectFile } = await import(pathToFileURL(konjugateModule('src/projectFile.mjs')));
+
+const env = { ...process.env };
+delete env.ELECTRON_RUN_AS_NODE;
+const scratch = await mkdtemp(join(tmpdir(), 'konjugate-logistics-region-'));
+const userData = join(scratch, 'userData');
+const extraArgs = (process.env.KONJUGATE_ELECTRON_ARGS ?? '').split(' ').filter(Boolean);
+
+try {
+    await installBuiltPackages(userData);
+    const projectPath = join(scratch, 'empty.kjt');
+    await writeFile(projectPath, await encodeProjectFile(JSON.stringify({
+        format: 'konjugate', version: 1, metadata: { units: 'SI' }, nodes: [], edges: [], sharedParameters: [],
+        runConfigurations: [{ id: 1, name: 'Default', globalTimeStep: 900, outputInterval: 3600 }], activeRunConfigurationId: 1
+    })));
+    const app = await electron.launch({ executablePath: electronPath, args: [konjugateDir, ...extraArgs, `--user-data-dir=${userData}`, projectPath], env });
+    try {
+        // The network, answered from the synthetic region; every address asked for is recorded.
+        await app.evaluate((_electron, answers) => {
+            globalThis.logisticsRequests = [];
+            const kindOf = (query) => (query.includes('"landuse"="port"') ? 'ports' : query.includes('"building"="warehouse"') ? 'logistics'
+                : query.includes('"highway"') ? 'roads' : query.includes('"railway"="rail"') ? 'rail' : query.includes('"place"') ? 'places' : null);
+            globalThis.fetch = async (url) => {
+                const address = new URL(url);
+                globalThis.logisticsRequests.push(address.href);
+                if (address.hostname === 'nominatim.openstreetmap.org') {
+                    return new Response(JSON.stringify([{ display_name: 'Port Alder, Synthetic Coast', type: 'harbour', lat: '-29.99', lon: '-19.9', boundingbox: ['-29.9', '-29.8', '-19.75', '-19.6'] }]), { status: 200 });
+                }
+                if (address.hostname === 'overpass-api.de') return new Response(answers[kindOf(address.searchParams.get('data'))], { status: 200 });
+                return new Response('not found', { status: 404 });
+            };
+        }, Object.fromEntries(Object.entries(syntheticRegion()).map(([kind, answer]) => [kind, JSON.stringify(answer)])));
+
+        const window = await app.firstWindow();
+        await window.waitForLoadState('domcontentloaded');
+        await window.waitForSelector('.addonTool[data-addon-id="konjugate.logistics.toolbox"][data-command-id="openLogisticsToolbox"]', { timeout: 30000 });
+        await window.click('.addonTool[data-addon-id="konjugate.logistics.toolbox"][data-command-id="openLogisticsToolbox"]');
+        let toolbox;
+        for (let attempt = 0; attempt < 150 && !toolbox; attempt += 1) {
+            toolbox = app.windows().find((candidate) => candidate.url().includes('konjugate.logistics.toolbox'));
+            if (!toolbox) await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        assert.ok(toolbox, 'The Logistics toolbox window did not open.');
+        const log = [];
+        toolbox.on('console', (message) => log.push(`${message.type()}: ${message.text().slice(0, 300)}`));
+        toolbox.on('pageerror', (error) => log.push(`pageerror: ${error.message}`));
+        const fail = (error) => { throw new Error(`${error.message}\nToolbox window log:\n${log.join('\n')}`); };
+        await toolbox.waitForLoadState('domcontentloaded');
+        const counts = () => toolbox.evaluate(() => Object.fromEntries([...document.querySelectorAll('[data-count]')].map((node) => [node.dataset.count, node.textContent])));
+
+        // 1. The sample region, with no network at all.
+        await toolbox.click('#sampleButton');
+        await toolbox.waitForSelector('#stepCurate:not([hidden]) #candidateList li', { timeout: 30000 }).catch(fail);
+        assert.deepEqual(await counts(), { ports: '2/2', zones: '2/2', towns: '3/3' });
+
+        // 2. A place search, then the region's data, one query per kind for the chosen area.
+        await toolbox.fill('#searchInput', 'Port Alder');
+        await toolbox.click('#searchButton');
+        await toolbox.click('#searchResults button[data-index="0"]');
+        await toolbox.selectOption('#marginSelect', '25');
+        assert.match(await toolbox.textContent('#areaSize'), /^\d+ × \d+ km/);
+        await toolbox.click('#fetchButton');
+        await toolbox.waitForFunction(() => document.querySelectorAll('#fetchProgress li.done').length === 5, null, { timeout: 60000 }).catch(fail);
+        await toolbox.waitForFunction(() => /Port Alder/.test(document.querySelector('#candidateList')?.textContent ?? ''), null, { timeout: 30000 }).catch(fail);
+        const requests = await app.evaluate(() => globalThis.logisticsRequests);
+        assert.equal(requests.filter((url) => url.includes('overpass-api.de')).length, 5);
+        const bbox = new URL(requests.find((url) => url.includes('overpass-api.de'))).searchParams.get('data').match(/\(([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+)\)/).slice(1).map(Number);
+        assert.ok(bbox[0] < -29.9 - 0.2 && bbox[2] > -29.8 + 0.2, `25 km is added around the place (${bbox}).`);
+        assert.match(await toolbox.textContent('#coverageSummary'), /Warehouses\s*good/);
+        assert.match(await toolbox.textContent('#notices'), /marinas and fishing harbours were left out/);
+        assert.equal(await toolbox.locator('#map .site').count(), 7);
+
+        // 3. Port Alder hands 150 TEU a day inland; build, and the model is in the canvas.
+        await toolbox.locator('#candidateList li', { hasText: 'Port Alder' }).locator('input[type="number"]').fill('150');
+        await toolbox.click('#buildButton');
+        await toolbox.waitForSelector('#buildStatus .notice.ok, #buildStatus .notice.error', { timeout: 60000 }).catch(fail);
+        const built = await toolbox.textContent('#buildStatus');
+        assert.match(built, /^2 ports, \d+ road lanes?, 3 towns served: (\d+) nodes and (\d+) relationships, now in the canvas\./);
+        const [, nodes, edges] = built.match(/(\d+) nodes and (\d+) relationships/).map(Number);
+        await window.waitForFunction(([n, e]) => new RegExp(`${n} nodes`).test(document.querySelector('.modelStatus').textContent) && new RegExp(`${e} relationships`).test(document.querySelector('.modelStatus').textContent), [nodes, edges], { timeout: 30000 });
+        assert.match(await toolbox.textContent('#buildResult'), /Containers handed inland: 150/);
+        assert.ok(await toolbox.locator('#map .lane').count() > 0, 'The lanes are drawn on the map.');
+
+        // 4. Drag Alder Industrial Park a little north: the model is rebuilt with new distances to it.
+        const laneKilometres = () => toolbox.evaluate(() => [...document.querySelectorAll('#buildResult table:first-of-type tbody tr')].filter((row) => /Port Alder → Alder Industrial Park/.test(row.textContent)).map((row) => row.cells[2].textContent)[0]);
+        const before = await laneKilometres();
+        assert.ok(before, 'Port Alder supplies Alder Industrial Park.');
+        const park = toolbox.locator('#map .site.zone').filter({ has: toolbox.locator('title', { hasText: 'Alder Industrial Park' }) });
+        const box = await park.boundingBox();
+        await toolbox.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        await toolbox.mouse.down();
+        await toolbox.mouse.move(box.x + box.width / 2, box.y + box.height / 2 - 8, { steps: 4 });
+        await toolbox.mouse.up();
+        await toolbox.waitForFunction(() => /moved/.test(document.querySelector('#candidateList').textContent) || document.querySelector('[data-group="zones"]').classList.contains('active'), null, { timeout: 5000 }).catch(() => {});
+        await toolbox.waitForFunction((previous) => {
+            const row = [...document.querySelectorAll('#buildResult table:first-of-type tbody tr')].find((item) => /Port Alder → Alder Industrial Park/.test(item.textContent));
+            return row && row.cells[2].textContent !== previous && !document.querySelector('#buildStatus .notice.warning');
+        }, before, { timeout: 30000 }).catch(fail);
+        const after = await laneKilometres();
+        assert.notEqual(after, before);
+
+        // 5. A customer added on the map is served in the rebuilt model.
+        await toolbox.click('[data-add="town"]');
+        const mapBox = await toolbox.locator('#map').boundingBox();
+        await toolbox.mouse.click(mapBox.x + mapBox.width * 0.6, mapBox.y + mapBox.height * 0.4);
+        await toolbox.fill('#addSiteName', 'Harbour customers');
+        await toolbox.click('#addSiteForm button[type="submit"]');
+        await toolbox.waitForFunction(() => /Harbour customers/.test(document.querySelector('#buildResult')?.textContent ?? ''), null, { timeout: 30000 }).catch(fail);
+        assert.match(await toolbox.textContent('#buildStatus'), /4 towns served/);
+        assert.equal(log.filter((line) => line.startsWith('pageerror') || line.startsWith('error')).length, 0, log.join('\n'));
+        console.log(`✓ logistics region window: the sample region and a searched region discover offline; the model (${nodes} nodes, ${edges} relationships) opens in the canvas; dragging Alder Industrial Park moves its lane from ${before} to ${after} km; a customer added on the map is served.`);
+    } finally {
+        await app.close().catch(() => {});
+    }
+} finally {
+    await rm(scratch, { recursive: true, force: true });
+}

@@ -56,7 +56,14 @@ const round = (value, digits = 0) => Number(value.toFixed(digits));
 // parsed JSON; any may be missing. Returns { candidates, roadGraph, coverage, notices }.
 export function discoverRegion(answers, options = {}) {
     const settings = { ...discoveryDefaults, ...options };
-    const read = (kind) => (answers[kind] ? readOverpass(answers[kind]) : []);
+    const read = (kind) => {
+        if (!answers[kind]) return [];
+        try {
+            return readOverpass(answers[kind]);
+        } catch (error) {
+            throw new Error(`The ${kind} data could not be read: ${error.message}`);
+        }
+    };
     const portFeatures = read('ports');
     const logisticsFeatures = read('logistics');
     const roadFeatures = read('roads');
@@ -235,7 +242,9 @@ export function discoverRegion(answers, options = {}) {
     }
     if (!towns.length) notices.push({ kind: 'towns', level: 'warning', text: 'No towns or cities are mapped here, so there is no demand to serve. Add customers yourself.' });
 
-    return { candidates: { ports, zones, towns }, roadGraph, coverage, notices };
+    // What a map of the region draws: the raw features behind the candidates (see mapData.mjs).
+    const layers = { roads: roadFeatures, rail: railLines, industrial: parcels.map((parcel) => parcel.feature), ports: portParts, anchorages };
+    return { candidates: { ports, zones, towns }, roadGraph, coverage, notices, layers };
 }
 
 // A first selection a user then curates: the most significant few of each kind.

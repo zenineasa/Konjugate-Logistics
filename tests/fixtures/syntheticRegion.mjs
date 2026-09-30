@@ -39,6 +39,11 @@ const point = (lat, lon, tags) => ({ type: 'node', id: nextPoint++, lat, lon, ta
 export const syntheticBbox = { south: -30.1, west: -20.05, north: -29.55, east: -19.2 };
 
 export function syntheticRegion({ warehouses = true } = {}) {
+    // The same ids on every call, as a real region fetched twice has.
+    nextNode = 1;
+    nodeIds.clear();
+    nextWay = 1000;
+    nextPoint = 5000;
     const coast = -29.98;
     const roads = [
         way(line({ lat: coast, lon: -20.0 }, { lat: coast, lon: -19.4 }, 12), { highway: 'motorway', ref: 'M1' }),

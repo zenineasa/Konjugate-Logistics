@@ -4,7 +4,10 @@ A logistics extension for [Konjugate](https://github.com/zenineasa/Konjugate), t
 
 ## Status
 
-Early development. What exists today is a component library plugin, `konjugate.logistics.engine`, with one example model, verified end to end against a real Konjugate build, and the first half of region import: the code that turns OpenStreetMap data for any region into a runnable model. The window that drives it is next.
+Early development. What exists today:
+
+- a component library plugin, `konjugate.logistics.engine`, with one example model, verified end to end against a real Konjugate build;
+- the **Logistics Toolbox** add-on (`konjugate.logistics.toolbox`), whose window turns any region's OpenStreetMap data into a runnable model.
 
 ## What's in the component library
 
@@ -31,32 +34,33 @@ Every edge that moves containers (dispatch, arrival and delivery) is bidirection
 
 **Port and warehouse network** appears in Konjugate's Examples dialog once the plugin is installed. A port feeds two warehouses over two road lanes, serving three customer zones. The baseline is balanced and holds still. The guide that comes with it forks the run at day 10 to take most of the berths out for a month, so ships queue at anchorage, and to step up demand, so the trucks become the bottleneck until the fleet grows. The model is generated from the templates by `scripts/buildModels.mjs`, and its guide is `guides/portWarehouseNetwork.md`.
 
-## Region import (in progress)
+## The Logistics Toolbox window
 
-Nothing in the toolbox is written for a particular place. For any region, `packages/toolbox/lib/` does the following:
+Open it from the **Logistics** button on Konjugate's toolstrip. Nothing in it is written for a particular place.
 
-1. **Asks OpenStreetMap** (through the Overpass API) for ports, logistics sites, major roads, rail and towns. Each kind is a separate query, which keeps every answer small (`overpass.mjs`).
-2. **Finds candidates** (`discovery.mjs`):
-    - **Ports:** terminals close together are grouped into one port, and marinas and fishing harbours are left out.
-    - **Logistics zones:** warehouses are grouped into zones and named after their estate. Where warehouses are poorly mapped, industrial land stands in for them.
-    - **Towns:** population comes from OpenStreetMap where it is mapped.
+1. **Pick a region.** Search a place name (OpenStreetMap's Nominatim) and choose how far around it to include, up to 250 km across. **Fetch map data** asks OpenStreetMap's Overpass API for ports, logistics sites, major roads, rail and towns, one kind at a time. **Use the sample region** loads a made-up stretch of coast instead, with no network needed. **Add your own sites** reads a CSV of ports, warehouses and customers.
+2. **See what the data shows.** A coverage report per kind, measured for this region, with plain-language notices where the data is thin. For example: few warehouses mapped, so industrial land stands in for them; or populations missing, so sizes are assumed.
+3. **Keep what matters.** Ports, logistics zones and towns are listed most significant first. Tick them in the list or click them on the map, keep the top N of a kind, drag a kept site to move it, and click the map to add a port, warehouse or customer of your own. Each port's volume can be set; until port activity is matched (Milestone 3), a port starts with an assumed 100 TEU/day.
+4. **Build the model.** Each town is served from its nearest zone, and each zone is supplied by nearby ports over road lanes routed on the major roads. Flows are balanced so every port ships what arrives, and every initial value is the steady state, so the baseline holds still. The window lists every lane with its distance, hours and fleet, which town each zone serves, and where every value comes from: routed, assumed or yours. The model opens in the canvas and, while **Keep the canvas in step** is ticked, follows every change made in the window.
 
-   Every candidate is ranked by significance. A coverage report measures how well each kind is mapped in this region and says in plain words what the data can't see.
-3. **Routes** over the major roads in-process (`roadGraph.mjs`). Nearby sites use local streets, and a site far from any road gets a straight-line estimate, labelled as such.
-4. **Builds the model** from the templates (`regionModel.mjs`):
-    - Each town is served from its nearest zone.
-    - Each zone is supplied by nearby ports over road lanes whose travel times and distances come from routing.
-    - Flows are balanced so every port ships what arrives, and every initial value is the steady state, so the baseline holds still.
-    - Every value records whether it was routed, assumed or the user's own.
-5. **Takes the user's own sites** from a CSV of ports, warehouses and customers (`sites.mjs`).
+The map is drawn from the fetched data itself (an add-on window shows no map tiles). Map data © OpenStreetMap contributors, ODbL.
 
-Until port activity is matched (Milestone 3), each port starts with an assumed 100 TEU/day, which the user can change.
+How it works: `packages/toolbox/lib/` holds the pipeline:
+
+- `overpass.mjs`: the queries;
+- `discovery.mjs`: candidates, clustering, ranking and coverage;
+- `roadGraph.mjs`: routing;
+- `regionModel.mjs`: the model;
+- `sites.mjs`: the CSV;
+- `mapData.mjs`: what the map draws.
+
+`importers/region.mjs` runs the pipeline for the window in two steps, discover and build.
 
 ## Development
 
 This repository sits next to a Konjugate checkout (`../konjugate`, or set `KONJUGATE_DIR`). It needs a Konjugate recent enough to support node-template parameters and to settle algebraic states before the first step, with its engine built (`npm run build:engine` there). The scripts use Konjugate's own package, validation and project-file code, so what passes here is what the app accepts.
 
-- `npm run build` builds the plugin into `out/konjugate.logistics.engine-<version>.kjp`, with the example model, its guide and its thumbnail. The version comes from `package.json`.
+- `npm run build` builds the plugin into `out/konjugate.logistics.engine-<version>.kjp`, with the example model, its guide and its thumbnail, and the toolbox add-on into `out/konjugate.logistics.toolbox-<version>.kja`, with its own copy of the templates and the sample region. The version comes from `package.json`.
 - `npm run build:models` writes the example models to `models/`, so a model's structure is reviewable in git.
 - `npm run generate:example-thumbnails` opens each example in the real app and saves its preview to `thumbnails/`. Run it when an example's layout changes.
 - `npm run install:dev` builds, then installs into your local Konjugate's `userData/packages` (override with `KONJUGATE_USER_DATA`).
@@ -67,7 +71,11 @@ This repository sits next to a Konjugate checkout (`../konjugate`, or set `KONJU
 
   Each run must conserve containers and trucks, keep every warehouse's on-order count equal to what its lanes hold, and match the figures worked out by hand.
 - `node scripts/liveRegionCheck.mjs --place "<place>" [--radius 40] [--run]` (or `--bbox south,west,north,east`) runs region import on real OpenStreetMap data. It fetches from the public Overpass server, caches the answers in `out/regionCache/`, and prints the coverage report, the candidates and the model. With `--run`, it also checks that the model's baseline holds still.
-- `npm run test:interaction` launches the real Konjugate app with a scratch user-data directory (never yours), installs the built plugin, and builds a network through the UI: placing nodes, applying bundles and editing shared parameters. It checks the saved project against the same network built by script, and the app's run against the engine CLI. It then opens the example from the Examples dialog, forks it as the guide describes, and checks the guide's claims. It uses Playwright from the Konjugate checkout.
+- `npm run test:interaction` launches the real Konjugate app with a scratch user-data directory (never yours) and installs the built packages. It uses Playwright from the Konjugate checkout. It runs two tests:
+    - **`tests/interaction/run.mjs`** builds a network through the UI: placing nodes, applying bundles and editing shared parameters. It checks the saved project against the same network built by script, and the app's run against the engine CLI. It then opens the example from the Examples dialog, forks it as the guide describes, and checks the guide's claims.
+    - **`tests/interaction/regionWindow.mjs`** drives the toolbox window offline, with the network answered from the synthetic region: the sample region, a place search and fetch, discovery, a port's volume, Build (checked against the canvas), dragging a site (its lanes are rerouted) and adding a customer on the map (it is served).
+
+  On Linux without a GPU, pass Electron flags through `KONJUGATE_ELECTRON_ARGS`, for example `--no-sandbox --use-gl=angle --use-angle=swiftshader`.
 
 `scripts/templatePlacement.mjs` places templates the way the app does, so tests and models built by script run exactly what the templates say.
 

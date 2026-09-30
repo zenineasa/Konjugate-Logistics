@@ -178,12 +178,12 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
     }
     if (!flows) throw new Error('The flows between ports and zones could not be balanced.');
 
-    // ---- layout: north up, the region spread over about 40 units
+    // ---- layout: north up, the region spread over about 80 units so names on the canvas stay apart
     const everything = [...ports, ...usedZones, ...towns];
     const origin = { lat: everything.reduce((total, item) => total + item.lat, 0) / everything.length, lon: everything.reduce((total, item) => total + item.lon, 0) / everything.length };
     const local = everything.map((item) => toLocal(item, origin));
     const extent = Math.max(1, ...local.map((point) => Math.max(Math.abs(point.x), Math.abs(point.y))));
-    const scale = 20 / extent;
+    const scale = 40 / extent;
     const position = (item) => {
         const point = toLocal(item, origin);
         return [Number((point.x * scale).toFixed(3)), Number((point.y * scale).toFixed(3)), 0];
@@ -203,7 +203,10 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
             const shared = created.find((item) => item.symbol === declared.symbol || item.symbol.replace(/\d+$/, '') === declared.symbol);
             if (shared) {
                 created.splice(created.indexOf(shared), 1);
-                parameterIndex.push({ key: declared.key, entity, symbol: shared.symbol, value: shared.value, unit: shared.unit });
+                parameterIndex.push({
+                    key: declared.key, entity, name: `${declared.name} (${entity})`, symbol: shared.symbol, sharedParameterId: shared.id,
+                    scope: 'instance', value: shared.value, unit: shared.unit, live: shared.mode === 'live'
+                });
             }
         }
     };

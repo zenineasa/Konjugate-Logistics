@@ -1,0 +1,47 @@
+{
+    "addonId": "konjugate.logistics.toolbox",
+    "name": "Logistics Toolbox",
+    "version": "0.1.0",
+    "apiVersion": 1,
+    "kind": "launcher",
+    "entry": "index.html",
+    "copyright": "Copyright © 2026 Zenin Easa Panthakkalakath",
+    "permissions": [
+        "data.import",
+        "model.open",
+        "network.fetch"
+    ],
+    "contributes": {
+        "toolstrip": [
+            {
+                "commandId": "openLogisticsToolbox",
+                "label": "Logistics",
+                "tooltip": "Open the Logistics Toolbox",
+                "symbol": "▣",
+                "when": "always",
+                "contexts": []
+            }
+        ],
+        "importers": [
+            {
+                "importerId": "region",
+                "name": "Region",
+                "entry": "importers/region.mjs",
+                "files": [
+                    { "role": "ports", "label": "Ports and anchorages", "accept": ["json"], "description": "OpenStreetMap ports, harbours, marinas and anchorages, as Overpass returns them.", "sample": "samples/ports.json" },
+                    { "role": "logistics", "label": "Warehouses and industrial land", "accept": ["json"], "description": "OpenStreetMap warehouses and industrial land, as Overpass returns them.", "sample": "samples/logistics.json" },
+                    { "role": "roads", "label": "Major roads", "accept": ["json"], "description": "OpenStreetMap motorways, trunk and primary roads, as Overpass returns them.", "sample": "samples/roads.json" },
+                    { "role": "rail", "label": "Rail", "accept": ["json"], "description": "OpenStreetMap rail lines and yards, as Overpass returns them.", "sample": "samples/rail.json" },
+                    { "role": "places", "label": "Towns and cities", "accept": ["json"], "description": "OpenStreetMap towns and cities, as Overpass returns them.", "sample": "samples/places.json" },
+                    { "role": "sites", "label": "Your own sites", "accept": ["csv", "txt"], "description": "One row per site: name, kind (port, warehouse or customer), latitude, longitude, and optionally teuPerDay, floorArea and population." }
+                ]
+            }
+        ]
+    },
+    "network": {
+        "hosts": [
+            "nominatim.openstreetmap.org",
+            "overpass-api.de"
+        ]
+    }
+}
