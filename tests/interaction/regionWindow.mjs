@@ -89,11 +89,19 @@ try {
         await toolbox.waitForFunction(() => document.querySelectorAll('#fetchProgress li.done').length === 5, null, { timeout: 60000 }).catch(fail);
         await toolbox.waitForFunction(() => /Port Alder/.test(document.querySelector('#candidateList')?.textContent ?? ''), null, { timeout: 30000 }).catch(fail);
         const requests = await app.evaluate(() => globalThis.logisticsRequests);
-        assert.equal(requests.filter((url) => url.includes('overpass-api.de')).length, 5);
+        const queries = requests.filter((url) => url.includes('overpass-api.de')).map((url) => new URL(url).searchParams.get('data'));
+        const boxOf = (query) => query.match(/\(([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+)\)/).slice(1).map(Number);
+        const roadQueries = queries.filter((query) => query.includes('"highway"'));
+        assert.ok(roadQueries.length > 1, 'An area this large fetches its roads in tiles.');
+        for (const query of roadQueries) {
+            const [south, west, north, east] = boxOf(query);
+            assert.ok((north - south) * 111.32 <= 40.01 && (east - west) * 111.32 * Math.cos((south + north) / 2 * Math.PI / 180) <= 40.01, 'No tile is wider than 40 km.');
+        }
+        for (const marker of ['"landuse"="port"', '"building"="warehouse"', '"highway"', '"railway"="rail"', '"place"']) assert.ok(queries.some((query) => query.includes(marker)), `Every kind is fetched (${marker}).`);
         const bbox = new URL(requests.find((url) => url.includes('overpass-api.de'))).searchParams.get('data').match(/\(([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+)\)/).slice(1).map(Number);
         assert.ok(bbox[0] < -29.9 - 0.2 && bbox[2] > -29.8 + 0.2, `25 km is added around the place (${bbox}).`);
         assert.match(await toolbox.textContent('#coverageSummary'), /Warehouses\s*good/);
-        assert.match(await toolbox.textContent('#notices'), /marinas and fishing harbours were left out/);
+        assert.match(await toolbox.textContent('#notices'), /marinas, fishing and passenger harbours were left out/);
         assert.equal(await toolbox.locator('#map .site').count(), 7);
 
         // 3. Port Alder hands 150 TEU a day inland; build, and the model is in the canvas.

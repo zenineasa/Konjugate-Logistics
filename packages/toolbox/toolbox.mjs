@@ -6,7 +6,8 @@
 // reads files and runs the importer.
 
 import { MapView } from './mapView.mjs';
-import { overpassQueries, overpassUrl } from './lib/overpass.mjs';
+import { overpassRequests, overpassUrl, retryDelaysSeconds } from './lib/overpass.mjs';
+import { nominatimSearchUrl, rankPlaces } from './lib/places.mjs';
 
 const api = window.konjugateLauncher;
 const $ = (selector) => document.querySelector(selector);
@@ -85,8 +86,8 @@ $('#searchForm').addEventListener('submit', async (event) => {
     $('#regionStatus').innerHTML = '';
     $('#searchButton').disabled = true;
     try {
-        const { text } = await call(api.fetchText(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&q=${encodeURIComponent(query)}`));
-        const places = JSON.parse(text).filter((place) => Array.isArray(place.boundingbox));
+        const { text } = await call(api.fetchText(nominatimSearchUrl(query)));
+        const places = rankPlaces(JSON.parse(text));
         const list = $('#searchResults');
         list.hidden = false;
         list.innerHTML = places.length
@@ -107,28 +108,49 @@ $('#searchForm').addEventListener('submit', async (event) => {
 });
 $('#marginSelect').addEventListener('change', showArea);
 
+const wait = (seconds) => new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+// The host reports a busy server by its status (429, 502 to 504) or a timeout: worth trying again after a pause.
+const busy = (message) => /answered (429|50[234])|did not answer within/.test(message);
+
 $('#fetchButton').addEventListener('click', async () => {
     if (!state.bbox) return;
     setBusy(true);
-    const queries = overpassQueries(state.bbox);
+    const requests = overpassRequests(state.bbox);
     const labels = { ports: 'Ports and anchorages', logistics: 'Warehouses and industrial land', roads: 'Major roads', rail: 'Rail', places: 'Towns and cities' };
+    const kinds = [...new Set(requests.map((request) => request.kind))];
     const progress = $('#fetchProgress');
     progress.hidden = false;
-    progress.innerHTML = Object.keys(queries).map((kind) => `<li data-kind="${kind}"><span>${labels[kind]}</span><span class="state">waiting</span></li>`).join('');
+    progress.innerHTML = kinds.map((kind) => `<li data-kind="${kind}"><span>${labels[kind]}</span><span class="state">waiting</span></li>`).join('');
     $('#regionStatus').innerHTML = '';
     try {
-        // One at a time: the public server is shared.
-        for (const [kind, query] of Object.entries(queries)) {
-            const row = progress.querySelector(`[data-kind="${kind}"]`);
-            row.querySelector('.state').textContent = 'fetching…';
-            try {
-                const { bytes } = await call(api.fetchFile(importerId, kind, overpassUrl(query), `${kind}.json`));
+        // A new region replaces the last one's data (your own sites file stays).
+        for (const kind of kinds) await call(api.clearFile(importerId, kind));
+        const bytes = {};
+        // One request at a time: the public server is shared.
+        for (const request of requests) {
+            const row = progress.querySelector(`[data-kind="${request.kind}"]`);
+            const label = request.parts > 1 ? `part ${request.part} of ${request.parts}` : 'fetching';
+            for (let attempt = 0; ; attempt += 1) {
+                row.querySelector('.state').textContent = `${label}…`;
+                try {
+                    const answer = await call(api.fetchFile(importerId, request.kind, overpassUrl(request.query), `${request.kind}-${request.part}.json`));
+                    bytes[request.kind] = (bytes[request.kind] ?? 0) + answer.bytes;
+                    break;
+                } catch (error) {
+                    if (!busy(error.message) || attempt >= retryDelaysSeconds.length) {
+                        row.classList.add('failed');
+                        row.querySelector('.state').textContent = 'failed';
+                        throw new Error(`${labels[request.kind]}: ${error.message}${/larger than the size limit/.test(error.message) ? ' Choose a smaller area.' : busy(error.message) ? ' The public map server is busy; try again in a few minutes, or choose a smaller area.' : ''}`);
+                    }
+                    for (let left = retryDelaysSeconds[attempt]; left > 0; left -= 1) {
+                        row.querySelector('.state').textContent = `server busy, trying again in ${left} s`;
+                        await wait(1);
+                    }
+                }
+            }
+            if (request.part === request.parts) {
                 row.classList.add('done');
-                row.querySelector('.state').textContent = `${number(bytes / 1024)} KB`;
-            } catch (error) {
-                row.classList.add('failed');
-                row.querySelector('.state').textContent = 'failed';
-                throw new Error(`${labels[kind]}: ${error.message}${/larger than the size limit/.test(error.message) ? ' Choose a smaller area.' : ''}`);
+                row.querySelector('.state').textContent = `${number(bytes[request.kind] / 1024)} KB`;
             }
         }
         await discover();

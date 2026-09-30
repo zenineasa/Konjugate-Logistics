@@ -21,6 +21,42 @@ export function overpassQueries(bbox) {
     };
 }
 
+// Kinds whose answers grow with the area (every road, every warehouse) are fetched in tiles no wider than
+// this, so no single query is heavy enough for a busy public server to give up on.
+export const tiledKinds = ['logistics', 'roads'];
+export const maximumTileKilometres = 40;
+
+export function splitBbox(bbox, maximumKilometres = maximumTileKilometres) {
+    const height = (bbox.north - bbox.south) * 111.32;
+    const width = (bbox.east - bbox.west) * 111.32 * Math.cos((bbox.south + bbox.north) / 2 * Math.PI / 180);
+    const rows = Math.max(1, Math.ceil(height / maximumKilometres));
+    const columns = Math.max(1, Math.ceil(width / maximumKilometres));
+    const tiles = [];
+    for (let row = 0; row < rows; row += 1) {
+        for (let column = 0; column < columns; column += 1) {
+            tiles.push({
+                south: bbox.south + (bbox.north - bbox.south) * row / rows, north: bbox.south + (bbox.north - bbox.south) * (row + 1) / rows,
+                west: bbox.west + (bbox.east - bbox.west) * column / columns, east: bbox.west + (bbox.east - bbox.west) * (column + 1) / columns
+            });
+        }
+    }
+    return tiles;
+}
+
+// Every request a region needs: { kind, part, parts, query }, one per kind, or one per tile for the tiled kinds.
+export function overpassRequests(bbox) {
+    const requests = [];
+    for (const kind of Object.keys(overpassQueries(bbox))) {
+        const tiles = tiledKinds.includes(kind) ? splitBbox(bbox) : [bbox];
+        tiles.forEach((tile, index) => requests.push({ kind, part: index + 1, parts: tiles.length, query: overpassQueries(tile)[kind] }));
+    }
+    return requests;
+}
+
+// A public server that is busy answers 429 (too many requests) or 502 to 504 (gave up waiting): worth another try later.
+export const retryableStatus = (status) => status === 429 || (status >= 502 && status <= 504);
+export const retryDelaysSeconds = [15, 45, 90];
+
 export function overpassUrl(query) {
     return `https://${overpassHost}/api/interpreter?data=${encodeURIComponent(query)}`;
 }
@@ -35,11 +71,21 @@ const pointOfGeometry = (geometry) => {
 const isClosed = (geometry) => geometry.length > 3
     && geometry[0].lat === geometry[geometry.length - 1].lat && geometry[0].lon === geometry[geometry.length - 1].lon;
 
-// Reads an Overpass JSON answer (text or parsed) into features:
+// Reads an Overpass JSON answer (text or parsed), or a list of them, into features:
 //   { osmType, osmId, tags, point, ring (closed outline or null), rings (a relation's outlines),
 //     line (open geometry or null), nodes (a way's node ids), bounds }
 // A feature's point is its centre: a node's position, an outline's average, or its bounds' centre.
+// Several answers (the tiles of one kind) are read together, each element once: a road crossing a tile edge is in both.
 export function readOverpass(answer) {
+    if (Array.isArray(answer)) {
+        const seen = new Set();
+        return answer.flatMap((part) => readOverpass(part)).filter((feature) => {
+            const key = `${feature.osmType}/${feature.osmId}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }
     const parsed = typeof answer === 'string' ? JSON.parse(answer) : answer;
     if (!Array.isArray(parsed?.elements)) throw new Error('This is not an Overpass answer: it has no elements.');
     // Overpass reports a timeout or memory limit in a remark, with whatever it managed to collect: incomplete, so refused.

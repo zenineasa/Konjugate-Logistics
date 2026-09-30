@@ -6,7 +6,9 @@
 // With --run it also runs that model through the engine CLI and checks that the baseline holds still.
 //
 //   node scripts/liveRegionCheck.mjs --bbox south,west,north,east [--run] [--refresh]
-//   node scripts/liveRegionCheck.mjs --place "Jebel Ali" [--radius 40] [--run]
+//   node scripts/liveRegionCheck.mjs --place "Jebel Ali" [--pick 2] [--radius 40] [--run]
+//
+// A place search lists what it found, places and areas first; --pick chooses another than the first.
 //
 // Public Overpass and Nominatim servers are shared and fair-use: answers are cached, and --refresh is
 // needed to fetch again. Map data © OpenStreetMap contributors, ODbL.
@@ -18,7 +20,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { defaultSelection, discoverRegion } from '../packages/toolbox/lib/discovery.mjs';
-import { overpassQueries, overpassUrl } from '../packages/toolbox/lib/overpass.mjs';
+import { overpassRequests, overpassUrl, retryableStatus, retryDelaysSeconds } from '../packages/toolbox/lib/overpass.mjs';
+import { nominatimSearchUrl, rankPlaces } from '../packages/toolbox/lib/places.mjs';
 import { buildRegionModel } from '../packages/toolbox/lib/regionModel.mjs';
 import { createRouter } from '../packages/toolbox/lib/roadGraph.mjs';
 import { konjugateModule, logisticsRoot } from './konjugatePaths.mjs';
@@ -40,10 +43,14 @@ async function bboxOf() {
     }
     const place = argument('place');
     if (!place) throw new Error('Give --bbox south,west,north,east or --place "name".');
-    const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(place)}`, { headers: { 'User-Agent': userAgent } });
+    const response = await fetch(nominatimSearchUrl(place), { headers: { 'User-Agent': userAgent } });
     if (!response.ok) throw new Error(`Nominatim answered ${response.status}.`);
-    const [found] = await response.json();
-    if (!found) throw new Error(`Nominatim found no place called "${place}".`);
+    const places = rankPlaces(await response.json());
+    if (!places.length) throw new Error(`Nominatim found no place called "${place}".`);
+    const pick = Number(argument('pick') ?? 1);
+    places.slice(0, 5).forEach((item, index) => console.log(`${index + 1 === pick ? '>' : ' '} ${index + 1}. ${item.display_name} (${item.category ?? item.class}/${item.type})`));
+    const found = places[pick - 1];
+    if (!found) throw new Error(`There is no match number ${pick}.`);
     const radius = Number(argument('radius') ?? 40);
     const lat = Number(found.lat);
     const lon = Number(found.lon);
@@ -58,21 +65,32 @@ const key = [bbox.south, bbox.west, bbox.north, bbox.east].map((value) => value.
 const cache = join(logisticsRoot, 'out', 'regionCache', key);
 await mkdir(cache, { recursive: true });
 const answers = {};
-for (const [kind, query] of Object.entries(overpassQueries(bbox))) {
-    const file = join(cache, `${kind}.json`);
+const pause = (seconds) => new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+for (const request of overpassRequests(bbox)) {
+    const label = request.parts > 1 ? `${request.kind} ${request.part}/${request.parts}` : request.kind;
+    const file = join(cache, `${request.kind}-${request.part}.json`);
+    let text;
     if (existsSync(file) && !flag('refresh')) {
-        answers[kind] = await readFile(file, 'utf8');
-        console.log(`${kind}: cached, ${(answers[kind].length / 1024).toFixed(0)} KB`);
-        continue;
+        text = await readFile(file, 'utf8');
+        console.log(`${label}: cached, ${(text.length / 1024).toFixed(0)} KB`);
+    } else {
+        for (let attempt = 0; ; attempt += 1) {
+            const started = Date.now();
+            const response = await fetch(overpassUrl(request.query), { headers: { 'User-Agent': userAgent } });
+            text = await response.text();
+            if (response.ok) {
+                const size = Buffer.byteLength(text);
+                console.log(`${label}: ${(size / 1024).toFixed(0)} KB in ${((Date.now() - started) / 1000).toFixed(1)} s${size > hostFetchLimit ? `  -- OVER the add-on's ${hostFetchLimit / 1024 / 1024} MB fetch limit` : ''}${Date.now() - started > 20000 ? '  -- SLOWER than the add-on\u2019s 20 s fetch limit' : ''}`);
+                await writeFile(file, text);
+                break;
+            }
+            if (!retryableStatus(response.status) || attempt >= retryDelaysSeconds.length) throw new Error(`Overpass answered ${response.status} for ${label}: ${text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 200)}`);
+            console.log(`${label}: the server is busy (${response.status}); trying again in ${retryDelaysSeconds[attempt]} s`);
+            await pause(retryDelaysSeconds[attempt]);
+        }
+        await pause(1);
     }
-    const started = Date.now();
-    const response = await fetch(overpassUrl(query), { headers: { 'User-Agent': userAgent } });
-    const text = await response.text();
-    if (!response.ok) throw new Error(`Overpass answered ${response.status} for ${kind}: ${text.slice(0, 300)}`);
-    await writeFile(file, text);
-    answers[kind] = text;
-    const size = Buffer.byteLength(text);
-    console.log(`${kind}: ${(size / 1024).toFixed(0)} KB in ${((Date.now() - started) / 1000).toFixed(1)} s${size > hostFetchLimit ? `  -- OVER the add-on's ${hostFetchLimit / 1024 / 1024} MB fetch limit` : ''}`);
+    (answers[request.kind] ??= []).push(text);
 }
 
 const started = Date.now();

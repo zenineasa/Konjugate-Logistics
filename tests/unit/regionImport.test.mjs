@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { defaultSelection, discoverRegion, parsePopulation } from '../../packages/toolbox/lib/discovery.mjs';
 import { distance, ringArea } from '../../packages/toolbox/lib/geo.mjs';
-import { overpassQueries, overpassUrl, readOverpass } from '../../packages/toolbox/lib/overpass.mjs';
+import { overpassQueries, overpassRequests, overpassUrl, readOverpass, retryableStatus, splitBbox } from '../../packages/toolbox/lib/overpass.mjs';
+import { nominatimSearchUrl, rankPlaces } from '../../packages/toolbox/lib/places.mjs';
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
 import { createRouter } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { parseSites } from '../../packages/toolbox/lib/sites.mjs';
@@ -195,4 +196,110 @@ test('the user\'s own sites join the curated region and are used as given', () =
     assert.equal(customer.demand, 50);
     assert.equal(customer.zone, 'Our depot');
     assert.equal(provenance.find((entry) => entry.entity === 'Big customer' && entry.parameter === 'Demand').basis, 'user');
+});
+
+// ---- lessons from real data: what the first real region (a stretch of the Gulf coast) showed ------------
+
+const answer = (elements) => ({ elements });
+const square = (lat, lon, size = 0.01) => [
+    { lat, lon }, { lat, lon: lon + size }, { lat: lat + size, lon: lon + size }, { lat: lat + size, lon }, { lat, lon }
+];
+let nextId = 90000;
+const areaWay = (lat, lon, tags, size) => ({ type: 'way', id: nextId++, tags, geometry: square(lat, lon, size) });
+const node = (lat, lon, tags) => ({ type: 'node', id: nextId++, lat, lon, tags });
+
+test('names are English where OpenStreetMap has them, and a port takes its name from its Wikipedia article', () => {
+    const { candidates } = discoverRegion({
+        ports: answer([
+            areaWay(10, 10, { landuse: 'industrial', industrial: 'port', name: 'ميناء ١', 'name:en': 'Container Terminal 1', wikipedia: 'en:Port of Example' }, 0.02),
+            areaWay(10, 10.021, { landuse: 'industrial', industrial: 'port', name: 'ميناء ٢', 'name:en': 'Container Terminal 2' }, 0.03)
+        ]),
+        places: answer([node(10.2, 10.2, { place: 'town', name: 'مدينة', 'name:en': 'Example Town', population: '5000' })])
+    });
+    assert.equal(candidates.ports[0].name, 'Port of Example');
+    assert.equal(candidates.towns[0].name, 'Example Town');
+});
+
+test('passenger harbours and administrative areas are not ports, and unnamed scraps of port land are dropped', () => {
+    const { candidates, coverage } = discoverRegion({ ports: answer([
+        areaWay(10, 10, { industrial: 'port', name: 'Real Port' }, 0.02),
+        node(10.3, 10.3, { amenity: 'ferry_terminal', harbour: 'yes', public_transport: 'station', name: 'Water Bus Stop' }),
+        node(10.35, 10.3, { harbour: 'yes', 'seamark:harbour:category': 'passenger', name: 'Ferry Pier' }),
+        { type: 'relation', id: nextId++, tags: { boundary: 'administrative', industrial: 'port', name: 'Free Zone' }, members: [{ type: 'way', ref: 1, role: 'outer', geometry: square(9.9, 9.9, 0.3) }] },
+        areaWay(10.6, 10.6, { landuse: 'port' }, 0.001),
+        node(10.8, 10.8, { harbour: 'yes', name: 'Small Named Port' })
+    ]) });
+    assert.deepEqual(candidates.ports.map((port) => port.name), ['Real Port', 'Small Named Port']);
+    assert.equal(coverage.ports.marinasExcluded, 2);
+    assert.ok(candidates.ports[0].areaSquareKilometres < 5, 'the free zone does not inflate the port');
+});
+
+test('industrial land that is not logistics is left out, by its tags or its name, and port land is not a zone', () => {
+    const { candidates, coverage, notices } = discoverRegion({ logistics: answer([
+        areaWay(10, 10, { landuse: 'industrial', name: 'Example Industrial Area 1' }, 0.02),
+        areaWay(10.1, 10.1, { landuse: 'industrial', man_made: 'water_works', 'name:en': 'Example Water Works' }, 0.02),
+        areaWay(10.2, 10.2, { landuse: 'industrial', industrial: 'gas' }, 0.02),
+        areaWay(10.3, 10.3, { landuse: 'industrial', 'name:en': 'Example Power and Desalination Plant' }, 0.02),
+        areaWay(10.4, 10.4, { landuse: 'industrial', 'name:en': 'Example Aluminium Smelter' }, 0.02),
+        areaWay(10.5, 10.5, { landuse: 'industrial', industrial: 'port', name: 'Port Logistics Terminal' }, 0.02)
+    ]) });
+    assert.deepEqual(candidates.zones.map((zone) => zone.name), ['Example Industrial Area 1']);
+    assert.equal(coverage.warehouses.otherIndustryExcluded, 4);
+    assert.ok(notices.some((item) => /4 industrial sites that are not logistics/.test(item.text)));
+});
+
+test('a warehouse district mapped as land counts a share of its land as floor area, not all of it', () => {
+    const { candidates } = discoverRegion({ logistics: answer([
+        areaWay(10, 10, { landuse: 'industrial', industrial: 'warehouse', name: 'Warehouse District' }, 0.01)
+    ]) });
+    const zone = candidates.zones[0];
+    const land = ringArea(square(10, 10, 0.01));
+    close(zone.floorAreaSquareMetres, land * 0.3, land * 0.01, 'floor area');
+});
+
+test('mapped warehouses rank ahead of industrial land standing in for them', () => {
+    const { candidates } = discoverRegion({ logistics: answer([
+        areaWay(10, 10, { landuse: 'industrial', name: 'Big Estate' }, 0.02),
+        areaWay(10.02, 10.02, { landuse: 'industrial', name: 'Big Estate B' }, 0.02),
+        areaWay(10.04, 10.04, { landuse: 'industrial', name: 'Big Estate C' }, 0.02),
+        areaWay(10.5, 10.5, { landuse: 'industrial', name: 'Depot Park' }, 0.012),
+        ...[0, 1, 2].map((index) => ({ type: 'way', id: nextId++, tags: { building: 'warehouse' }, bounds: { minlat: 10.501 + index * 0.002, minlon: 10.501, maxlat: 10.502 + index * 0.002, maxlon: 10.504 } }))
+    ]) });
+    // Coverage is partial (one of four estates has warehouses), so the bare estate stands in, at lower confidence.
+    const estimated = candidates.zones.find((zone) => zone.floorAreaBasis === 'estimated');
+    const mapped = candidates.zones.find((zone) => zone.floorAreaBasis !== 'estimated');
+    assert.ok(estimated && mapped);
+    assert.ok(estimated.floorAreaSquareMetres * 0.5 === estimated.significance || estimated.significance < estimated.floorAreaSquareMetres, 'estimated zones are discounted');
+});
+
+test('heavy kinds are fetched in tiles no wider than 40 km, and tiles are merged without double counting', () => {
+    const bbox = { south: 24.6, west: 54.7, north: 25.34, east: 55.49 };
+    const requests = overpassRequests(bbox);
+    const count = (kind) => requests.filter((request) => request.kind === kind).length;
+    assert.equal(count('roads'), 6, '82 km tall and 80 km wide at 25 degrees north: three rows of two tiles');
+    assert.equal(count('logistics'), 6);
+    for (const kind of ['ports', 'rail', 'places']) assert.equal(count(kind), 1);
+    for (const tile of splitBbox(bbox)) {
+        assert.ok((tile.north - tile.south) * 111.32 <= 40.01);
+        assert.ok((tile.east - tile.west) * 111.32 * Math.cos(25 * Math.PI / 180) <= 40.01);
+    }
+    const shared = { type: 'way', id: 7, tags: { highway: 'primary' }, nodes: [1, 2], geometry: [{ lat: 0, lon: 0 }, { lat: 0, lon: 1 }] };
+    const features = readOverpass([answer([shared, node(1, 1, { place: 'town' })]), answer([shared])]);
+    assert.equal(features.length, 2);
+});
+
+test('a busy public server is retried, anything else is not', () => {
+    for (const status of [429, 502, 503, 504]) assert.ok(retryableStatus(status), `${status}`);
+    for (const status of [400, 403, 404, 500]) assert.ok(!retryableStatus(status), `${status}`);
+});
+
+test('a place search puts places and areas ahead of shops that share the name, and asks for English names', () => {
+    const ranked = rankPlaces([
+        { display_name: 'Life Pharmacy, Jebel Ali', category: 'amenity', type: 'pharmacy', importance: 0.2, boundingbox: ['1', '2', '3', '4'] },
+        { display_name: 'Jebel Ali Industrial Area', category: 'landuse', type: 'industrial', importance: 0.3, boundingbox: ['1', '2', '3', '4'] },
+        { display_name: 'Jebel Ali', category: 'place', type: 'suburb', importance: 0.4, boundingbox: ['1', '2', '3', '4'] },
+        { display_name: 'No box', category: 'place', type: 'town', importance: 0.9 }
+    ]);
+    assert.deepEqual(ranked.map((place) => place.display_name), ['Jebel Ali', 'Jebel Ali Industrial Area', 'Life Pharmacy, Jebel Ali']);
+    assert.match(nominatimSearchUrl('Jebel Ali'), /accept-language=en/);
 });

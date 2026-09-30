@@ -63,7 +63,8 @@ export default async function importRegion({ files, helpers, options = {} }) {
     const answers = {};
     let sitesText = null;
     for (const file of files) {
-        if (osmRoles.includes(file.role)) answers[file.role] = file.text;
+        // A tiled kind arrives as several files, one per tile.
+        if (osmRoles.includes(file.role)) (answers[file.role] ??= []).push(file.text);
         if (file.role === 'sites') sitesText = file.text;
     }
     if (!Object.keys(answers).length && !sitesText) return failure('Fetch a region, use the sample region, or choose a file of your own sites first.');

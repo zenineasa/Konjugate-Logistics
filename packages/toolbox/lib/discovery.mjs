@@ -24,7 +24,7 @@ export const discoveryDefaults = {
     assumedPopulation: { city: 100000, town: 20000 }
 };
 
-const marinaCategories = /^(marina|marina_no_facilities|yacht|fishing|leisure|ferry)$/;
+const marinaCategories = /^(marina|marina_no_facilities|yacht|fishing|leisure|ferry|passenger)$/;
 const commercialHint = /container|cargo|commercial|bulk|ro-?ro|oil|lng|freight/i;
 
 function featureArea(feature) {
@@ -35,10 +35,19 @@ function featureArea(feature) {
     return { squareMetres: 0, approximate: false };
 }
 
-const nameOf = (tags) => tags.name ?? tags['name:en'] ?? tags['seamark:name'] ?? tags.operator ?? null;
+// English first where OpenStreetMap has it (in many regions `name` is in the local script), then the local name.
+const nameOf = (tags) => tags['name:en'] ?? tags.name ?? tags['seamark:name'] ?? tags['name:ar'] ?? tags.operator ?? null;
+
+// Industrial land that is not logistics: power, utilities, gas and chemical works, masts, mines, shipyards.
+// Plants mapped only as industrial land, recognisable by the words in their (English) name.
+const plantName = /\b(power|desalination|compressor|substation|refinery|smelter|aluminium|aluminum|gas plant|gas processing|water treatment|sewage|cement)\b/i;
+const notLogistics = (tags) => Boolean(plantName.test(tags['name:en'] ?? tags.name ?? '') || tags.power || /^(works|water_works|wastewater_plant|pumping_station|mineshaft)$/.test(tags.man_made ?? '')
+    || /^(power|gas|oil|refinery|chemical|communication|telecommunication|water|wastewater|mine|quarry|mineral_processing|shipyard|slaughterhouse|sugar_refinery|scrap_yard|aluminium_smelter|smelter|steelmaker|brickyard|sawmill)$/.test(tags.industrial ?? ''));
 
 function isMarina(tags) {
     if (tags.leisure === 'marina') return true;
+    // Passenger harbours: ferry and water-bus stops.
+    if (tags.amenity === 'ferry_terminal' || tags.public_transport || tags.cargo === 'passengers') return true;
     const category = tags['harbour:category'] ?? tags['seamark:harbour:category'] ?? '';
     return category.split(';').some((value) => marinaCategories.test(value.trim()));
 }
@@ -86,13 +95,18 @@ export function discoverRegion(answers, options = {}) {
         const tags = feature.tags;
         if (tags['seamark:type'] === 'anchorage' || tags['seamark:type'] === 'anchor_berth') anchorages.push(feature);
         else if (isMarina(tags)) marinas.push(feature);
+        // An administrative area tagged as port land (a free zone, say) is not the port: it belongs with the logistics land.
+        else if (tags.boundary || tags.type === 'boundary') continue;
         else portParts.push(feature);
     }
     const ports = clusterByDistance(portParts, (feature) => feature.point, settings.portClusterMetres).map((parts, index) => {
         const areas = parts.map((part) => featureArea(part).squareMetres);
         const area = areas.reduce((total, value) => total + value, 0);
         const byArea = parts.map((part, partIndex) => ({ part, area: areas[partIndex] })).sort((a, b) => b.area - a.area);
-        const named = byArea.find(({ part }) => nameOf(part.tags));
+        // The port's own name: from a part's Wikipedia article (as "Port of X"), else a part named like a port, else the largest named part.
+        const article = parts.map((part) => /^en:(.+)$/.exec(part.tags.wikipedia ?? '')?.[1]).find((title) => title && /port|harbou?r|terminal/i.test(title));
+        const named = article ? { part: { tags: { name: article } } }
+            : byArea.find(({ part }) => /port|harbou?r|terminal|quay|ميناء/i.test(nameOf(part.tags) ?? '')) ?? byArea.find(({ part }) => nameOf(part.tags));
         const commercial = parts.some((part) => Object.values(part.tags).some((value) => commercialHint.test(value)));
         const point = area > 0 ? centroid(parts.map((part) => part.point), areas.map((value) => value || 1)) : centroid(parts.map((part) => part.point));
         return {
@@ -105,6 +119,10 @@ export function discoverRegion(answers, options = {}) {
             source: 'OpenStreetMap'
         };
     });
+    // Unnamed scraps of port land with no commercial tag are mapping fragments, not ports.
+    for (let index = ports.length - 1; index >= 0; index -= 1) {
+        if (!ports[index].named && !ports[index].commercial && ports[index].areaSquareKilometres < 0.05) ports.splice(index, 1);
+    }
     for (const anchorage of anchorages) {
         let nearest = null;
         let nearestMetres = Infinity;
@@ -118,10 +136,18 @@ export function discoverRegion(answers, options = {}) {
     // ---- logistics zones
     const warehouses = [];
     const parcels = [];
+    let otherIndustry = 0;
     for (const feature of logisticsFeatures) {
-        if (feature.tags.landuse === 'industrial' && (feature.ring || feature.rings)) parcels.push({ feature, area: featureArea(feature).squareMetres, warehouses: 0 });
-        else if (feature.tags.building === 'warehouse' || /^(warehouse|logistics|distribution)$/.test(feature.tags.industrial ?? '')) {
-            warehouses.push({ feature, area: featureArea(feature) });
+        if (notLogistics(feature.tags)) { otherIndustry += 1; continue; }
+        if (feature.tags.building === 'warehouse' || /^(warehouse|logistics|distribution|depot)$/.test(feature.tags.industrial ?? '')) {
+            const area = featureArea(feature);
+            // A warehouse building's footprint is its floor area; a warehouse district mapped as land holds less.
+            warehouses.push({ feature, area: feature.tags.building ? area : { squareMetres: area.squareMetres * settings.estimatedFloorShare, approximate: true } });
+        } else if (feature.tags.industrial === 'port') {
+            // Port land is a port (see the ports query), not a logistics zone.
+            continue;
+        } else if (feature.tags.landuse === 'industrial' && (feature.ring || feature.rings)) {
+            parcels.push({ feature, area: featureArea(feature).squareMetres, warehouses: 0 });
         }
     }
     const rings = (feature) => feature.ring ? [feature.ring] : feature.rings;
@@ -184,12 +210,14 @@ export function discoverRegion(answers, options = {}) {
         const roadMetres = roadVertices.length ? nearestRoadMetres(point) : null;
         // Road access: full weight next to a major road, half at 2 km, and so on.
         const access = roadMetres === null ? 1 : 1 / (1 + roadMetres / 2000);
+        // Industrial land standing in for unmapped warehouses may be a factory or a plant: ranked below mapped warehouses.
+        const confidence = zone.floorAreaBasis === 'estimated' ? 0.5 : 1;
         return {
             id: `zone:${zone.firstId}`, kind: 'zone', lat: point.lat, lon: point.lon,
             name: zone.names[0] ?? null, near: nearestTownName(point),
             floorAreaSquareMetres: Math.round(zone.floorArea), floorAreaBasis: zone.floorAreaBasis, buildings: zone.buildings,
             roadKilometres: roadMetres === null ? null : round(roadMetres / 1000, 2),
-            significance: round(zone.floorArea * access, 0), source: zone.floorAreaBasis === 'estimated' ? 'OpenStreetMap industrial land' : 'OpenStreetMap'
+            significance: round(zone.floorArea * access * confidence, 0), source: zone.floorAreaBasis === 'estimated' ? 'OpenStreetMap industrial land' : 'OpenStreetMap'
         };
     }).sort((a, b) => b.significance - a.significance).map((zone, index) => ({
         ...zone, name: zone.name ?? `Logistics zone ${index + 1}${zone.near ? ` (near ${zone.near})` : ''}`
@@ -211,7 +239,7 @@ export function discoverRegion(answers, options = {}) {
             industrialLandSquareKilometres: round(industrialArea / 1e6, 2), largeParcels: largeParcels.length,
             largeParcelsWithWarehouse: largeParcels.filter((parcel) => parcel.warehouses > 0).length,
             coveredShare: coveredShare === null ? null : round(coveredShare, 3), level: warehouseLevel,
-            estimatedZones: estimatedZones.length
+            estimatedZones: estimatedZones.length, otherIndustryExcluded: otherIndustry
         },
         roads: {
             kilometres: round(roadKilometres, 1), byClass: Object.fromEntries(Object.entries(roadGraph.kilometresByClass).map(([key, value]) => [key, round(value, 1)])),
@@ -223,7 +251,8 @@ export function discoverRegion(answers, options = {}) {
 
     const notices = [];
     if (!ports.length) notices.push({ kind: 'ports', level: 'warning', text: 'No commercial ports are mapped in this region. Add a port yourself if the region has one.' });
-    if (marinas.length) notices.push({ kind: 'ports', level: 'info', text: `${marinas.length} marina${marinas.length === 1 ? '' : 's'} and fishing harbour${marinas.length === 1 ? ' was' : 's were'} left out.` });
+    if (marinas.length) notices.push({ kind: 'ports', level: 'info', text: `${marinas.length} marina${marinas.length === 1 ? '' : 's'}, fishing and passenger harbour${marinas.length === 1 ? ' was' : 's were'} left out.` });
+    if (otherIndustry) notices.push({ kind: 'warehouses', level: 'info', text: `${otherIndustry} industrial site${otherIndustry === 1 ? '' : 's'} that are not logistics (power, gas, water, communications and the like) ${otherIndustry === 1 ? 'was' : 'were'} left out.` });
     notices.push({ kind: 'ports', level: 'info', text: 'Port activity has not been matched yet: every port starts with an assumed volume, which you can change.' });
     if (warehouseLevel === 'none') {
         notices.push({ kind: 'warehouses', level: 'warning', text: industrialArea > 0
