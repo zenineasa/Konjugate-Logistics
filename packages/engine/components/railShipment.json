@@ -1,0 +1,203 @@
+{
+    "copyright": "Copyright © 2026 Zenin Easa Panthakkalakath",
+    "id": "railShipment",
+    "kind": "bundle",
+    "name": "Rail shipment",
+    "domains": [
+        "logistics"
+    ],
+    "description": "Moves containers from an origin (a port or a warehouse) through a rail lane to a destination warehouse. The destination's orders, times its order share for this lane, queue on the lane; the origin ships them within the order response time, limited by the lane's loading capacity (trains per day times containers per train) and by the origin's stock. Arrivals add to the destination's stock and clear its on-order count. Matched edges keep containers conserved. Select the origin, the lane and the destination, then click this bundle.",
+    "color": "#8a6fb0",
+    "endpoints": [
+        {
+            "id": "origin",
+            "label": "Origin"
+        },
+        {
+            "id": "lane",
+            "label": "Rail lane"
+        },
+        {
+            "id": "destination",
+            "label": "Destination warehouse"
+        }
+    ],
+    "sharedParameters": [
+        {
+            "key": "orderShare",
+            "name": "Order share",
+            "symbol": "orderShare",
+            "value": 1,
+            "unit": "",
+            "scope": "instance"
+        },
+        {
+            "key": "responseDays",
+            "name": "Order response time",
+            "symbol": "responseDays",
+            "value": 0.5,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
+            "key": "originDrainDays",
+            "name": "Origin draw-down time",
+            "symbol": "originDrainDays",
+            "value": 0.5,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
+            "key": "secondsPerDay",
+            "name": "Seconds per day",
+            "symbol": "secondsPerDay",
+            "value": 86400,
+            "unit": "s/day",
+            "scope": "project"
+        }
+    ],
+    "edges": [
+        {
+            "name": "Order",
+            "from": "destination",
+            "to": "lane",
+            "ports": {
+                "source": "orderRate",
+                "target": "requested"
+            },
+            "output": {
+                "role": "target",
+                "state": "requested"
+            },
+            "latex": "\\frac{\\mathrm{orderShare} \\cdot \\mathrm{sourceOrderRate}}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Order share",
+                    "symbol": "orderShare",
+                    "shared": "orderShare"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Dispatch",
+            "from": "origin",
+            "to": "lane",
+            "bidirectional": true,
+            "ports": {
+                "source": "stock",
+                "target": [
+                    "loaded1",
+                    "requested",
+                    "canLoad"
+                ]
+            },
+            "output": {
+                "role": "target",
+                "state": "loaded1"
+            },
+            "latex": "\\frac{\\min(\\frac{\\mathrm{targetRequested}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{sourceStock}}{\\mathrm{originDrainDays}}))}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Order response time",
+                    "symbol": "responseDays",
+                    "shared": "responseDays"
+                },
+                {
+                    "name": "Origin draw-down time",
+                    "symbol": "originDrainDays",
+                    "shared": "originDrainDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Clear orders",
+            "from": "origin",
+            "to": "lane",
+            "ports": {
+                "source": "stock",
+                "target": [
+                    "requested",
+                    "canLoad"
+                ]
+            },
+            "output": {
+                "role": "target",
+                "state": "requested"
+            },
+            "latex": "-\\frac{\\min(\\frac{\\mathrm{targetRequested}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{sourceStock}}{\\mathrm{originDrainDays}}))}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Order response time",
+                    "symbol": "responseDays",
+                    "shared": "responseDays"
+                },
+                {
+                    "name": "Origin draw-down time",
+                    "symbol": "originDrainDays",
+                    "shared": "originDrainDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Arrive",
+            "from": "lane",
+            "to": "destination",
+            "bidirectional": true,
+            "ports": {
+                "source": [
+                    "loaded3",
+                    "arriving"
+                ],
+                "target": "stock"
+            },
+            "output": {
+                "role": "target",
+                "state": "stock"
+            },
+            "latex": "\\frac{\\mathrm{sourceArriving}}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Receive",
+            "from": "lane",
+            "to": "destination",
+            "ports": {
+                "source": "arriving",
+                "target": "onOrder"
+            },
+            "output": {
+                "role": "target",
+                "state": "onOrder"
+            },
+            "latex": "-\\frac{\\mathrm{sourceArriving}}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        }
+    ]
+}

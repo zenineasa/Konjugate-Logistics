@@ -1,0 +1,309 @@
+{
+    "copyright": "Copyright © 2026 Zenin Easa Panthakkalakath",
+    "id": "roadLane",
+    "kind": "node",
+    "name": "Road lane",
+    "domains": [
+        "logistics"
+    ],
+    "description": "A trucking lane with its own fleet. Loaded trucks travel in three stages (an Erlang-3 travel time, so arrivals spread out realistically), unload at the destination and return empty over the same travel time to wait at the origin. Trucks are conserved: idle, loaded and returning trucks always add up to the fleet. Changing the fleet size hires or releases trucks towards it over the hiring time; only idle trucks are released. The lane can load at most its idle trucks times the truck capacity per turnaround time, so a small fleet caps throughput. Orders waiting holds what the destination has ordered but not yet been shipped. Transport cost counts each completed round trip at twice the distance times the cost per km. Connect it with a Road shipment bundle.",
+    "shape": "cylinder",
+    "color": "#d98b54",
+    "states": [
+        {
+            "symbol": "loaded1",
+            "label": "Loaded, stage 1",
+            "initialValue": 46.666666666666664,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "loaded2",
+            "label": "Loaded, stage 2",
+            "initialValue": 46.666666666666664,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "loaded3",
+            "label": "Loaded, stage 3",
+            "initialValue": 46.666666666666664,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "idleTrucks",
+            "label": "Idle trucks at origin",
+            "initialValue": 30,
+            "unit": "trucks"
+        },
+        {
+            "symbol": "returning",
+            "label": "Empty trucks returning",
+            "initialValue": 70,
+            "unit": "trucks"
+        },
+        {
+            "symbol": "requested",
+            "label": "Orders waiting",
+            "initialValue": 35,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "arriving",
+            "label": "Arriving",
+            "initialValue": 70,
+            "unit": "TEU/day"
+        },
+        {
+            "symbol": "canLoad",
+            "label": "Loading capacity",
+            "initialValue": 240,
+            "unit": "TEU/day"
+        },
+        {
+            "symbol": "utilisation",
+            "label": "Fleet utilisation",
+            "initialValue": 0.8235294117647058,
+            "unit": ""
+        },
+        {
+            "symbol": "transportCost",
+            "label": "Transport cost",
+            "initialValue": 0,
+            "unit": "cost"
+        }
+    ],
+    "sharedParameters": [
+        {
+            "key": "leadTime",
+            "name": "Travel time",
+            "symbol": "leadTime",
+            "value": 2,
+            "unit": "day",
+            "scope": "instance"
+        },
+        {
+            "key": "distance",
+            "name": "Distance",
+            "symbol": "distance",
+            "value": 120,
+            "unit": "km",
+            "scope": "instance"
+        },
+        {
+            "key": "truckCapacity",
+            "name": "Truck capacity",
+            "symbol": "truckCapacity",
+            "value": 2,
+            "unit": "TEU/truck",
+            "scope": "project"
+        },
+        {
+            "key": "loadDays",
+            "name": "Truck turnaround at origin",
+            "symbol": "loadDays",
+            "value": 0.25,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
+            "key": "costPerKm",
+            "name": "Truck cost per km",
+            "symbol": "costPerKm",
+            "value": 1.5,
+            "unit": "cost/km",
+            "scope": "project"
+        },
+        {
+            "key": "fleetSize",
+            "name": "Fleet size",
+            "symbol": "fleetSize",
+            "value": 170,
+            "unit": "trucks",
+            "scope": "instance"
+        },
+        {
+            "key": "hireDays",
+            "name": "Time to hire or release trucks",
+            "symbol": "hireDays",
+            "value": 2,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
+            "key": "secondsPerDay",
+            "name": "Seconds per day",
+            "symbol": "secondsPerDay",
+            "value": 86400,
+            "unit": "s/day",
+            "scope": "project"
+        }
+    ],
+    "sourceTerms": [
+        {
+            "state": "loaded1",
+            "expression": "-\\frac{3}{\\mathrm{leadTime} \\cdot \\mathrm{secondsPerDay}} \\cdot \\mathrm{loaded1}",
+            "parameters": [
+                {
+                    "name": "Travel time",
+                    "symbol": "leadTime",
+                    "shared": "leadTime"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "loaded2",
+            "expression": "\\frac{3}{\\mathrm{leadTime} \\cdot \\mathrm{secondsPerDay}} \\cdot (\\mathrm{loaded1} - \\mathrm{loaded2})",
+            "parameters": [
+                {
+                    "name": "Travel time",
+                    "symbol": "leadTime",
+                    "shared": "leadTime"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "loaded3",
+            "expression": "\\frac{3}{\\mathrm{leadTime} \\cdot \\mathrm{secondsPerDay}} \\cdot \\mathrm{loaded2}",
+            "parameters": [
+                {
+                    "name": "Travel time",
+                    "symbol": "leadTime",
+                    "shared": "leadTime"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "arriving",
+            "expression": "\\frac{3 \\cdot \\mathrm{loaded3}}{\\mathrm{leadTime}}",
+            "parameters": [
+                {
+                    "name": "Travel time",
+                    "symbol": "leadTime",
+                    "shared": "leadTime"
+                }
+            ],
+            "setsValue": true
+        },
+        {
+            "state": "returning",
+            "expression": "\\frac{\\frac{\\mathrm{arriving}}{\\mathrm{truckCapacity}} - \\frac{\\mathrm{returning}}{\\mathrm{leadTime}}}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Travel time",
+                    "symbol": "leadTime",
+                    "shared": "leadTime"
+                },
+                {
+                    "name": "Truck capacity",
+                    "symbol": "truckCapacity",
+                    "shared": "truckCapacity"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "idleTrucks",
+            "expression": "\\frac{\\frac{\\mathrm{returning}}{\\mathrm{leadTime}} + \\begin{cases} \\frac{\\mathrm{fleetSize} - (\\frac{\\mathrm{loaded1} + \\mathrm{loaded2} + \\mathrm{loaded3}}{\\mathrm{truckCapacity}} + \\mathrm{returning} + \\mathrm{idleTrucks})}{\\mathrm{hireDays}} & \\frac{\\mathrm{loaded1} + \\mathrm{loaded2} + \\mathrm{loaded3}}{\\mathrm{truckCapacity}} + \\mathrm{returning} + \\mathrm{idleTrucks} < \\mathrm{fleetSize} \\\\ -\\frac{\\min(\\frac{\\mathrm{loaded1} + \\mathrm{loaded2} + \\mathrm{loaded3}}{\\mathrm{truckCapacity}} + \\mathrm{returning} + \\mathrm{idleTrucks} - \\mathrm{fleetSize}, \\mathrm{idleTrucks})}{\\mathrm{hireDays}} & \\text{otherwise} \\end{cases}}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Travel time",
+                    "symbol": "leadTime",
+                    "shared": "leadTime"
+                },
+                {
+                    "name": "Truck capacity",
+                    "symbol": "truckCapacity",
+                    "shared": "truckCapacity"
+                },
+                {
+                    "name": "Fleet size",
+                    "symbol": "fleetSize",
+                    "shared": "fleetSize"
+                },
+                {
+                    "name": "Time to hire or release trucks",
+                    "symbol": "hireDays",
+                    "shared": "hireDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "canLoad",
+            "expression": "\\frac{\\mathrm{idleTrucks} \\cdot \\mathrm{truckCapacity}}{\\mathrm{loadDays}}",
+            "parameters": [
+                {
+                    "name": "Truck capacity",
+                    "symbol": "truckCapacity",
+                    "shared": "truckCapacity"
+                },
+                {
+                    "name": "Truck turnaround at origin",
+                    "symbol": "loadDays",
+                    "shared": "loadDays"
+                }
+            ],
+            "setsValue": true
+        },
+        {
+            "state": "utilisation",
+            "expression": "\\frac{\\frac{\\mathrm{loaded1} + \\mathrm{loaded2} + \\mathrm{loaded3}}{\\mathrm{truckCapacity}} + \\mathrm{returning}}{\\frac{\\mathrm{loaded1} + \\mathrm{loaded2} + \\mathrm{loaded3}}{\\mathrm{truckCapacity}} + \\mathrm{returning} + \\mathrm{idleTrucks}}",
+            "parameters": [
+                {
+                    "name": "Truck capacity",
+                    "symbol": "truckCapacity",
+                    "shared": "truckCapacity"
+                }
+            ],
+            "setsValue": true
+        },
+        {
+            "state": "transportCost",
+            "expression": "\\frac{\\mathrm{arriving} \\cdot 2 \\cdot \\mathrm{distance} \\cdot \\mathrm{costPerKm}}{\\mathrm{truckCapacity} \\cdot \\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Distance",
+                    "symbol": "distance",
+                    "shared": "distance"
+                },
+                {
+                    "name": "Truck cost per km",
+                    "symbol": "costPerKm",
+                    "shared": "costPerKm"
+                },
+                {
+                    "name": "Truck capacity",
+                    "symbol": "truckCapacity",
+                    "shared": "truckCapacity"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        }
+    ]
+}

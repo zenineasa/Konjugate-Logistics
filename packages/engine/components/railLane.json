@@ -1,0 +1,193 @@
+{
+    "copyright": "Copyright © 2026 Zenin Easa Panthakkalakath",
+    "id": "railLane",
+    "kind": "node",
+    "name": "Rail lane",
+    "domains": [
+        "logistics"
+    ],
+    "description": "A rail freight service. Its loading capacity is trains per day times containers per train; loaded containers travel in three stages over the travel time. Orders waiting holds what the destination has ordered but not yet been loaded. Transport cost counts each delivered TEU at the rail cost per TEU. Connect it with a Rail shipment bundle.",
+    "shape": "cylinder",
+    "color": "#8a6fb0",
+    "states": [
+        {
+            "symbol": "loaded1",
+            "label": "Loaded, stage 1",
+            "initialValue": 0,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "loaded2",
+            "label": "Loaded, stage 2",
+            "initialValue": 0,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "loaded3",
+            "label": "Loaded, stage 3",
+            "initialValue": 0,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "requested",
+            "label": "Orders waiting",
+            "initialValue": 0,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "arriving",
+            "label": "Arriving",
+            "initialValue": 0,
+            "unit": "TEU/day"
+        },
+        {
+            "symbol": "canLoad",
+            "label": "Loading capacity",
+            "initialValue": 120,
+            "unit": "TEU/day"
+        },
+        {
+            "symbol": "transportCost",
+            "label": "Transport cost",
+            "initialValue": 0,
+            "unit": "cost"
+        }
+    ],
+    "sharedParameters": [
+        {
+            "key": "leadTime",
+            "name": "Travel time",
+            "symbol": "leadTime",
+            "value": 1,
+            "unit": "day",
+            "scope": "instance"
+        },
+        {
+            "key": "trainsPerDay",
+            "name": "Trains per day",
+            "symbol": "trainsPerDay",
+            "value": 2,
+            "unit": "train/day",
+            "scope": "instance"
+        },
+        {
+            "key": "boxesPerTrain",
+            "name": "Containers per train",
+            "symbol": "boxesPerTrain",
+            "value": 60,
+            "unit": "TEU/train",
+            "scope": "instance"
+        },
+        {
+            "key": "costPerTEU",
+            "name": "Rail cost per TEU",
+            "symbol": "costPerTEU",
+            "value": 150,
+            "unit": "cost/TEU",
+            "scope": "project"
+        },
+        {
+            "key": "secondsPerDay",
+            "name": "Seconds per day",
+            "symbol": "secondsPerDay",
+            "value": 86400,
+            "unit": "s/day",
+            "scope": "project"
+        }
+    ],
+    "sourceTerms": [
+        {
+            "state": "loaded1",
+            "expression": "-\\frac{3}{\\mathrm{leadTime} \\cdot \\mathrm{secondsPerDay}} \\cdot \\mathrm{loaded1}",
+            "parameters": [
+                {
+                    "name": "Travel time",
+                    "symbol": "leadTime",
+                    "shared": "leadTime"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "loaded2",
+            "expression": "\\frac{3}{\\mathrm{leadTime} \\cdot \\mathrm{secondsPerDay}} \\cdot (\\mathrm{loaded1} - \\mathrm{loaded2})",
+            "parameters": [
+                {
+                    "name": "Travel time",
+                    "symbol": "leadTime",
+                    "shared": "leadTime"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "loaded3",
+            "expression": "\\frac{3}{\\mathrm{leadTime} \\cdot \\mathrm{secondsPerDay}} \\cdot \\mathrm{loaded2}",
+            "parameters": [
+                {
+                    "name": "Travel time",
+                    "symbol": "leadTime",
+                    "shared": "leadTime"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "arriving",
+            "expression": "\\frac{3 \\cdot \\mathrm{loaded3}}{\\mathrm{leadTime}}",
+            "parameters": [
+                {
+                    "name": "Travel time",
+                    "symbol": "leadTime",
+                    "shared": "leadTime"
+                }
+            ],
+            "setsValue": true
+        },
+        {
+            "state": "canLoad",
+            "expression": "\\mathrm{trainsPerDay} \\cdot \\mathrm{boxesPerTrain}",
+            "parameters": [
+                {
+                    "name": "Trains per day",
+                    "symbol": "trainsPerDay",
+                    "shared": "trainsPerDay"
+                },
+                {
+                    "name": "Containers per train",
+                    "symbol": "boxesPerTrain",
+                    "shared": "boxesPerTrain"
+                }
+            ],
+            "setsValue": true
+        },
+        {
+            "state": "transportCost",
+            "expression": "\\frac{\\mathrm{arriving} \\cdot \\mathrm{costPerTEU}}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Rail cost per TEU",
+                    "symbol": "costPerTEU",
+                    "shared": "costPerTEU"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        }
+    ]
+}

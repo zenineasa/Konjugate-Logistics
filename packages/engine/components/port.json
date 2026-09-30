@@ -6,15 +6,39 @@
     "domains": [
         "logistics"
     ],
-    "description": "A container port's yard. Vessels discharge into the yard at a steady rate (TEU per day); Port dispatch bundles release containers from it to warehouses. Time t is in seconds, so every per-day rate is divided by the shared Seconds per day.",
+    "description": "A container port with its anchorage. Ships arrive at a steady rate (TEU per day) and wait at anchorage until the berths unload them into the yard, at most the berth capacity per day. During an outage window (outage start <= day < outage end) the berths run at their outage capacity instead. Anchorage wait is the waiting cargo divided by the berth capacity: roughly how many days a newly arriving ship waits. Road and rail shipments take containers from the yard. Time t is in seconds, so every per-day rate is divided by the shared Seconds per day.",
     "shape": "box",
     "color": "#2e7591",
     "states": [
         {
-            "symbol": "yard",
+            "symbol": "queue",
+            "label": "Waiting at anchorage",
+            "initialValue": 25,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "stock",
             "label": "Yard stock",
             "initialValue": 300,
             "unit": "TEU"
+        },
+        {
+            "symbol": "arrived",
+            "label": "Arrived (cumulative)",
+            "initialValue": 0,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "handled",
+            "label": "Unloaded (cumulative)",
+            "initialValue": 0,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "waitDays",
+            "label": "Anchorage wait",
+            "initialValue": 0.16666666666666666,
+            "unit": "day"
         }
     ],
     "sharedParameters": [
@@ -27,6 +51,46 @@
             "scope": "instance"
         },
         {
+            "key": "berthCapacity",
+            "name": "Berth capacity",
+            "symbol": "berthCapacity",
+            "value": 150,
+            "unit": "TEU/day",
+            "scope": "instance"
+        },
+        {
+            "key": "outageCapacity",
+            "name": "Berth capacity during outage",
+            "symbol": "outageCapacity",
+            "value": 150,
+            "unit": "TEU/day",
+            "scope": "instance"
+        },
+        {
+            "key": "outageStart",
+            "name": "Outage start",
+            "symbol": "outageStart",
+            "value": 20,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
+            "key": "outageEnd",
+            "name": "Outage end",
+            "symbol": "outageEnd",
+            "value": 50,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
+            "key": "berthingDays",
+            "name": "Unloading time",
+            "symbol": "berthingDays",
+            "value": 0.25,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
             "key": "secondsPerDay",
             "name": "Seconds per day",
             "symbol": "secondsPerDay",
@@ -37,7 +101,84 @@
     ],
     "sourceTerms": [
         {
-            "state": "yard",
+            "state": "queue",
+            "expression": "\\frac{\\mathrm{vesselArrivals} - \\min(\\begin{cases} \\mathrm{outageCapacity} & \\mathrm{outageStart} \\cdot \\mathrm{secondsPerDay} \\le t < \\mathrm{outageEnd} \\cdot \\mathrm{secondsPerDay} \\\\ \\mathrm{berthCapacity} & \\text{otherwise} \\end{cases}, \\frac{\\mathrm{queue}}{\\mathrm{berthingDays}})}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Vessel arrivals",
+                    "symbol": "vesselArrivals",
+                    "shared": "vesselArrivals"
+                },
+                {
+                    "name": "Berth capacity",
+                    "symbol": "berthCapacity",
+                    "shared": "berthCapacity"
+                },
+                {
+                    "name": "Berth capacity during outage",
+                    "symbol": "outageCapacity",
+                    "shared": "outageCapacity"
+                },
+                {
+                    "name": "Outage start",
+                    "symbol": "outageStart",
+                    "shared": "outageStart"
+                },
+                {
+                    "name": "Outage end",
+                    "symbol": "outageEnd",
+                    "shared": "outageEnd"
+                },
+                {
+                    "name": "Unloading time",
+                    "symbol": "berthingDays",
+                    "shared": "berthingDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "stock",
+            "expression": "\\frac{\\min(\\begin{cases} \\mathrm{outageCapacity} & \\mathrm{outageStart} \\cdot \\mathrm{secondsPerDay} \\le t < \\mathrm{outageEnd} \\cdot \\mathrm{secondsPerDay} \\\\ \\mathrm{berthCapacity} & \\text{otherwise} \\end{cases}, \\frac{\\mathrm{queue}}{\\mathrm{berthingDays}})}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Berth capacity",
+                    "symbol": "berthCapacity",
+                    "shared": "berthCapacity"
+                },
+                {
+                    "name": "Berth capacity during outage",
+                    "symbol": "outageCapacity",
+                    "shared": "outageCapacity"
+                },
+                {
+                    "name": "Outage start",
+                    "symbol": "outageStart",
+                    "shared": "outageStart"
+                },
+                {
+                    "name": "Outage end",
+                    "symbol": "outageEnd",
+                    "shared": "outageEnd"
+                },
+                {
+                    "name": "Unloading time",
+                    "symbol": "berthingDays",
+                    "shared": "berthingDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "arrived",
             "expression": "\\frac{\\mathrm{vesselArrivals}}{\\mathrm{secondsPerDay}}",
             "parameters": [
                 {
@@ -51,6 +192,74 @@
                     "shared": "secondsPerDay"
                 }
             ]
+        },
+        {
+            "state": "handled",
+            "expression": "\\frac{\\min(\\begin{cases} \\mathrm{outageCapacity} & \\mathrm{outageStart} \\cdot \\mathrm{secondsPerDay} \\le t < \\mathrm{outageEnd} \\cdot \\mathrm{secondsPerDay} \\\\ \\mathrm{berthCapacity} & \\text{otherwise} \\end{cases}, \\frac{\\mathrm{queue}}{\\mathrm{berthingDays}})}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Berth capacity",
+                    "symbol": "berthCapacity",
+                    "shared": "berthCapacity"
+                },
+                {
+                    "name": "Berth capacity during outage",
+                    "symbol": "outageCapacity",
+                    "shared": "outageCapacity"
+                },
+                {
+                    "name": "Outage start",
+                    "symbol": "outageStart",
+                    "shared": "outageStart"
+                },
+                {
+                    "name": "Outage end",
+                    "symbol": "outageEnd",
+                    "shared": "outageEnd"
+                },
+                {
+                    "name": "Unloading time",
+                    "symbol": "berthingDays",
+                    "shared": "berthingDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "waitDays",
+            "expression": "\\frac{\\mathrm{queue}}{\\max(\\begin{cases} \\mathrm{outageCapacity} & \\mathrm{outageStart} \\cdot \\mathrm{secondsPerDay} \\le t < \\mathrm{outageEnd} \\cdot \\mathrm{secondsPerDay} \\\\ \\mathrm{berthCapacity} & \\text{otherwise} \\end{cases}, 1)}",
+            "parameters": [
+                {
+                    "name": "Berth capacity",
+                    "symbol": "berthCapacity",
+                    "shared": "berthCapacity"
+                },
+                {
+                    "name": "Berth capacity during outage",
+                    "symbol": "outageCapacity",
+                    "shared": "outageCapacity"
+                },
+                {
+                    "name": "Outage start",
+                    "symbol": "outageStart",
+                    "shared": "outageStart"
+                },
+                {
+                    "name": "Outage end",
+                    "symbol": "outageEnd",
+                    "shared": "outageEnd"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ],
+            "setsValue": true
         }
     ]
 }

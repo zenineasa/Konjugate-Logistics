@@ -6,7 +6,7 @@
     "domains": [
         "logistics"
     ],
-    "description": "Serves a demand zone from a warehouse: ships towards clearing the zone's backlog within the response time, drawing at most this lane's allocation share of the warehouse's stock per draw-down time, and only while the warehouse holds more than the serve-only-above level (0 serves the zone until the warehouse is empty; a higher level protects stock for other zones). Two matched edges move the shipment out of the warehouse into the zone's deliveries and clear the same amount from its backlog, and a third feeds the zone's demand into the warehouse's forecast. Select the warehouse and the demand zone, then click this bundle.",
+    "description": "Serves a demand zone from a warehouse: ships towards clearing the zone's backlog within the response time, drawing at most this zone's allocation share of the warehouse's stock per draw-down time, and only while the warehouse holds more than the serve-only-above level (0 serves the zone until the warehouse is empty; a higher level protects stock for other zones). Two matched edges move the shipment out of the warehouse into the zone's deliveries and clear the same amount from its backlog, and a third feeds the zone's demand into the warehouse's forecast. Select the warehouse and the demand zone, then click this bundle.",
     "color": "#73b9c2",
     "endpoints": [
         {
@@ -75,7 +75,7 @@
             "to": "zone",
             "bidirectional": true,
             "ports": {
-                "source": "onHand",
+                "source": "stock",
                 "target": [
                     "delivered",
                     "backlog"
@@ -85,7 +85,7 @@
                 "role": "target",
                 "state": "delivered"
             },
-            "latex": "\\begin{cases} \\frac{1}{\\mathrm{secondsPerDay}} \\cdot \\min(\\frac{\\mathrm{targetBacklog}}{\\mathrm{responseDays}}, \\frac{\\mathrm{share} \\cdot \\mathrm{sourceOnHand}}{\\mathrm{drawDownDays}}) & \\mathrm{sourceOnHand} > \\mathrm{safetyStock} \\\\ 0 & \\text{otherwise} \\end{cases}",
+            "latex": "\\begin{cases} \\frac{1}{\\mathrm{secondsPerDay}} \\cdot \\min(\\frac{\\mathrm{targetBacklog}}{\\mathrm{responseDays}}, \\frac{\\mathrm{share} \\cdot \\mathrm{sourceStock}}{\\mathrm{drawDownDays}}) & \\mathrm{sourceStock} > \\mathrm{safetyStock} \\\\ 0 & \\text{otherwise} \\end{cases}",
             "parameters": [
                 {
                     "name": "Allocation share",
@@ -119,7 +119,7 @@
             "from": "warehouse",
             "to": "zone",
             "ports": {
-                "source": "onHand",
+                "source": "stock",
                 "target": [
                     "backlog"
                 ]
@@ -128,7 +128,7 @@
                 "role": "target",
                 "state": "backlog"
             },
-            "latex": "-(\\begin{cases} \\frac{1}{\\mathrm{secondsPerDay}} \\cdot \\min(\\frac{\\mathrm{targetBacklog}}{\\mathrm{responseDays}}, \\frac{\\mathrm{share} \\cdot \\mathrm{sourceOnHand}}{\\mathrm{drawDownDays}}) & \\mathrm{sourceOnHand} > \\mathrm{safetyStock} \\\\ 0 & \\text{otherwise} \\end{cases})",
+            "latex": "-(\\begin{cases} \\frac{1}{\\mathrm{secondsPerDay}} \\cdot \\min(\\frac{\\mathrm{targetBacklog}}{\\mathrm{responseDays}}, \\frac{\\mathrm{share} \\cdot \\mathrm{sourceStock}}{\\mathrm{drawDownDays}}) & \\mathrm{sourceStock} > \\mathrm{safetyStock} \\\\ 0 & \\text{otherwise} \\end{cases})",
             "parameters": [
                 {
                     "name": "Allocation share",

@@ -4,15 +4,17 @@
 // freshly built logistics plugin, builds a small port network through the real UI, and checks it
 // against the same network built from the templates by scripts/templatePlacement.mjs.
 //
-// Through the UI: place a port, two warehouses and two demand zones from the component library,
-// wire them with the Port dispatch and Delivery bundles, and set three shared parameters in the
-// parameters table (the second warehouse's lead time and each dispatch lane's gate share). Then:
+// Through the UI: place a port, two road lanes, two warehouses and two demand zones from the
+// component library, wire them with the Road shipment and Delivery bundles, and set three shared
+// parameters in the parameters table (the second lane's travel time and the second warehouse's
+// planned replenishment time, and the first lane's fleet size). Then:
 //   - the saved project has the same nodes, equations and shared parameters as the script-built one
 //   - the app's run conserves containers, and its final state matches the script-built model run
 //     through the engine CLI, state for state
 // Then the plugin's example, opened from the Examples dialog, must do what its guide says: hold
-// still in the baseline, and in forks at day 10 back up the yard behind a gate outage (serving
-// Zone 1 ahead of Zone 2) and amplify a demand step at the port (the bullwhip effect).
+// still in the baseline; in forks at day 10, queue ships at anchorage behind a berth outage
+// (serving Zone 1 ahead of Zone 2), find the trucks are the bottleneck when demand steps up, and
+// serve Zone 2 again once lane A's fleet grows.
 // Konjugate's own interaction runner cannot be extended from outside, so this drives the app
 // through Playwright, as the fintech toolbox does.
 
@@ -38,7 +40,7 @@ const day = 86400;
 const days = 120;
 const runConfiguration = { id: 1, name: `${days} days`, globalTimeStep: 0.05 * day, outputInterval: day };
 // Values the test sets in the parameters table, by shared-parameter symbol.
-const edits = { leadTime2: 3, gateShare: 0.7, gateShare2: 0.3 };
+const edits = { leadTime2: 3, planningLeadTime2: 3.5, fleetSize: 200 };
 const engineExecutable = konjugateModule(join('out', 'engine', process.platform === 'win32' ? 'konjugateEngine.exe' : 'konjugateEngine'));
 
 const env = { ...process.env };
@@ -51,9 +53,10 @@ const userData = join(scratch, 'userData');
 async function scriptBuiltNetwork() {
     const model = new ModelBuilder(await loadTemplates());
     const port = model.placeNode('port');
+    const lanes = [model.placeNode('roadLane'), model.placeNode('roadLane')];
     const warehouses = [model.placeNode('warehouse'), model.placeNode('warehouse')];
     const zones = [model.placeNode('demandZone'), model.placeNode('demandZone')];
-    for (const warehouse of warehouses) model.applyBundle('portDispatch', { port, warehouse });
+    warehouses.forEach((warehouse, index) => model.applyBundle('roadShipment', { origin: port, lane: lanes[index], destination: warehouse }));
     warehouses.forEach((warehouse, index) => model.applyBundle('delivery', { warehouse, zone: zones[index] }));
     for (const [symbol, value] of Object.entries(edits)) model.setShared(symbol, value);
     const document = model.document({ days });
@@ -87,14 +90,14 @@ const keyedValues = (document, sample) => {
     return new Map(sample.states.filter((state) => keys.has(state.stateId)).map((state) => [keys.get(state.stateId), state.value]));
 };
 
-// Containers are conserved: yard + warehouse stock and pipelines + delivered - arrivals so far.
-function containerTotal(document, values, time) {
-    const arrivals = document.sharedParameters.find((shared) => shared.symbol === 'vesselArrivals').value;
-    let total = -arrivals * time / day;
+// Containers are conserved: anchorage + stock everywhere + in transit + delivered - arrived so far.
+function containerTotal(document, values) {
+    let total = 0;
     document.nodes.forEach((node, index) => {
-        for (const symbol of ['yard', 'onHand', 'lane1', 'lane2', 'lane3', 'delivered']) {
+        for (const symbol of ['queue', 'stock', 'loaded1', 'loaded2', 'loaded3', 'delivered']) {
             if (values.has(`${index}.${symbol}`)) total += values.get(`${index}.${symbol}`);
         }
+        if (values.has(`${index}.arrived`)) total -= values.get(`${index}.arrived`);
     });
     return total;
 }
@@ -145,17 +148,20 @@ try {
         // The plugin's templates are discoverable, with their kinds.
         const components = (await window.evaluate(() => window.componentLibrary.list())).filter((component) => component.domains?.includes('logistics'));
         const kinds = Object.fromEntries(components.map((component) => [component.id, component.kind]));
-        assert.deepEqual(kinds, { port: 'node', warehouse: 'node', demandZone: 'node', portDispatch: 'bundle', delivery: 'bundle' });
+        assert.deepEqual(kinds, {
+            port: 'node', roadLane: 'node', railLane: 'node', warehouse: 'node', demandZone: 'node',
+            roadShipment: 'bundle', railShipment: 'bundle', delivery: 'bundle'
+        });
 
         // Place the nodes from the component library, in the script's order.
         const count = (index) => window.evaluate((i) => Number(document.querySelectorAll('.modelStatus span')[i].textContent.match(/\d+/)[0]), index);
         await window.click('#componentLibraryButton');
         await window.waitForSelector('#componentLibraryPanel:not([hidden])');
-        for (const [index, id] of ['port', 'warehouse', 'warehouse', 'demandZone', 'demandZone'].entries()) {
+        for (const [index, id] of ['port', 'roadLane', 'roadLane', 'warehouse', 'warehouse', 'demandZone', 'demandZone'].entries()) {
             await window.click(`[data-template-id="${id}"]`);
             await window.waitForFunction((expected) => Number(document.querySelectorAll('.modelStatus span')[0].textContent.match(/\d+/)[0]) === expected, index + 1);
         }
-        const [port, warehouseA, warehouseB, zone1, zone2] = await window.evaluate(() => window.__debugTransform.allNodeIds());
+        const [port, laneA, laneB, warehouseA, warehouseB, zone1, zone2] = await window.evaluate(() => window.__debugTransform.allNodeIds());
 
         // Wire them with the bundles: select exactly the endpoints, click the bundle, expect its edges.
         const applyBundle = async (bundleId, ids, expectedEdges) => {
@@ -165,8 +171,9 @@ try {
             await window.waitForFunction(([edges]) => Number(document.querySelectorAll('.modelStatus span')[1].textContent.match(/\d+/)[0]) === edges, [before + expectedEdges], { timeout: 10000 })
                 .catch(async () => { throw new Error(`${bundleId} did not add ${expectedEdges} edges: ${await window.textContent('#componentLibraryHint')}`); });
         };
-        await applyBundle('portDispatch', [port, warehouseA], 1);
-        await applyBundle('portDispatch', [port, warehouseB], 1);
+        // A road shipment has three endpoints; the app matches them by state symbols.
+        await applyBundle('roadShipment', [port, laneA, warehouseA], 6);
+        await applyBundle('roadShipment', [port, laneB, warehouseB], 6);
         await applyBundle('delivery', [warehouseA, zone1], 3);
         await applyBundle('delivery', [warehouseB, zone2], 3);
 
@@ -212,8 +219,8 @@ try {
 
     // --- The app built what the templates say. --------------------------------------------------
     const scriptBuilt = await scriptBuiltNetwork();
-    assert.equal(appBuilt.nodes.length, 5);
-    assert.equal(appBuilt.edges.length, 8);
+    assert.equal(appBuilt.nodes.length, 7);
+    assert.equal(appBuilt.edges.length, 2 * 6 + 2 * 3);
     const sharedSummary = (document) => Object.fromEntries(document.sharedParameters.map((shared) => [shared.symbol, shared.value]));
     assert.deepEqual(sharedSummary(appBuilt), sharedSummary(scriptBuilt), 'The app and the script should create the same shared parameters with the same values.');
     appBuilt.nodes.forEach((node, index) => {
@@ -228,14 +235,14 @@ try {
     // --- The app's run conserves containers and matches the script-built model run by the CLI. -----
     const appValues = keyedValues(appBuilt, appFinal);
     const initialValues = new Map(appBuilt.nodes.flatMap((node, index) => node.states.map((state) => [`${index}.${state.symbol}`, state.initialValue])));
-    const drift = containerTotal(appBuilt, appValues, days * day) - containerTotal(appBuilt, initialValues, 0);
+    const drift = containerTotal(appBuilt, appValues) - containerTotal(appBuilt, initialValues);
     assert.ok(Math.abs(drift) < 1e-6, `The app's run should conserve containers (drift ${drift} TEU).`);
     const cliValues = keyedValues(scriptBuilt, await finalStatesFromCli(scriptBuilt));
     assert.equal(appValues.size, cliValues.size);
     for (const [key, value] of cliValues) {
         assert.ok(Math.abs(appValues.get(key) - value) <= 1e-9 * Math.max(1, Math.abs(value)), `${key}: app ${appValues.get(key)} vs script-built ${value}.`);
     }
-    console.log(`✓ logistics interaction: the app placed and wired 5 nodes and 8 edges from the templates, matching the script-built network; its ${days}-day run conserved containers and matched the engine CLI on all ${cliValues.size} states.`);
+    console.log(`✓ logistics interaction: the app placed and wired 7 nodes and 18 edges from the templates, matching the script-built network; its ${days}-day run conserved containers and matched the engine CLI on all ${cliValues.size} states.`);
 
     // --- The example does what its guide says. ------------------------------------------------------
     const example = (await buildModels(join(scratch, 'models'))).find((model) => model.name === 'portWarehouseNetwork');
@@ -279,7 +286,7 @@ try {
             await openBranches();
             await exampleWindow.click('#forkHereButton');
             await exampleWindow.waitForSelector('#forkParameterPanel:not([hidden])');
-            assert.equal(await exampleWindow.locator('#forkParameterRows .liveParameterRow').count(), 3, 'The example should offer its three live controls.');
+            assert.equal(await exampleWindow.locator('#forkParameterRows .liveParameterRow').count(), 4, 'The example should offer its four live controls.');
             for (const [name, value] of Object.entries(values)) {
                 const input = `#forkParameterRows input[aria-label="${name} value"]`;
                 await exampleWindow.fill(input, String(value));
@@ -309,30 +316,42 @@ try {
         await startRun(exampleWindow, days);
         await exampleWindow.waitForFunction(() => document.querySelector('#statusText').textContent === 'Simulation complete', null, { timeout: 120000 });
         const [baseline] = await exampleJobs();
-        assert.ok(Math.abs(await valueAt(baseline, 'Port.yard', days) - 300) < 1e-6, 'Baseline: the yard should hold 300 TEU.');
-        assert.ok(Math.abs(await valueAt(baseline, 'Warehouse A.onHand', days) - 210) < 1e-6, 'Baseline: Warehouse A should hold 210 TEU.');
+        assert.ok(Math.abs(await valueAt(baseline, 'Port.queue', days) - 25) < 1e-6, 'Baseline: 25 TEU should wait at anchorage.');
+        assert.ok(Math.abs(await valueAt(baseline, 'Port.stock', days) - 300) < 1e-6, 'Baseline: the yard should hold 300 TEU.');
+        assert.ok(Math.abs(await valueAt(baseline, 'Warehouse A.stock', days) - 210) < 1e-6, 'Baseline: Warehouse A should hold 210 TEU.');
         for (const zone of ['Zone 1', 'Zone 2', 'Zone 3']) assert.ok(Math.abs(await fill(baseline, zone, 0, days) - 1) < 1e-9, `Baseline: ${zone} should be fully served.`);
 
-        // 2. A gate outage from day 20 to 50 backs up the yard; Zone 1 is served ahead of Zone 2.
-        const outage = await forkBaseline({ 'Gate capacity during outage': 30 });
-        assert.ok(Math.abs(await valueAt(outage, 'Port.yard', 50) - 2400) < 1, 'Outage: the yard should reach 2,400 TEU by day 50.');
-        const pipeline = (await Promise.all(['lane1', 'lane2', 'lane3'].map((lane) => valueAt(outage, `Warehouse A.${lane}`, 40)))).reduce((total, value) => total + value, 0);
-        assert.ok(pipeline < 25, `Outage: expediting should cut Warehouse A's pipeline to about 21 TEU (got ${pipeline}).`);
+        // 2. A berth outage from day 20 to 50 queues ships at anchorage; Zone 1 is served ahead of
+        // Zone 2, and the trucks limit the recovery.
+        const outage = await forkBaseline({ 'Berth capacity during outage': 30 });
+        assert.ok(Math.abs(await valueAt(outage, 'Port.queue', 50) - 2125) < 5, 'Outage: about 2,125 TEU should wait at anchorage by day 50.');
+        assert.ok(await valueAt(outage, 'Port.waitDays', 49) > 60, 'Outage: the anchorage wait should exceed 60 days.');
+        assert.ok(await valueAt(outage, 'Port.queue', 95) < 50, 'Outage: the anchorage should have cleared by day 95.');
         const zone1 = await fill(outage, 'Zone 1', 20, 60);
         const zone2 = await fill(outage, 'Zone 2', 20, 60);
-        assert.ok(zone1 > 0.9 && zone2 < 0.4, `Outage: Zone 1 should get over 90% of its orders (got ${zone1}) and Zone 2 under 40% (got ${zone2}).`);
-        assert.ok(await valueAt(outage, 'Port.yard', days) > 500, 'Outage: the yard should still be draining at day 120.');
+        assert.ok(zone1 > 0.75 && zone2 < 0.45, `Outage: Zone 1 should get about 80% of its orders (got ${zone1}) and Zone 2 about 41% (got ${zone2}).`);
+        assert.ok(await valueAt(outage, 'Zone 2.backlog', days) > 500, 'Outage: Zone 2 should still be far behind at day 120.');
 
-        // 3. A demand step with matching supply barely reaches customers but swings the port.
+        // 3. A demand step with matching ship arrivals: the port copes, lane A's trucks don't, and
+        // port dispatches overshoot (the bullwhip effect).
         const surge = await forkBaseline({ 'Demand step multiplier': 1.3, 'Vessel arrivals': 130 });
-        for (const zone of ['Zone 1', 'Zone 2', 'Zone 3']) assert.ok(await fill(surge, zone, 20, 60) > 0.99, `Surge: ${zone} should receive over 99% of its orders.`);
+        assert.ok(await valueAt(surge, 'Port.waitDays', 60) < 1, 'Surge: the anchorage wait should stay under a day.');
+        const surgeZone2 = await fill(surge, 'Zone 2', 60, days);
+        assert.ok(surgeZone2 < 0.85, `Surge: Zone 2 should receive about 79% of its orders after day 60 (got ${surgeZone2}).`);
+        assert.ok(Math.abs((await valueAt(surge, 'Road lane A.arriving', 100)) - 80) < 1, 'Surge: 170 trucks should carry about 80 TEU/day.');
         let peak = 0;
         for (let atDay = 21; atDay <= 60; atDay += 1) {
-            const dispatched = 130 - (await valueAt(surge, 'Port.yard', atDay) - await valueAt(surge, 'Port.yard', atDay - 1));
+            const dispatched = (await valueAt(surge, 'Port.handled', atDay) - await valueAt(surge, 'Port.handled', atDay - 1)) -
+                (await valueAt(surge, 'Port.stock', atDay) - await valueAt(surge, 'Port.stock', atDay - 1));
             peak = Math.max(peak, dispatched);
         }
-        assert.ok(peak > 140, `Surge: port dispatches should overshoot the new 130 TEU/day demand (peak ${peak}).`);
-        console.log(`✓ logistics example: the baseline holds still; the outage fork backs the yard up to 2,400 TEU and serves Zone 1 (${(100 * zone1).toFixed(0)}%) ahead of Zone 2 (${(100 * zone2).toFixed(0)}%); the demand fork swings port dispatches to ${peak.toFixed(0)} TEU/day.`);
+        assert.ok(peak > 120, `Surge: port dispatches should overshoot to over 120 TEU/day (peak ${peak}).`);
+
+        // 4. The same surge with lane A's fleet raised to 210: Zone 2 is served again.
+        const hired = await forkBaseline({ 'Demand step multiplier': 1.3, 'Vessel arrivals': 130, 'Fleet size': 210 });
+        const hiredZone2 = await fill(hired, 'Zone 2', 60, days);
+        assert.ok(hiredZone2 > 0.99, `More trucks: Zone 2 should receive over 99% of its orders (got ${hiredZone2}).`);
+        console.log(`✓ logistics example: the baseline holds still; the berth outage queues 2,125 TEU at anchorage and serves Zone 1 (${(100 * zone1).toFixed(0)}%) ahead of Zone 2 (${(100 * zone2).toFixed(0)}%); in the demand surge 170 trucks serve Zone 2 ${(100 * surgeZone2).toFixed(0)}% while port dispatches swing to ${peak.toFixed(0)} TEU/day, and 210 trucks serve it ${(100 * hiredZone2).toFixed(0)}%.`);
     } finally {
         await session.app.close().catch(() => {});
     }

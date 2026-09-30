@@ -6,7 +6,7 @@
     "domains": [
         "logistics"
     ],
-    "description": "A group of customers ordering at a steady rate, with an optional demand step: from the step day on, demand is multiplied by the step multiplier (1 for no step; both are shared by every zone). Orders add to the backlog; Delivery bundles clear it. Delivered and ordered are running totals, so backlog always equals its starting value plus ordered minus delivered.",
+    "description": "A group of customers ordering at a steady rate, with an optional demand step: from the step day on, demand is multiplied by the step multiplier (1 for no step; both are shared by every zone). Orders add to the backlog; Delivery bundles clear it. Delivered and ordered are running totals, so backlog always equals its starting value plus ordered minus delivered, and ordered minus delivered over a period gives the fill rate. Backlog cost accrues per TEU per day waiting.",
     "shape": "sphere",
     "color": "#52727a",
     "states": [
@@ -33,6 +33,12 @@
             "label": "Demand rate",
             "initialValue": 30,
             "unit": "TEU/day"
+        },
+        {
+            "symbol": "backlogCost",
+            "label": "Backlog cost",
+            "initialValue": 0,
+            "unit": "cost"
         }
     ],
     "sharedParameters": [
@@ -61,6 +67,14 @@
             "scope": "project"
         },
         {
+            "key": "backlogPenalty",
+            "name": "Backlog cost per TEU-day",
+            "symbol": "backlogPenalty",
+            "value": 5,
+            "unit": "cost/TEU/day",
+            "scope": "project"
+        },
+        {
             "key": "secondsPerDay",
             "name": "Seconds per day",
             "symbol": "secondsPerDay",
@@ -72,7 +86,6 @@
     "sourceTerms": [
         {
             "state": "demandRate",
-            "setsValue": true,
             "expression": "\\mathrm{baseDemand} \\cdot \\begin{cases} \\mathrm{stepMultiplier} & t \\ge \\mathrm{stepDay} \\cdot \\mathrm{secondsPerDay} \\\\ 1 & \\text{otherwise} \\end{cases}",
             "parameters": [
                 {
@@ -95,7 +108,8 @@
                     "symbol": "secondsPerDay",
                     "shared": "secondsPerDay"
                 }
-            ]
+            ],
+            "setsValue": true
         },
         {
             "state": "backlog",
@@ -112,6 +126,22 @@
             "state": "ordered",
             "expression": "\\frac{\\mathrm{demandRate}}{\\mathrm{secondsPerDay}}",
             "parameters": [
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "backlogCost",
+            "expression": "\\frac{\\mathrm{backlog} \\cdot \\mathrm{backlogPenalty}}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Backlog cost per TEU-day",
+                    "symbol": "backlogPenalty",
+                    "shared": "backlogPenalty"
+                },
                 {
                     "name": "Seconds per day",
                     "symbol": "secondsPerDay",

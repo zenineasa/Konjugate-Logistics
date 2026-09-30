@@ -13,6 +13,18 @@
         },
         {
             "kind": "component",
+            "componentId": "roadLane",
+            "apiVersion": 1,
+            "entry": "components/roadLane.json"
+        },
+        {
+            "kind": "component",
+            "componentId": "railLane",
+            "apiVersion": 1,
+            "entry": "components/railLane.json"
+        },
+        {
+            "kind": "component",
             "componentId": "warehouse",
             "apiVersion": 1,
             "entry": "components/warehouse.json"
@@ -25,9 +37,15 @@
         },
         {
             "kind": "component",
-            "componentId": "portDispatch",
+            "componentId": "roadShipment",
             "apiVersion": 1,
-            "entry": "components/portDispatch.json"
+            "entry": "components/roadShipment.json"
+        },
+        {
+            "kind": "component",
+            "componentId": "railShipment",
+            "apiVersion": 1,
+            "entry": "components/railShipment.json"
         },
         {
             "kind": "component",
@@ -43,7 +61,7 @@
             "domains": [
                 "logistics"
             ],
-            "description": "A port feeds two warehouses serving three customer zones. Fork it to close the port gate for a month, or to step up demand and watch the bullwhip effect.",
+            "description": "A port feeds two warehouses by road, serving three customer zones. Fork it to cut berth capacity for a month and watch ships queue, or to step up demand and find the trucks become the bottleneck.",
             "entry": "examples/portWarehouseNetwork.kjt",
             "guide": "examples/portWarehouseNetwork.md",
             "thumbnail": "examples/portWarehouseNetwork.png"

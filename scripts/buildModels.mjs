@@ -13,13 +13,15 @@ import { buildPortNetworkModel } from './portNetwork.mjs';
 const { encodeProjectFile } = await import(pathToFileURL(konjugateModule('src/projectFile.mjs')));
 
 // Port and warehouse network: the port network of scripts/portNetwork.mjs, balanced so the baseline
-// holds still, with three live controls to fork on: the gate capacity during the outage window
-// (days 20 to 50), the demand step multiplier (from day 20) and vessel arrivals.
+// holds still, with four live controls to fork on: the berth capacity during the outage window
+// (days 20 to 50), the demand step multiplier (from day 20), vessel arrivals, and road lane A's
+// fleet size.
 export async function portWarehouseNetwork() {
     const model = await buildPortNetworkModel();
     model.setLive('outageCapacity', { minimum: 0, maximum: 150, step: 5 });
     model.setLive('stepMultiplier', { minimum: 0.5, maximum: 2, step: 0.05 });
     model.setLive('vesselArrivals', { minimum: 0, maximum: 250, step: 5 });
+    model.setLive('fleetSize', { minimum: 0, maximum: 400, step: 5 });
     const document = model.document({ days: 120 });
     document.metadata.projectName = 'Port and warehouse network';
     const states = Object.fromEntries(document.nodes.flatMap((node) => node.states.map((state) => [`${node.name}.${state.symbol}`, state.id])));

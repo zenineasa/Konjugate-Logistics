@@ -51,12 +51,32 @@ test('a project-scoped shared parameter means the same thing in every template t
 
 test('the port network places from the templates with every equation valid and every endpoint matched', async () => {
     const document = await buildPortNetwork();
-    assert.equal(document.nodes.length, 6);
-    assert.equal(document.edges.length, 2 + 3 * 3);
+    // A port, two road lanes, two warehouses, three zones; six edges per road shipment, three per delivery.
+    assert.equal(document.nodes.length, 8);
+    assert.equal(document.edges.length, 2 * 6 + 3 * 3);
     const symbols = document.sharedParameters.map((shared) => shared.symbol);
     assert.equal(symbols.filter((symbol) => symbol === 'secondsPerDay').length, 1);
-    assert.ok(symbols.includes('leadTime') && symbols.includes('leadTime2'), 'Each warehouse must get its own lead time.');
+    assert.equal(symbols.filter((symbol) => symbol === 'truckCapacity').length, 1, 'Truck capacity is one definition across lanes and shipments.');
+    assert.ok(symbols.includes('leadTime') && symbols.includes('leadTime2'), 'Each road lane must get its own travel time.');
     assert.equal(document.sharedParameters.find((shared) => shared.symbol === 'leadTime2').value, 3);
+    const withRail = await buildPortNetwork({ railShare: 0.4 });
+    assert.equal(withRail.edges.length, 2 * 6 + 5 + 3 * 3, 'A rail shipment has five edges: no trucks to take.');
+});
+
+test('a road shipment conserves what it moves: containers into the lane equal those taken from the origin', async () => {
+    const templates = new Map(await Promise.all(componentContributions.map(async (contribution) => {
+        const template = JSON.parse(await readFile(join(packageDirectory, contribution.entry), 'utf8'));
+        return [template.id, template];
+    })));
+    const shipment = templates.get('roadShipment');
+    const byName = Object.fromEntries(shipment.edges.map((edge) => [edge.name, edge]));
+    // Goods and arrivals are bidirectional (what one side loses the other gains); the order book,
+    // trucks and on-order counts are matched directed edges on the same shipment expression.
+    assert.equal(byName.Dispatch.bidirectional, true);
+    assert.equal(byName.Arrive.bidirectional, true);
+    assert.equal(byName['Clear orders'].latex, `-${byName.Dispatch.latex}`);
+    assert.equal(byName.Receive.latex, `-${byName.Arrive.latex}`);
+    assert.match(byName['Take trucks'].latex, /truckCapacity/);
 });
 
 test('every contributed example has a generated model and a guide, and every guide is contributed', async () => {

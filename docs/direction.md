@@ -13,10 +13,10 @@ Build it as if it were the final version; present it as if it were the first. Ev
 A modelling layer, without a product on top:
 
 - **Engine features** the models needed: piecewise ("if") equations, simulation time `t`, parameters on node templates, and algebraic states that conserve across edges.
-- **A component library:** Port, Warehouse and Demand zone nodes; Port dispatch and Delivery bundles, tested to conserve containers.
-- **One generic example:** a port feeding two warehouses and three zones, forked for a gate outage and a demand step.
+- **A component library:** Port (anchorage queue, berth capacity, outage window, waiting time), Road lane (a truck fleet that loads, travels and returns, hired towards a target size), Rail lane, Warehouse and Demand zone nodes, with transport, holding and backlog costs; Road shipment, Rail shipment and Delivery bundles, tested to conserve containers and trucks.
+- **One generic example:** a port feeding two warehouses over two road lanes and three zones, forked for a berth outage and a demand surge that the fleet can't keep up with until it grows.
 
-Nothing has a location yet, travel times are typed-in constants, nothing is costed, trucks don't exist as a resource, and there is no live data.
+Nothing has a location yet, travel times are typed-in constants, trucks come in one size, and there is no live data.
 
 ## Who it is for
 
@@ -111,7 +111,7 @@ Every number says whether it is sourced, assumed or synthetic, and every sourced
 
 Each milestone ends with something that can be shown.
 
-1. **Lanes, fleets, ports and costs.** Road and rail lane bundles, fleet stocks by truck size, anchorage queues with berth capacity, cost and KPI accumulators. *Done when* the example reports vessel waiting time, cost, fill rate and truck utilisation, and adding berths, trains or trucks changes them.
+1. **Lanes, fleets, ports and costs.** (Mostly done: one truck size so far, and fill rate is worked out from the zones' running totals rather than kept as a state.) Road and rail lane bundles, fleet stocks by truck size, anchorage queues with berth capacity, cost and KPI accumulators. *Done when* the example reports vessel waiting time, cost, fill rate and truck utilisation, and adding berths, trains or trucks changes them.
 2. **Region import.** Region search, discovery from OpenStreetMap, clustering, significance ranking, the curation step with the coverage report, and model generation with in-process routing. A CSV of the user's own sites as an alternative input. *Done when* a region is loaded, curated, reported on and turned into a runnable model, and moving a site changes its lead times and costs.
 3. **Port activity and external drivers.** A PortWatch importer on the fintech importer pattern (fetch, cache, CSV), sea approaches per port, and generic chokepoint scenarios. *Done when* a port's modelled arrivals follow its PortWatch history and a chokepoint fork changes them.
 4. **The first showcase session.** A curated region, dated volumes, the synthetic fleet operator and the scripted scenarios. *Done when* it runs for a month under each scenario and every input is labelled sourced, assumed, synthetic or the user's.
