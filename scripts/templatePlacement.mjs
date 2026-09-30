@@ -84,6 +84,18 @@ export class ModelBuilder {
         for (const parameter of this.allParameters()) if (parameter.sharedParameterId === shared.id) parameter.value = value;
     }
 
+    // Makes a shared parameter live, with a slider, so a run can be forked with a new value -- what a
+    // user does in the parameters table. `control` is { minimum, maximum, step }.
+    setLive(symbol, control) {
+        const shared = this.sharedParameters.find((candidate) => candidate.symbol === symbol);
+        if (!shared) throw new Error(`No shared parameter "${symbol}".`);
+        if (!(control.minimum <= shared.value && shared.value <= control.maximum)) throw new Error(`${symbol} = ${shared.value} lies outside its slider.`);
+        for (const parameter of [shared, ...this.allParameters().filter((candidate) => candidate.sharedParameterId === shared.id)]) {
+            parameter.mode = 'live';
+            parameter.control = { ...control };
+        }
+    }
+
     allParameters() {
         return [
             ...this.nodes.flatMap((node) => node.sourceTerms.flatMap((term) => term.parameters ?? [])),

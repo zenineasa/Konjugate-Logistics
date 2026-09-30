@@ -4,7 +4,7 @@ A logistics extension for [Konjugate](https://github.com/zenineasa/Konjugate), t
 
 ## Status
 
-Early development. What exists today is a component library plugin, `konjugate.logistics.engine`, verified end to end against a real Konjugate build.
+Early development. What exists today is a component library plugin, `konjugate.logistics.engine`, with one example model, verified end to end against a real Konjugate build.
 
 ## What's in the component library
 
@@ -22,17 +22,23 @@ Every edge that moves containers (dispatch and delivery) is bidirectional, so wh
 
 **Units.** Stocks are in TEU (twenty-foot equivalent units). Simulation time `t` is in seconds, as everywhere in Konjugate. Rates are entered per day and divided by one shared `secondsPerDay` parameter, so a 120-day run has a target time of 120 × 86400 s.
 
-**Shared parameters.** Quantities that belong to one node or lane are created per placement, so each warehouse has its own lead time and each lane its own share. You can change them in the parameters table or in a fork. Model-wide constants, such as the stock cover target, the demand smoothing time and the gate capacity, are one definition shared by every component that uses them.
+**Shared parameters.** Quantities that belong to one node or lane are created per placement, so each warehouse has its own lead time and each lane its own share. You can change them in the parameters table, and in a fork once you make them live. Model-wide constants, such as the stock cover target, the demand smoothing time and the gate capacity, are one definition shared by every component that uses them.
+
+## Example
+
+**Port and warehouse network** appears in Konjugate's Examples dialog once the plugin is installed. A port feeds two warehouses serving three customer zones. The baseline is balanced and holds still; the guide that comes with it forks the run at day 10 to close the port gate for a month, or to step up demand and show the bullwhip effect at the port. The model is generated from the templates by `scripts/buildModels.mjs`, and its guide is `guides/portWarehouseNetwork.md`.
 
 ## Development
 
 This repository sits next to a Konjugate checkout (`../konjugate`, or set `KONJUGATE_DIR`). It needs a Konjugate recent enough to support node-template parameters and the algebraic-state fixes, with its engine built (`npm run build:engine` there). The scripts use Konjugate's own package, validation and project-file code, so what passes here is what the app accepts.
 
-- `npm run build` builds the plugin into `out/konjugate.logistics.engine-<version>.kjp`. The version comes from `package.json`.
+- `npm run build` builds the plugin into `out/konjugate.logistics.engine-<version>.kjp`, with the example model, its guide and its thumbnail. The version comes from `package.json`.
+- `npm run build:models` writes the example models to `models/`, so a model's structure is reviewable in git.
+- `npm run generate:example-thumbnails` opens each example in the real app and saves its preview to `thumbnails/`. Run it when an example's layout changes.
 - `npm run install:dev` builds, then installs into your local Konjugate's `userData/packages` (override with `KONJUGATE_USER_DATA`).
 - `npm test` runs the unit tests: every template passes Konjugate's template validator, every per-day rate goes through `secondsPerDay`, and shared constants agree across templates.
 - `npm run test:engine` builds a port network from the templates (`scripts/portNetwork.mjs`) and runs it through the engine CLI in three scenarios: baseline, gate outage and demand step. Each must conserve containers and match Konjugate's own logistics test model state for state.
-- `npm run test:interaction` launches the real Konjugate app with a scratch user-data directory (never yours), installs the built plugin, and builds a network through the UI: placing nodes, applying bundles and editing shared parameters. It checks the saved project against the same network built by script, and the app's run against the engine CLI. It uses Playwright from the Konjugate checkout.
+- `npm run test:interaction` launches the real Konjugate app with a scratch user-data directory (never yours), installs the built plugin, and builds a network through the UI: placing nodes, applying bundles and editing shared parameters. It checks the saved project against the same network built by script, and the app's run against the engine CLI. It then opens the example from the Examples dialog, forks it as the guide describes, and checks the guide's claims. It uses Playwright from the Konjugate checkout.
 
 `scripts/templatePlacement.mjs` places templates the way the app does, so tests and models built by script run exactly what the templates say.
 

@@ -8,7 +8,9 @@
   "copyright": "Copyright © 2026 Zenin Easa Panthakkalakath",
   "scripts": {
     "build": "node scripts/build.mjs",
+    "build:models": "node scripts/buildModels.mjs",
     "install:dev": "node scripts/build.mjs && node scripts/installDev.mjs",
+    "generate:example-thumbnails": "node scripts/build.mjs && node scripts/generateExampleThumbnails.mjs",
     "test": "node --test tests/unit/*.test.mjs",
     "test:engine": "node tests/engine/portNetwork.mjs",
     "test:interaction": "node scripts/build.mjs && node tests/interaction/run.mjs"

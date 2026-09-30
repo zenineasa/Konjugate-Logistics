@@ -10,6 +10,9 @@
 //   - the saved project has the same nodes, equations and shared parameters as the script-built one
 //   - the app's run conserves containers, and its final state matches the script-built model run
 //     through the engine CLI, state for state
+// Then the plugin's example, opened from the Examples dialog, must do what its guide says: hold
+// still in the baseline, and in forks at day 10 back up the yard behind a gate outage (serving
+// Zone 1 ahead of Zone 2) and amplify a demand step at the port (the bullwhip effect).
 // Konjugate's own interaction runner cannot be extended from outside, so this drives the app
 // through Playwright, as the fintech toolbox does.
 
@@ -20,6 +23,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { buildModels } from '../../scripts/buildModels.mjs';
 import { installBuiltPackages } from '../../scripts/installDev.mjs';
 import { konjugateDir, konjugateModule } from '../../scripts/konjugatePaths.mjs';
 import { loadTemplates, ModelBuilder } from '../../scripts/templatePlacement.mjs';
@@ -95,6 +99,36 @@ function containerTotal(document, values, time) {
     return total;
 }
 
+// Launches Konjugate (on `projectPath` when given), remembering every engine job so results can be
+// read back by id; the caller closes the app.
+async function launch(projectPath = null) {
+    const app = await electron.launch({ executablePath: electronPath, args: [konjugateDir, `--user-data-dir=${userData}`, ...(projectPath ? [projectPath] : [])], env });
+    await app.evaluate(({ ipcMain }) => {
+        globalThis.logisticsJobIds = [];
+        const original = ipcMain._invokeHandlers.get('engineStart');
+        ipcMain._invokeHandlers.set('engineStart', async (...args) => {
+            const execution = await original(...args);
+            globalThis.logisticsJobIds.push(execution.jobId);
+            return execution;
+        });
+    });
+    const window = await app.firstWindow();
+    await window.waitForLoadState('domcontentloaded');
+    await window.waitForFunction(() => typeof window.componentLibrary?.list === 'function');
+    const jobIds = () => app.evaluate(() => globalThis.logisticsJobIds);
+    return { app, window, jobIds };
+}
+
+// Offline run from the open launch dialog to `days`.
+async function startRun(window, days) {
+    await window.evaluate((time) => {
+        document.querySelector('#runOnlineMode').checked = false;
+        document.querySelector('#runOnlineMode').dispatchEvent(new Event('change', { bubbles: true }));
+        document.querySelector('#runTargetTime').value = time;
+    }, String(days * day));
+    await window.click('#startRun');
+}
+
 try {
     await installBuiltPackages(userData);
     const projectPath = join(scratch, 'network.kjt');
@@ -103,23 +137,10 @@ try {
         runConfigurations: [runConfiguration], activeRunConfigurationId: runConfiguration.id
     })));
 
-    const app = await electron.launch({ executablePath: electronPath, args: [konjugateDir, `--user-data-dir=${userData}`, projectPath], env });
+    const { app, window, jobIds } = await launch(projectPath);
     let appBuilt;
     let appFinal;
     try {
-        // Test-only: remember every engine job so its results can be read back by id.
-        await app.evaluate(({ ipcMain }) => {
-            globalThis.logisticsJobIds = [];
-            const original = ipcMain._invokeHandlers.get('engineStart');
-            ipcMain._invokeHandlers.set('engineStart', async (...args) => {
-                const execution = await original(...args);
-                globalThis.logisticsJobIds.push(execution.jobId);
-                return execution;
-            });
-        });
-        const window = await app.firstWindow();
-        await window.waitForLoadState('domcontentloaded');
-        await window.waitForFunction(() => typeof window.componentLibrary?.list === 'function');
 
         // The plugin's templates are discoverable, with their kinds.
         const components = (await window.evaluate(() => window.componentLibrary.list())).filter((component) => component.domains?.includes('logistics'));
@@ -181,14 +202,9 @@ try {
 
         // Run it in the app to the target time.
         await window.click('#runButton');
-        await window.evaluate((time) => {
-            document.querySelector('#runOnlineMode').checked = false;
-            document.querySelector('#runOnlineMode').dispatchEvent(new Event('change', { bubbles: true }));
-            document.querySelector('#runTargetTime').value = time;
-        }, String(days * day));
-        await window.click('#startRun');
+        await startRun(window, days);
         await window.waitForFunction(() => document.querySelector('#statusText').textContent === 'Simulation complete', null, { timeout: 120000 });
-        const [jobId] = await app.evaluate(() => globalThis.logisticsJobIds);
+        const [jobId] = await jobIds();
         appFinal = await window.evaluate(([id, time]) => window.engine.readResultSample(id, time), [jobId, days * day]);
     } finally {
         await app.close().catch(() => {});
@@ -220,6 +236,106 @@ try {
         assert.ok(Math.abs(appValues.get(key) - value) <= 1e-9 * Math.max(1, Math.abs(value)), `${key}: app ${appValues.get(key)} vs script-built ${value}.`);
     }
     console.log(`✓ logistics interaction: the app placed and wired 5 nodes and 8 edges from the templates, matching the script-built network; its ${days}-day run conserved containers and matched the engine CLI on all ${cliValues.size} states.`);
+
+    // --- The example does what its guide says. ------------------------------------------------------
+    const example = (await buildModels(join(scratch, 'models'))).find((model) => model.name === 'portWarehouseNetwork');
+    const session = await launch();
+    try {
+        const { window: exampleWindow, jobIds: exampleJobs } = session;
+        // Loading an example over the untitled project may ask to discard it; answer from main.
+        await session.app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 1 }); });
+        await exampleWindow.click('#exampleButton');
+        await exampleWindow.waitForSelector('#examplesExplorerDialog[open]');
+        await exampleWindow.click('.examplesExplorerItem[data-example-id="portWarehouseNetwork.kjt"]');
+        await exampleWindow.click('#examplesExplorerLoad');
+        await exampleWindow.waitForFunction(() => !document.querySelector('#examplesExplorerDialog').open);
+        await exampleWindow.waitForSelector('#runButton:not([disabled])', { timeout: 30000 });
+
+        // A branch's value of `name` ("Port.yard") at `atDay`.
+        const valueAt = async (jobId, name, atDay) => {
+            const sample = await exampleWindow.evaluate(([id, time]) => window.engine.readResultSample(id, time), [jobId, atDay * day]);
+            return sample.states.find((state) => state.stateId === example.states[name]).value;
+        };
+        // Share of a zone's orders delivered between two days.
+        const fill = async (jobId, zone, from, to) => (
+            (await valueAt(jobId, `${zone}.delivered`, to) - await valueAt(jobId, `${zone}.delivered`, from)) /
+            (await valueAt(jobId, `${zone}.ordered`, to) - await valueAt(jobId, `${zone}.ordered`, from)));
+        // Forks the baseline branch at day 10 with the given live values (by name) and runs to day 120.
+        // Forking lives in the Branches panel: the tree of branches, with Fork here at the top.
+        const openBranches = async () => {
+            if (await exampleWindow.evaluate(() => document.querySelector('#branchesPanel').hidden)) await exampleWindow.click('#branchesButton');
+            await exampleWindow.waitForSelector('#branchesPanel:not([hidden])');
+        };
+        const forkBaseline = async (values) => {
+            await openBranches();
+            const branchButtons = exampleWindow.locator('#branchTree .branchTreeButton');
+            if (await branchButtons.count() > 1) await branchButtons.first().click();
+            await exampleWindow.evaluate((time) => {
+                const timeline = document.querySelector('#resultTimeline');
+                timeline.value = time;
+                timeline.dispatchEvent(new Event('input', { bubbles: true }));
+            }, String(10 * day));
+            const branchesBefore = (await exampleJobs()).length;
+            await openBranches();
+            await exampleWindow.click('#forkHereButton');
+            await exampleWindow.waitForSelector('#forkParameterPanel:not([hidden])');
+            assert.equal(await exampleWindow.locator('#forkParameterRows .liveParameterRow').count(), 3, 'The example should offer its three live controls.');
+            for (const [name, value] of Object.entries(values)) {
+                const input = `#forkParameterRows input[aria-label="${name} value"]`;
+                await exampleWindow.fill(input, String(value));
+                await exampleWindow.dispatchEvent(input, 'change');
+            }
+            await exampleWindow.click('#confirmForkParameters');
+            await exampleWindow.waitForSelector('#runLaunchDialog[open]');
+            await startRun(exampleWindow, days);
+            // The fork's own run: wait until it has started and has reached the target time.
+            const deadline = Date.now() + 120000;
+            let jobs = await exampleJobs();
+            while (jobs.length === branchesBefore && Date.now() < deadline) {
+                await new Promise((resolve) => setTimeout(resolve, 200));
+                jobs = await exampleJobs();
+            }
+            assert.equal(jobs.length, branchesBefore + 1, 'The fork should start exactly one new run.');
+            const jobId = jobs.at(-1);
+            while (!(await exampleWindow.evaluate(([id, time]) => window.engine.readResultSample(id, time), [jobId, days * day]))) {
+                if (Date.now() > deadline) throw new Error('The fork did not reach its target time.');
+                await new Promise((resolve) => setTimeout(resolve, 500));
+            }
+            return jobId;
+        };
+
+        // 1. The baseline holds still.
+        await exampleWindow.click('#runButton');
+        await startRun(exampleWindow, days);
+        await exampleWindow.waitForFunction(() => document.querySelector('#statusText').textContent === 'Simulation complete', null, { timeout: 120000 });
+        const [baseline] = await exampleJobs();
+        assert.ok(Math.abs(await valueAt(baseline, 'Port.yard', days) - 300) < 1e-6, 'Baseline: the yard should hold 300 TEU.');
+        assert.ok(Math.abs(await valueAt(baseline, 'Warehouse A.onHand', days) - 210) < 1e-6, 'Baseline: Warehouse A should hold 210 TEU.');
+        for (const zone of ['Zone 1', 'Zone 2', 'Zone 3']) assert.ok(Math.abs(await fill(baseline, zone, 0, days) - 1) < 1e-9, `Baseline: ${zone} should be fully served.`);
+
+        // 2. A gate outage from day 20 to 50 backs up the yard; Zone 1 is served ahead of Zone 2.
+        const outage = await forkBaseline({ 'Gate capacity during outage': 30 });
+        assert.ok(Math.abs(await valueAt(outage, 'Port.yard', 50) - 2400) < 1, 'Outage: the yard should reach 2,400 TEU by day 50.');
+        const pipeline = (await Promise.all(['lane1', 'lane2', 'lane3'].map((lane) => valueAt(outage, `Warehouse A.${lane}`, 40)))).reduce((total, value) => total + value, 0);
+        assert.ok(pipeline < 25, `Outage: expediting should cut Warehouse A's pipeline to about 21 TEU (got ${pipeline}).`);
+        const zone1 = await fill(outage, 'Zone 1', 20, 60);
+        const zone2 = await fill(outage, 'Zone 2', 20, 60);
+        assert.ok(zone1 > 0.9 && zone2 < 0.4, `Outage: Zone 1 should get over 90% of its orders (got ${zone1}) and Zone 2 under 40% (got ${zone2}).`);
+        assert.ok(await valueAt(outage, 'Port.yard', days) > 500, 'Outage: the yard should still be draining at day 120.');
+
+        // 3. A demand step with matching supply barely reaches customers but swings the port.
+        const surge = await forkBaseline({ 'Demand step multiplier': 1.3, 'Vessel arrivals': 130 });
+        for (const zone of ['Zone 1', 'Zone 2', 'Zone 3']) assert.ok(await fill(surge, zone, 20, 60) > 0.99, `Surge: ${zone} should receive over 99% of its orders.`);
+        let peak = 0;
+        for (let atDay = 21; atDay <= 60; atDay += 1) {
+            const dispatched = 130 - (await valueAt(surge, 'Port.yard', atDay) - await valueAt(surge, 'Port.yard', atDay - 1));
+            peak = Math.max(peak, dispatched);
+        }
+        assert.ok(peak > 140, `Surge: port dispatches should overshoot the new 130 TEU/day demand (peak ${peak}).`);
+        console.log(`✓ logistics example: the baseline holds still; the outage fork backs the yard up to 2,400 TEU and serves Zone 1 (${(100 * zone1).toFixed(0)}%) ahead of Zone 2 (${(100 * zone2).toFixed(0)}%); the demand fork swings port dispatches to ${peak.toFixed(0)} TEU/day.`);
+    } finally {
+        await session.app.close().catch(() => {});
+    }
 } finally {
     await rm(scratch, { recursive: true, force: true });
 }

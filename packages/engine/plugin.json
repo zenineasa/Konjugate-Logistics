@@ -34,6 +34,19 @@
             "componentId": "delivery",
             "apiVersion": 1,
             "entry": "components/delivery.json"
+        },
+        {
+            "kind": "example",
+            "exampleId": "portWarehouseNetwork",
+            "apiVersion": 1,
+            "name": "Port and warehouse network",
+            "domains": [
+                "logistics"
+            ],
+            "description": "A port feeds two warehouses serving three customer zones. Fork it to close the port gate for a month, or to step up demand and watch the bullwhip effect.",
+            "entry": "examples/portWarehouseNetwork.kjt",
+            "guide": "examples/portWarehouseNetwork.md",
+            "thumbnail": "examples/portWarehouseNetwork.png"
         }
     ],
     "permissions": []

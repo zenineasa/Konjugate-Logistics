@@ -6,12 +6,14 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { konjugateModule, logisticsRoot } from '../../scripts/konjugatePaths.mjs';
+import { buildModels } from '../../scripts/buildModels.mjs';
 import { buildPortNetwork } from '../../scripts/portNetwork.mjs';
 
 const { validateComponentTemplate } = await import(pathToFileURL(konjugateModule('src/componentTemplate.mjs')));
 const packageDirectory = join(logisticsRoot, 'packages', 'engine');
 const manifest = JSON.parse(await readFile(join(packageDirectory, 'plugin.json'), 'utf8'));
 const componentContributions = manifest.contributes.filter((contribution) => contribution.kind === 'component');
+const exampleContributions = manifest.contributes.filter((contribution) => contribution.kind === 'example');
 const templates = await Promise.all(componentContributions.map(async (contribution) => JSON.parse(await readFile(join(packageDirectory, contribution.entry), 'utf8'))));
 
 test('every contributed component passes Konjugate\'s template validator', () => {
@@ -55,4 +57,24 @@ test('the port network places from the templates with every equation valid and e
     assert.equal(symbols.filter((symbol) => symbol === 'secondsPerDay').length, 1);
     assert.ok(symbols.includes('leadTime') && symbols.includes('leadTime2'), 'Each warehouse must get its own lead time.');
     assert.equal(document.sharedParameters.find((shared) => shared.symbol === 'leadTime2').value, 3);
+});
+
+test('every contributed example has a generated model and a guide, and every guide is contributed', async () => {
+    const built = await buildModels(join(logisticsRoot, 'out', 'models'));
+    const guides = (await readdir(join(logisticsRoot, 'guides'))).map((name) => name.replace(/\.md$/, '')).sort();
+    assert.deepEqual(exampleContributions.map((entry) => entry.exampleId).sort(), guides);
+    for (const contribution of exampleContributions) {
+        const model = built.find((candidate) => candidate.name === contribution.exampleId);
+        assert.ok(model, `No generated model for ${contribution.exampleId}.`);
+        assert.equal(contribution.entry, `examples/${contribution.exampleId}.kjt`);
+        assert.equal(contribution.guide, `examples/${contribution.exampleId}.md`);
+        assert.equal(contribution.thumbnail, `examples/${contribution.exampleId}.png`);
+        assert.ok(contribution.domains.includes('logistics'));
+        // Its live controls are what the guide forks on: each has a slider holding its value.
+        const live = model.document.sharedParameters.filter((shared) => shared.mode === 'live');
+        assert.ok(live.length > 0, `${contribution.exampleId} has no live control to fork on.`);
+        for (const shared of live) {
+            assert.ok(shared.control.minimum <= shared.value && shared.value <= shared.control.maximum, `${shared.symbol} lies outside its slider.`);
+        }
+    }
 });

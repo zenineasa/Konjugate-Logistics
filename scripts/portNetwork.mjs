@@ -17,6 +17,12 @@ export const portNetworkDefaults = {
 
 export async function buildPortNetwork(options = {}) {
     const settings = { ...portNetworkDefaults, ...options };
+    return (await buildPortNetworkModel(settings)).document({ days: settings.days });
+}
+
+// The same network, as a ModelBuilder that can still be changed before its document is taken.
+export async function buildPortNetworkModel(options = {}) {
+    const settings = { ...portNetworkDefaults, ...options };
     const model = new ModelBuilder(await loadTemplates());
 
     const port = model.placeNode('port', { position: [-8, 0, 0], shared: { vesselArrivals: settings.vesselArrivals } });
@@ -45,6 +51,5 @@ export async function buildPortNetwork(options = {}) {
     model.applyBundle('delivery', { warehouse: warehouseA, zone: zone1 }, { shared: { share: 0.5 } });
     model.applyBundle('delivery', { warehouse: warehouseA, zone: zone2 }, { shared: { share: 0.5, safetyStock: 60 } });
     model.applyBundle('delivery', { warehouse: warehouseB, zone: zone3 }, { shared: { share: 1 } });
-
-    return model.document({ days: settings.days });
+    return model;
 }
