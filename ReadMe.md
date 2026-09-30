@@ -4,7 +4,7 @@ A logistics extension for [Konjugate](https://github.com/zenineasa/Konjugate), t
 
 ## Status
 
-Early development. What exists today is a component library plugin, `konjugate.logistics.engine`, with one example model, verified end to end against a real Konjugate build.
+Early development. What exists today is a component library plugin, `konjugate.logistics.engine`, with one example model, verified end to end against a real Konjugate build, and the first half of region import: the code that turns OpenStreetMap data for any region into a runnable model. The window that drives it is next.
 
 ## What's in the component library
 
@@ -31,6 +31,27 @@ Every edge that moves containers (dispatch, arrival and delivery) is bidirection
 
 **Port and warehouse network** appears in Konjugate's Examples dialog once the plugin is installed. A port feeds two warehouses over two road lanes, serving three customer zones. The baseline is balanced and holds still. The guide that comes with it forks the run at day 10 to take most of the berths out for a month, so ships queue at anchorage, and to step up demand, so the trucks become the bottleneck until the fleet grows. The model is generated from the templates by `scripts/buildModels.mjs`, and its guide is `guides/portWarehouseNetwork.md`.
 
+## Region import (in progress)
+
+Nothing in the toolbox is written for a particular place. For any region, `packages/toolbox/lib/` does the following:
+
+1. **Asks OpenStreetMap** (through the Overpass API) for ports, logistics sites, major roads, rail and towns. Each kind is a separate query, which keeps every answer small (`overpass.mjs`).
+2. **Finds candidates** (`discovery.mjs`):
+    - **Ports:** terminals close together are grouped into one port, and marinas and fishing harbours are left out.
+    - **Logistics zones:** warehouses are grouped into zones and named after their estate. Where warehouses are poorly mapped, industrial land stands in for them.
+    - **Towns:** population comes from OpenStreetMap where it is mapped.
+
+   Every candidate is ranked by significance. A coverage report measures how well each kind is mapped in this region and says in plain words what the data can't see.
+3. **Routes** over the major roads in-process (`roadGraph.mjs`). Nearby sites use local streets, and a site far from any road gets a straight-line estimate, labelled as such.
+4. **Builds the model** from the templates (`regionModel.mjs`):
+    - Each town is served from its nearest zone.
+    - Each zone is supplied by nearby ports over road lanes whose travel times and distances come from routing.
+    - Flows are balanced so every port ships what arrives, and every initial value is the steady state, so the baseline holds still.
+    - Every value records whether it was routed, assumed or the user's own.
+5. **Takes the user's own sites** from a CSV of ports, warehouses and customers (`sites.mjs`).
+
+Until port activity is matched (Milestone 3), each port starts with an assumed 100 TEU/day, which the user can change.
+
 ## Development
 
 This repository sits next to a Konjugate checkout (`../konjugate`, or set `KONJUGATE_DIR`). It needs a Konjugate recent enough to support node-template parameters and to settle algebraic states before the first step, with its engine built (`npm run build:engine` there). The scripts use Konjugate's own package, validation and project-file code, so what passes here is what the app accepts.
@@ -40,7 +61,12 @@ This repository sits next to a Konjugate checkout (`../konjugate`, or set `KONJU
 - `npm run generate:example-thumbnails` opens each example in the real app and saves its preview to `thumbnails/`. Run it when an example's layout changes.
 - `npm run install:dev` builds, then installs into your local Konjugate's `userData/packages` (override with `KONJUGATE_USER_DATA`).
 - `npm test` runs the unit tests: every template passes Konjugate's template validator, every per-day rate goes through `secondsPerDay`, and shared constants agree across templates.
-- `npm run test:engine` builds a port network from the templates (`scripts/portNetwork.mjs`) and runs it through the engine CLI: a steady baseline, a berth outage, a truck shortage, rail relief and fleet hiring. Each must conserve containers and trucks, keep every warehouse's on-order count equal to what its lanes hold, and match the figures worked out by hand.
+- `npm run test:engine` runs two models through the engine CLI:
+    - a port network built from the templates (`scripts/portNetwork.mjs`), in five scenarios: a steady baseline, a berth outage, a truck shortage, rail relief and fleet hiring;
+    - a model built by region import from a made-up region (`tests/fixtures/syntheticRegion.mjs`), in its baseline and a berth outage.
+
+  Each run must conserve containers and trucks, keep every warehouse's on-order count equal to what its lanes hold, and match the figures worked out by hand.
+- `node scripts/liveRegionCheck.mjs --place "<place>" [--radius 40] [--run]` (or `--bbox south,west,north,east`) runs region import on real OpenStreetMap data. It fetches from the public Overpass server, caches the answers in `out/regionCache/`, and prints the coverage report, the candidates and the model. With `--run`, it also checks that the model's baseline holds still.
 - `npm run test:interaction` launches the real Konjugate app with a scratch user-data directory (never yours), installs the built plugin, and builds a network through the UI: placing nodes, applying bundles and editing shared parameters. It checks the saved project against the same network built by script, and the app's run against the engine CLI. It then opens the example from the Examples dialog, forks it as the guide describes, and checks the guide's claims. It uses Playwright from the Konjugate checkout.
 
 `scripts/templatePlacement.mjs` places templates the way the app does, so tests and models built by script run exactly what the templates say.

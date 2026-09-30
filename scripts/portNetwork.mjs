@@ -11,6 +11,7 @@
 // thing at a time: vessel arrivals, berth capacity (and during the outage window), the demand
 // step, lane A's fleet, and an optional rail lane taking a share of Warehouse A's orders.
 
+import { roadLaneState as laneSteadyState } from '../packages/toolbox/lib/regionModel.mjs';
 import { loadTemplates, ModelBuilder } from './templatePlacement.mjs';
 
 export const portNetworkDefaults = {
@@ -23,19 +24,8 @@ export const portNetworkDefaults = {
     railShare: 0
 };
 
-// A road lane carrying `rate` TEU/day over `leadTime` days with `fleet` trucks of 2 TEU. Loaded
-// trucks are placed first, then empty ones returning, and the rest wait idle at the origin; a fleet
-// too small for the rate starts with no idle trucks and fewer returning.
-function roadLaneState(rate, leadTime, fleet) {
-    const loaded = rate * leadTime / 3;
-    const loadedTrucks = rate * leadTime / 2;
-    const returning = Math.max(0, Math.min(rate / 2 * leadTime, fleet - loadedTrucks));
-    const idle = Math.max(0, fleet - loadedTrucks - returning);
-    return {
-        loaded1: loaded, loaded2: loaded, loaded3: loaded, idleTrucks: idle, returning, requested: rate * 0.5,
-        arriving: rate, canLoad: idle * 2 / 0.25, utilisation: (loadedTrucks + returning) / (loadedTrucks + returning + idle)
-    };
-}
+// The templates' own truck capacity, loading time and order response time.
+const roadLaneState = (rate, leadTime, fleet) => laneSteadyState(rate, leadTime, fleet, { truckCapacity: 2, loadDays: 0.25, responseDays: 0.5 });
 
 export async function buildPortNetwork(options = {}) {
     const settings = { ...portNetworkDefaults, ...options };
