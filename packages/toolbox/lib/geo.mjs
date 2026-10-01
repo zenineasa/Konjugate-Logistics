@@ -110,3 +110,27 @@ export function clusterByDistance(items, pointOf, radius) {
     });
     return [...groups.values()];
 }
+
+// Splits a group wider than `span` metres (north-south or east-west) in two at the median of its longer
+// side, again and again, until every part is at most `span` across. Keeps a chain of close points (which
+// clusterByDistance joins however long it grows) from becoming one group the size of a city.
+export function splitToSpan(items, pointOf, span) {
+    if (items.length < 2) return [items];
+    const origin = pointOf(items[0]);
+    const local = items.map((item) => ({ item, ...toLocal(pointOf(item), origin) }));
+    const parts = [];
+    const pending = [local];
+    while (pending.length) {
+        const group = pending.pop();
+        const xs = group.map((point) => point.x);
+        const ys = group.map((point) => point.y);
+        const width = Math.max(...xs) - Math.min(...xs);
+        const height = Math.max(...ys) - Math.min(...ys);
+        if (group.length < 2 || Math.max(width, height) <= span) { parts.push(group.map((point) => point.item)); continue; }
+        const axis = width >= height ? 'x' : 'y';
+        const sorted = [...group].sort((a, b) => a[axis] - b[axis]);
+        const half = Math.ceil(sorted.length / 2);
+        pending.push(sorted.slice(half), sorted.slice(0, half));
+    }
+    return parts;
+}

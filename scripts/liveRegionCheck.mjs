@@ -7,6 +7,7 @@
 //
 //   node scripts/liveRegionCheck.mjs --bbox south,west,north,east [--run] [--refresh]
 //   node scripts/liveRegionCheck.mjs --place "Jebel Ali" [--pick 2] [--radius 40] [--run]
+//   ... [--overpass overpass.private.coffee]   another Overpass server, when the main one is overloaded
 //
 // A place search lists what it found, places and areas first; --pick chooses another than the first.
 //
@@ -21,7 +22,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { defaultSelection, discoverRegion } from '../packages/toolbox/lib/discovery.mjs';
-import { maximumSplitDepth, overpassRequests, overpassUrl, retryableStatus, retryDelaysSeconds, splitRequest } from '../packages/toolbox/lib/overpass.mjs';
+import { maximumSplitDepth, overpassHost, overpassRequests, overpassStatusUrl, overpassUrl, retryableStatus, retryDelaysSeconds, retryPauseSeconds, splitRequest, statusWaitSeconds } from '../packages/toolbox/lib/overpass.mjs';
 import { nominatimSearchUrl, rankPlaces } from '../packages/toolbox/lib/places.mjs';
 import { buildRegionModel } from '../packages/toolbox/lib/regionModel.mjs';
 import { createRouter } from '../packages/toolbox/lib/roadGraph.mjs';
@@ -67,6 +68,17 @@ const cache = join(logisticsRoot, 'out', 'regionCache', key);
 await mkdir(cache, { recursive: true });
 const answers = {};
 const pause = (seconds) => new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+const host = argument('overpass') ?? overpassHost;
+if (host !== overpassHost) console.log(`Using the Overpass server at ${host}.`);
+// How long the server says to wait before a slot is free (null when its status page says nothing usable).
+async function serverWait() {
+    try {
+        const response = await fetch(overpassStatusUrl(host), { headers: { 'User-Agent': userAgent }, signal: AbortSignal.timeout(15000) });
+        return response.ok ? statusWaitSeconds(await response.text()) : null;
+    } catch {
+        return null;
+    }
+}
 const queue = overpassRequests(bbox);
 while (queue.length) {
     const request = queue.shift();
@@ -79,9 +91,21 @@ while (queue.length) {
         console.log(`${label}: cached, ${(text.length / 1024).toFixed(0)} KB`);
     } else {
         for (let attempt = 0; ; attempt += 1) {
+            const before = await serverWait();
+            if (before > 0) {
+                console.log(`${label}: the server has no free slot; waiting ${before} s as it asks`);
+                await pause(before + 1);
+            }
             const started = Date.now();
-            const response = await fetch(overpassUrl(request.query), { headers: { 'User-Agent': userAgent } });
-            text = await response.text();
+            let response;
+            try {
+                response = await fetch(overpassUrl(request.query, host), { headers: { 'User-Agent': userAgent } });
+                text = await response.text();
+            } catch (error) {
+                // A dropped connection is the same as a busy answer: try again after a pause.
+                response = { ok: false, status: 503 };
+                text = `the connection failed (${error.cause?.code ?? error.message})`;
+            }
             if (response.ok) {
                 const size = Buffer.byteLength(text);
                 // As the add-on does: a tile too large to accept is fetched again as four quarters.
@@ -91,13 +115,19 @@ while (queue.length) {
                     text = null;
                     break;
                 }
-                console.log(`${label}: ${(size / 1024).toFixed(0)} KB in ${((Date.now() - started) / 1000).toFixed(1)} s${size > hostFetchLimit ? `  -- OVER the add-on's ${hostFetchLimit / 1024 / 1024} MB fetch limit` : ''}${Date.now() - started > 20000 ? '  -- SLOWER than the add-on\u2019s 20 s fetch limit' : ''}`);
+                console.log(`${label}: ${(size / 1024).toFixed(0)} KB in ${((Date.now() - started) / 1000).toFixed(1)} s${size > hostFetchLimit ? `  -- OVER the add-on's ${hostFetchLimit / 1024 / 1024} MB fetch limit` : ''}${Date.now() - started > 20000 ? `  -- slower than the add-on\u2019s 20 s fetch limit${request.depth < maximumSplitDepth ? '; the add-on would fetch it as four quarters' : ', and too deep to split again'}` : ''}`);
                 await writeFile(file, text);
                 break;
             }
-            if (!retryableStatus(response.status) || attempt >= retryDelaysSeconds.length) throw new Error(`Overpass answered ${response.status} for ${label}: ${text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 200)}`);
-            console.log(`${label}: the server is busy (${response.status}); trying again in ${retryDelaysSeconds[attempt]} s`);
-            await pause(retryDelaysSeconds[attempt]);
+            if (!retryableStatus(response.status) || attempt >= retryDelaysSeconds.length) {
+                console.error(`\nOverpass answered ${response.status} for ${label}: ${text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 200)}`);
+                console.error(`The parts fetched so far are cached; run the same command again later to continue from ${label}${host === overpassHost ? ', or add --overpass overpass.private.coffee to use another public server' : ''}.`);
+                process.exit(1);
+            }
+            const seconds = retryPauseSeconds(attempt, await serverWait());
+            const overloaded = /Dispatcher_Client|open64/.test(text) ? ', overloaded' : '';
+            console.log(`${label}: the server is busy (${response.status}${overloaded}); trying again in ${seconds} s (${attempt + 1} of ${retryDelaysSeconds.length})`);
+            await pause(seconds);
         }
         await pause(1);
     }

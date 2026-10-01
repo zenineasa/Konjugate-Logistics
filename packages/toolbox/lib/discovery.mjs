@@ -5,7 +5,7 @@
 // towns, each with a significance score, plus a coverage report that says plainly what the map data
 // can't see. Nothing here knows about any particular place.
 
-import { boundsArea, centroid, clusterByDistance, distance, lineLength, pointInRing, ringArea } from './geo.mjs';
+import { boundsArea, centroid, clusterByDistance, distance, lineLength, pointInRing, ringArea, splitToSpan } from './geo.mjs';
 import { readOverpass } from './overpass.mjs';
 import { buildRoadGraph } from './roadGraph.mjs';
 
@@ -23,11 +23,18 @@ export const discoveryDefaults = {
     // Settlement sizes assumed where OpenStreetMap has no population.
     assumedPopulation: { city: 100000, town: 20000 },
     // A city or town with at least this many mapped suburbs is split into demand areas, so its people are
-    // spread across it rather than placed at its centre. Suburbs belong to the nearest settlement within
-    // these distances, and suburbs closer than areaClusterMetres form one area.
+    // spread across it rather than placed at its centre. A suburb belongs to the nearest settlement that
+    // reaches it: these distances, grown with the square root of a mapped population over a million (a city
+    // of four million reaches twice as far), and a town's for a city with no population mapped (which may be
+    // a small place tagged as a city). Suburbs closer than areaClusterMetres
+    // form one area, and an area wider than areaMaximumSpanMetres is split.
     suburbsForAreas: 3,
     suburbReachMetres: { city: 25000, town: 10000 },
-    areaClusterMetres: 4000
+    areaClusterMetres: 4000,
+    areaMaximumSpanMetres: 10000,
+    // A city or town with no population mapped this close to one with a population is a district of it
+    // (Deira in Dubai), and counts as one of its suburbs.
+    districtMetres: 5000
 };
 
 const marinaCategories = /^(marina|marina_no_facilities|yacht|fishing|leisure|ferry|passenger)$/;
@@ -208,7 +215,22 @@ export function discoverRegion(answers, options = {}) {
             significance: population ?? settings.assumedPopulation[feature.tags.place], source: 'OpenStreetMap'
         };
     };
-    // Each suburb belongs to the nearest settlement within reach.
+    // A settlement with no population close to one with a population is a district of it: one more suburb.
+    const districts = []; // { name, of } for the notice
+    for (const settlement of [...settlements]) {
+        if (parsePopulation(settlement.tags.population)) continue;
+        const city = settlements.find((other) => other !== settlement && parsePopulation(other.tags.population) && distance(settlement.point, other.point) <= settings.districtMetres);
+        if (!city) continue;
+        settlements.splice(settlements.indexOf(settlement), 1);
+        suburbs.push(settlement);
+        districts.push({ name: nameOf(settlement.tags) ?? 'An unnamed place', of: nameOf(city.tags) ?? 'a city' });
+    }
+    // Each suburb belongs to the nearest settlement that reaches it.
+    const reachOf = (settlement) => {
+        const population = parsePopulation(settlement.tags.population);
+        if (!population) return settings.suburbReachMetres.town;
+        return settings.suburbReachMetres[settlement.tags.place] * Math.sqrt(Math.max(1, population / 1e6));
+    };
     const suburbsOf = new Map(settlements.map((settlement) => [settlement, []]));
     const unclaimed = [];
     for (const suburb of suburbs) {
@@ -216,7 +238,7 @@ export function discoverRegion(answers, options = {}) {
         let ownerMetres = Infinity;
         for (const settlement of settlements) {
             const metres = distance(suburb.point, settlement.point);
-            if (metres <= settings.suburbReachMetres[settlement.tags.place] && metres < ownerMetres) { owner = settlement; ownerMetres = metres; }
+            if (metres <= reachOf(settlement) && metres < ownerMetres) { owner = settlement; ownerMetres = metres; }
         }
         if (owner) suburbsOf.get(owner).push(suburb); else unclaimed.push(suburb);
     }
@@ -235,7 +257,8 @@ export function discoverRegion(answers, options = {}) {
         const rest = Math.max(0, town.population - knownTotal);
         const evenShare = unknownCount ? rest / unknownCount : 0;
         const members = itsSuburbs.map((suburb, index) => ({ suburb, population: known[index] ?? evenShare, assumed: known[index] === null }));
-        const areas = clusterByDistance(members, (member) => member.suburb.point, settings.areaClusterMetres);
+        const areas = clusterByDistance(members, (member) => member.suburb.point, settings.areaClusterMetres)
+            .flatMap((area) => splitToSpan(area, (member) => member.suburb.point, settings.areaMaximumSpanMetres));
         for (const area of areas) {
             const population = area.reduce((total, member) => total + member.population, 0);
             if (!(population > 0)) continue;
@@ -332,6 +355,9 @@ export function discoverRegion(answers, options = {}) {
     }
     if (!roadKilometres) notices.push({ kind: 'roads', level: 'warning', text: 'No major roads are mapped here, so travel times are straight-line estimates.' });
     else if (roadGraph.components > 1) notices.push({ kind: 'roads', level: 'info', text: `The major roads form ${roadGraph.components} separate networks; sites are routed on the largest, and straight-line estimates are used where a site is far from it.` });
+    for (const district of districts) {
+        notices.push({ kind: 'towns', level: 'info', text: `${district.name} has no population mapped and lies within ${district.of}, so it is counted as one of ${district.of}'s suburbs.` });
+    }
     for (const city of spread) {
         notices.push({ kind: 'towns', level: 'info', text: `${city.name}'s ${city.populationBasis === 'OpenStreetMap' ? `${city.population.toLocaleString('en')} people are` : 'people are'} spread over ${city.areas} area${city.areas === 1 ? '' : 's'} of its ${city.suburbs} mapped suburbs${city.assumed ? `; ${city.assumed === city.suburbs ? 'how many live in each suburb is' : `for ${city.assumed} suburbs without a population, how many live in each is`} assumed (an even share)` : ''}.` });
     }

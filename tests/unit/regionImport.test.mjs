@@ -3,8 +3,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { defaultSelection, discoverRegion, parsePopulation } from '../../packages/toolbox/lib/discovery.mjs';
-import { distance, ringArea } from '../../packages/toolbox/lib/geo.mjs';
-import { maximumSplitDepth, overpassQueries, overpassRequests, overpassUrl, readOverpass, retryableStatus, splitBbox, splitRequest } from '../../packages/toolbox/lib/overpass.mjs';
+import { clusterByDistance, distance, ringArea, splitToSpan } from '../../packages/toolbox/lib/geo.mjs';
+import { maximumSplitDepth, maximumStatusWaitSeconds, overpassQueries, overpassRequests, overpassStatusUrl, overpassUrl, readOverpass, retryableStatus, retryDelaysSeconds, retryPauseSeconds, splitBbox, splitRequest, statusWaitSeconds } from '../../packages/toolbox/lib/overpass.mjs';
 import { nominatimSearchUrl, rankPlaces } from '../../packages/toolbox/lib/places.mjs';
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
 import { createRouter } from '../../packages/toolbox/lib/roadGraph.mjs';
@@ -390,4 +390,61 @@ test('demand areas take their share of demand in the model, labelled as an even 
     assert.equal(areas.length, 2);
     const note = built.provenance.find((entry) => entry.parameter === 'Demand' && entry.entity.startsWith('Cedarton: '));
     assert.match(note.detail, /an even share of Cedarton's population among its suburbs, an assumption/);
+});
+
+test('the Overpass status page says how long to wait for a free slot', () => {
+    assert.equal(overpassStatusUrl(), 'https://overpass-api.de/api/status');
+    assert.equal(new URL(overpassUrl('[out:json];', 'overpass.private.coffee')).hostname, 'overpass.private.coffee');
+    const header = 'Connected as: 1234\nCurrent time: 2026-10-01T10:00:00Z\nAnnounced endpoint: none\nRate limit: 2\n';
+    assert.equal(statusWaitSeconds(`${header}2 slots available now.\nCurrently running queries (pid, space limit, time limit, start time):\n`), 0);
+    assert.equal(statusWaitSeconds(`${header}Slot available after: 2026-10-01T10:00:41Z, in 41 seconds.\nSlot available after: 2026-10-01T10:00:12Z, in 12 seconds.\n`), 12);
+    assert.equal(statusWaitSeconds(`${header}Slot available after: 2026-10-01T09:59:59Z, in -1 seconds.\n`), 0);
+    assert.equal(statusWaitSeconds(`${header}Slot available after: 2026-10-02T10:00:00Z, in 86400 seconds.\n`), maximumStatusWaitSeconds);
+    for (const text of ['', null, '<html>504 Gateway Time-out</html>', `${header}0 slots available now.\n`]) assert.equal(statusWaitSeconds(text), null, String(text));
+});
+
+test('a retry waits its planned pause, or longer when the server asks', () => {
+    assert.deepEqual(retryDelaysSeconds.map((_, attempt) => retryPauseSeconds(attempt, null)), retryDelaysSeconds);
+    assert.equal(retryPauseSeconds(0, 120), 120);
+    assert.equal(retryPauseSeconds(4, 10), retryDelaysSeconds[4]);
+    assert.equal(retryPauseSeconds(0, 10000), maximumStatusWaitSeconds);
+    assert.ok(retryDelaysSeconds.reduce((sum, value) => sum + value, 0) >= 600, 'An overloaded server is given about ten minutes before a fetch gives up.');
+});
+
+test('a chain of close suburbs is split into areas no wider than 10 km', () => {
+    // 31 points 1 km apart along 30 km of a line: one chain to clusterByDistance.
+    const points = Array.from({ length: 31 }, (_, index) => ({ lat: 20, lon: 20 + index * 1000 / (111320 * Math.cos(20 * Math.PI / 180)) }));
+    const [chain] = clusterByDistance(points, (point) => point, 4000);
+    assert.equal(chain.length, 31);
+    const parts = splitToSpan(chain, (point) => point, 10000);
+    assert.equal(parts.flat().length, 31, 'every point is kept, once');
+    assert.ok(parts.length >= 3 && parts.length <= 4, `${parts.length} parts`);
+    for (const part of parts) assert.ok(distance(part.at(0), part.at(-1)) <= 10000 + 1, 'no part is wider than 10 km');
+    assert.deepEqual(splitToSpan(chain.slice(0, 5), (point) => point, 10000), [chain.slice(0, 5)], 'a narrow group stays whole');
+});
+
+test('suburbs belong to the nearest settlement that reaches them; a big city reaches further, and a district counts as a suburb', () => {
+    const kilometresEast = (km) => 20 + km * 1000 / (111320 * Math.cos(20 * Math.PI / 180));
+    const metropolis = node(20, kilometresEast(0), { place: 'city', name: 'Metropolis', population: '4000000' });
+    // A town with no population 1 km from the centre: a district of the city.
+    const district = node(20, kilometresEast(1), { place: 'town', name: 'Oldtown' });
+    // A "city" with no population: it reaches only as far as a town (10 km).
+    const hamlet = node(20, kilometresEast(60), { place: 'city', name: 'Tagged City' });
+    const suburbs = [
+        node(20.001, kilometresEast(2), { place: 'suburb', name: 'Core A' }), node(20.002, kilometresEast(3), { place: 'suburb', name: 'Core B' }),
+        // 42 km from the city (inside its 50 km reach) and 18 km from the tagged city (beyond its 10 km): the city's.
+        node(20, kilometresEast(42), { place: 'suburb', name: 'Industrial South' }),
+        node(20.001, kilometresEast(43), { place: 'suburb', name: 'Theme Parks' }),
+        // 5 km from the tagged city: its own.
+        node(20, kilometresEast(55), { place: 'suburb', name: 'Village A' }), node(20.001, kilometresEast(56), { place: 'suburb', name: 'Village B' }), node(20.002, kilometresEast(57), { place: 'suburb', name: 'Village C' })
+    ];
+    const { candidates, notices, coverage } = discoverRegion({ places: answer([metropolis, district, hamlet, ...suburbs]) });
+    const ofCity = (name) => candidates.towns.find((item) => item.suburbs?.includes(name))?.city;
+    assert.equal(ofCity('Industrial South'), 'Metropolis');
+    assert.equal(ofCity('Theme Parks'), 'Metropolis');
+    assert.equal(ofCity('Oldtown'), 'Metropolis');
+    assert.equal(ofCity('Village A'), 'Tagged City');
+    assert.ok(!candidates.towns.some((item) => item.name === 'Oldtown'), 'the district is not a town of its own');
+    assert.deepEqual(coverage.towns.spread.map(({ name, suburbs: count }) => [name, count]), [['Metropolis', 5], ['Tagged City', 3]]);
+    assert.ok(notices.some((item) => item.text === 'Oldtown has no population mapped and lies within Metropolis, so it is counted as one of Metropolis\'s suburbs.'));
 });

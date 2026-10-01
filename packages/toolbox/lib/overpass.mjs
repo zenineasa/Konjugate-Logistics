@@ -68,11 +68,35 @@ export function splitRequest(request) {
 }
 
 // A public server that is busy answers 429 (too many requests) or 502 to 504 (gave up waiting): worth another try later.
+// When it is overloaded for a while (a 504 saying "Dispatcher_Client"), only patience helps: the pauses
+// grow to five minutes, about eleven minutes in all before giving up on one request.
 export const retryableStatus = (status) => status === 429 || (status >= 502 && status <= 504);
-export const retryDelaysSeconds = [15, 45, 90];
+export const retryDelaysSeconds = [15, 45, 90, 180, 300];
+// The longest wait taken on the server's word (its status page), so a garbled time cannot stall a fetch.
+export const maximumStatusWaitSeconds = 300;
 
-export function overpassUrl(query) {
-    return `https://${overpassHost}/api/interpreter?data=${encodeURIComponent(query)}`;
+export function overpassStatusUrl(host = overpassHost) {
+    return `https://${host}/api/status`;
+}
+
+// Reads the server's status page: how long until this client may run a query. 0 when a slot is free now,
+// the soonest "in N seconds" when all are taken, and null when the page says neither (it may be down).
+//   "2 slots available now."  |  "Slot available after: 2026-10-01T10:00:12Z, in 12 seconds."
+export function statusWaitSeconds(text) {
+    const free = /^(\d+) slots? available now\./m.exec(text ?? '');
+    if (free && Number(free[1]) > 0) return 0;
+    const waits = [...(text ?? '').matchAll(/Slot available after: \S+, in (-?\d+) seconds?\./g)].map((match) => Math.max(0, Number(match[1])));
+    if (waits.length) return Math.min(maximumStatusWaitSeconds, Math.min(...waits));
+    return null;
+}
+
+// The pause before retry number `attempt` (from 0): the planned delay, or longer if the server asks.
+export function retryPauseSeconds(attempt, statusWait) {
+    return Math.max(retryDelaysSeconds[attempt], Math.min(maximumStatusWaitSeconds, statusWait ?? 0));
+}
+
+export function overpassUrl(query, host = overpassHost) {
+    return `https://${host}/api/interpreter?data=${encodeURIComponent(query)}`;
 }
 
 const pointOfGeometry = (geometry) => {

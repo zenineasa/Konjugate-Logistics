@@ -6,7 +6,7 @@
 // reads files and runs the importer.
 
 import { MapView } from './mapView.mjs';
-import { maximumSplitDepth, overpassRequests, overpassUrl, retryDelaysSeconds, splitRequest } from './lib/overpass.mjs';
+import { maximumSplitDepth, overpassRequests, overpassStatusUrl, overpassUrl, retryDelaysSeconds, retryPauseSeconds, splitRequest, statusWaitSeconds } from './lib/overpass.mjs';
 import { nominatimSearchUrl, rankPlaces } from './lib/places.mjs';
 
 const api = window.konjugateLauncher;
@@ -111,6 +111,20 @@ $('#marginSelect').addEventListener('change', showArea);
 const wait = (seconds) => new Promise((resolve) => setTimeout(resolve, seconds * 1000));
 // The host reports a busy server by its status (429, 502 to 504) or a timeout: worth trying again after a pause.
 const busy = (message) => /answered (429|50[234])|did not answer within/.test(message);
+// How long the map server says to wait for a free slot; null when its status page says nothing usable.
+async function serverWait() {
+    try {
+        return statusWaitSeconds((await call(api.fetchText(overpassStatusUrl()))).text);
+    } catch {
+        return null;
+    }
+}
+const countdown = async (row, seconds, why) => {
+    for (let left = seconds; left > 0; left -= 1) {
+        row.querySelector('.state').textContent = `${why}, trying again in ${left} s`;
+        await wait(1);
+    }
+};
 
 $('#fetchButton').addEventListener('click', async () => {
     if (!state.bbox) return;
@@ -133,26 +147,25 @@ $('#fetchButton').addEventListener('click', async () => {
             const row = progress.querySelector(`[data-kind="${request.kind}"]`);
             const label = request.parts > 1 || request.depth ? `part ${request.part} of ${request.parts}` : 'fetching';
             for (let attempt = 0; ; attempt += 1) {
+                const before = await serverWait();
+                if (before > 0) await countdown(row, before + 1, 'waiting for a free slot');
                 row.querySelector('.state').textContent = `${label}…`;
                 try {
                     const answer = await call(api.fetchFile(importerId, request.kind, overpassUrl(request.query), `${request.kind}-${request.part}.json`));
                     bytes[request.kind] = (bytes[request.kind] ?? 0) + answer.bytes;
                     break;
                 } catch (error) {
-                    // Too large to accept: fetch the tile again as four quarters.
-                    if (/larger than the size limit/.test(error.message) && request.depth < maximumSplitDepth) {
+                    // Too large to accept, or too slow to answer in time: fetch the tile again as four quarters.
+                    if (/larger than the size limit|did not answer within/.test(error.message) && request.depth < maximumSplitDepth) {
                         queue.unshift(...splitRequest(request));
                         break;
                     }
                     if (!busy(error.message) || attempt >= retryDelaysSeconds.length) {
                         row.classList.add('failed');
                         row.querySelector('.state').textContent = 'failed';
-                        throw new Error(`${labels[request.kind]}: ${error.message}${/larger than the size limit/.test(error.message) ? ' Choose a smaller area.' : busy(error.message) ? ' The public map server is busy; try again in a few minutes, or choose a smaller area.' : ''}`);
+                        throw new Error(`${labels[request.kind]}: ${error.message}${/larger than the size limit/.test(error.message) ? ' Choose a smaller area.' : busy(error.message) ? ' The public map server is overloaded; try again later, or choose a smaller area.' : ''}`);
                     }
-                    for (let left = retryDelaysSeconds[attempt]; left > 0; left -= 1) {
-                        row.querySelector('.state').textContent = `server busy, trying again in ${left} s`;
-                        await wait(1);
-                    }
+                    await countdown(row, retryPauseSeconds(attempt, await serverWait()), `server busy (${attempt + 1} of ${retryDelaysSeconds.length})`);
                 }
             }
             if (!queue.some((next) => next.kind === request.kind) && bytes[request.kind] !== undefined) {
