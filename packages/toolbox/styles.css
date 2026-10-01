@@ -103,3 +103,8 @@ details summary { cursor: pointer; color: var(--accent); font-size: 12px; margin
 .swatch.lane { background: var(--lane); height: 3px; vertical-align: 2px; }
 .mapEmpty { position: absolute; inset: 45px 0 30px; display: grid; place-items: center; color: var(--muted); pointer-events: none; padding: 40px; text-align: center; }
 .addSite { position: absolute; top: 50px; left: 50%; transform: translateX(-50%); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px; display: flex; gap: 6px; }
+.transits { background: var(--surface); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
+.transits .link { margin-left: 4px; }
+.dependence input[type="number"] { width: 56px; padding: 2px 4px; font-size: 12px; }
+.dependence td.sea { color: var(--muted); }
+.worse { color: var(--warn); }

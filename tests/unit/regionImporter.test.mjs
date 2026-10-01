@@ -34,6 +34,13 @@ test('the manifest declares a file role for every kind the importer reads, and e
     const components = plugin.contributes.filter((entry) => entry.kind === 'component').map((entry) => entry.componentId);
     for (const id of templateIds) assert.ok(components.includes(id), `${id} is a component`);
     assert.deepEqual(addon.network.hosts.sort(), ['nominatim.openstreetmap.org', 'overpass-api.de', 'services9.arcgis.com']);
+    // The chokepoint disruption: a scenario that follows a path the window supplies for each port's arrivals, forked when the window says.
+    assert.ok(addon.permissions.includes('scenario.run'));
+    assert.ok(addon.requires.includes('scenarioForkTime') && addon.requires.includes('parameterSchedules'));
+    const [scenario] = addon.contributes.scenarios;
+    assert.equal(scenario.scenarioId, 'chokepointDisruption');
+    assert.deepEqual(scenario.interventions, [{ parameter: 'vesselArrivals', target: 'supplied', samples: true }]);
+    assert.equal(scenario.runTime, 90 * 86400);
 });
 
 test('discovery returns candidates, coverage, notices and a small map, and no model', async () => {

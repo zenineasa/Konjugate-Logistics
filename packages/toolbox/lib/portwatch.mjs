@@ -27,14 +27,14 @@ const reachKilometres = (port) => matchKilometres + 2 * Math.sqrt((Number(port.a
 // How far around the region PortWatch ports are looked for: a port's point may lie off its land.
 const marginKilometres = 20;
 
-const query = (service, parameters) => `https://${portwatchHost}${servicePath}/${service}/FeatureServer/0/query?${new URLSearchParams({ ...parameters, f: 'json' })}`;
+export const portwatchQueryUrl = (service, parameters) => `https://${portwatchHost}${servicePath}/${service}/FeatureServer/0/query?${new URLSearchParams({ ...parameters, f: 'json' })}`;
 
 // The PortWatch ports in and around a region.
 export function portwatchPortsUrl(bbox) {
     const dLat = marginKilometres / 111.32;
     const dLon = marginKilometres / (111.32 * Math.cos((bbox.south + bbox.north) / 2 * Math.PI / 180));
     const envelope = [bbox.west - dLon, bbox.south - dLat, bbox.east + dLon, bbox.north + dLat].map((value) => value.toFixed(4)).join(',');
-    return query('PortWatch_ports_database', {
+    return portwatchQueryUrl('PortWatch_ports_database', {
         where: '1=1', geometry: envelope, geometryType: 'esriGeometryEnvelope', inSR: '4326', spatialRel: 'esriSpatialRelIntersects',
         outFields: 'portid,portname,country,lat,lon,vessel_count_container,vessel_count_total', returnGeometry: 'false'
     });
@@ -43,13 +43,13 @@ export function portwatchPortsUrl(bbox) {
 // A port's daily activity, the latest `days` days.
 export function portwatchActivityUrl(portid, days = historyDays) {
     if (!/^port\d+$/.test(portid)) throw new Error(`"${portid}" is not a PortWatch port id.`);
-    return query('Daily_Ports_Data', {
+    return portwatchQueryUrl('Daily_Ports_Data', {
         where: `portid='${portid}'`, outFields: 'portid,portname,date,portcalls_container,portcalls,import_container,export_container',
         orderByFields: 'date DESC', resultRecordCount: String(days), returnGeometry: 'false'
     });
 }
 
-function featuresOf(text, what) {
+export function featuresOf(text, what) {
     const json = typeof text === 'string' ? JSON.parse(text) : text;
     if (json.error) throw new Error(`IMF PortWatch could not answer for ${what}: ${json.error.message ?? 'an error'}${json.error.details?.length ? ` (${json.error.details.join(' ')})` : ''}.`);
     if (!Array.isArray(json.features)) throw new Error(`The IMF PortWatch answer for ${what} has no records.`);

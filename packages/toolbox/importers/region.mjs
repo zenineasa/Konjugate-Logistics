@@ -114,7 +114,7 @@ export default async function importRegion({ files, helpers, options = {} }) {
             document: built.document,
             parameterIndex: built.parameterIndex,
             data: {
-                step: 'build', lanes: built.lanes, served: built.served, provenance: built.provenance, warnings: built.warnings, histories: built.histories,
+                step: 'build', lanes: built.lanes, served: built.served, provenance: built.provenance, warnings: built.warnings, histories: built.histories, ports: built.ports, days: built.days,
                 unusedZones: built.unusedZones, nodes: built.document.nodes.length, edges: built.document.edges.length, lanesByBasis
             },
             report: {

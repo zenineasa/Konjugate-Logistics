@@ -10,11 +10,13 @@
         "data.import",
         "model.open",
         "network.fetch",
-        "project.data"
+        "project.data",
+        "scenario.run"
     ],
     "requires": [
         "projectSession",
-        "parameterSchedules"
+        "parameterSchedules",
+        "scenarioForkTime"
     ],
     "contributes": {
         "toolstrip": [
@@ -42,6 +44,17 @@
                     { "role": "portwatchActivity", "multiple": true, "label": "IMF PortWatch port activity", "accept": ["json"], "description": "A port's daily calls and trade estimates from IMF PortWatch, one file per port." },
                     { "role": "sites", "label": "Your own sites", "accept": ["csv", "txt"], "description": "One row per site: name, kind (port, warehouse or customer), latitude, longitude, and optionally teuPerDay, floorArea and population." }
                 ]
+            }
+        ],
+        "scenarios": [
+            {
+                "scenarioId": "chokepointDisruption",
+                "name": "Chokepoint disruption",
+                "description": "Fewer ships come through a strait or canal for a while, and the ports that depend on it receive less. Watch warehouse stock fall and towns' orders wait, then recover.",
+                "forkAt": 864000,
+                "runTime": 7776000,
+                "effects": ["Each port's arrivals fall by its share of ships through the chokepoint times the cut, for the chosen days."],
+                "interventions": [{ "parameter": "vesselArrivals", "target": "supplied", "samples": true }]
             }
         ]
     },

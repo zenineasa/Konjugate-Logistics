@@ -81,9 +81,17 @@ try {
                 // IMF PortWatch: the ports around the region, and Port Alder's history.
                 if (address.hostname === 'services9.arcgis.com' && address.pathname.includes('/PortWatch_ports_database/')) return new Response(answers.portwatchPorts, { status: 200 });
                 if (address.hostname === 'services9.arcgis.com' && address.pathname.includes('/Daily_Ports_Data/') && address.searchParams.get('where') === "portid='port9001'") return new Response(answers.portwatchActivity, { status: 200 });
+                // A chokepoint's transits: 40 container ships a day in its busiest full year, 10 a day lately.
+                if (address.hostname === 'services9.arcgis.com' && address.pathname.includes('/Daily_Chokepoints_Data/')) {
+                    return new Response(address.searchParams.has('groupByFieldsForStatistics') ? answers.chokepointYearly : answers.chokepointRecent, { status: 200 });
+                }
                 return new Response('not found', { status: 404 });
             };
-        }, Object.fromEntries(Object.entries({ ...syntheticRegion(), ...syntheticPortwatch() }).map(([kind, answer]) => [kind, JSON.stringify(answer)])));
+        }, Object.fromEntries(Object.entries({
+            ...syntheticRegion(), ...syntheticPortwatch(),
+            chokepointYearly: { features: [{ attributes: { year: 2023, containerShips: 40, days: 365 } }, { attributes: { year: 2024, containerShips: 20, days: 366 } }] },
+            chokepointRecent: { features: Array.from({ length: 30 }, (_, index) => ({ attributes: { date: `2026-09-${String(index + 1).padStart(2, '0')}`, n_container: 10 } })) }
+        }).map(([kind, answer]) => [kind, JSON.stringify(answer)])));
 
         const window = await app.firstWindow();
         await window.waitForLoadState('domcontentloaded');
@@ -181,6 +189,29 @@ try {
         assert.match(await toolbox.textContent('#buildStatus'), /4 towns served/);
         assert.equal(log.filter((line) => line.startsWith('pageerror') || line.startsWith('error')).length, 0, log.join('\n'));
 
+        // 5b. A chokepoint disruption. Port Alder lies on open sea, so it depends on Suez only once its share is set; then
+        // three days at a quarter of the usual transits (the drop PortWatch shows) cost it 150 x 75% x 3 TEU.
+        await toolbox.waitForFunction(() => !document.querySelector('#stepScenario').hidden && !document.querySelector('#buildButton').disabled, null, { timeout: 30000 }).catch(fail);
+        await toolbox.selectOption('#chokepointSelect', 'chokepoint1');
+        await toolbox.waitForFunction(() => /10\.0 container ships a day .* against 40\.0 in 2023, its busiest full year: 75% fewer/.test(document.querySelector('#transitSummary').textContent), null, { timeout: 30000 }).catch(fail);
+        await toolbox.click('#useDrop');
+        assert.equal(await toolbox.inputValue('#cutInput'), '75');
+        await toolbox.fill('#startInput', '2');
+        await toolbox.fill('#durationInput', '3');
+        await toolbox.click('#runScenarioButton');
+        await toolbox.waitForFunction(() => /None of the ports depends on Suez Canal/.test(document.querySelector('#scenarioStatus').textContent), null, { timeout: 10000 }).catch(fail);
+        const alderShare = toolbox.locator('#dependenceTable tr[data-port="Port Alder"] input');
+        assert.equal(await alderShare.inputValue(), '0');
+        await alderShare.fill('100');
+        await alderShare.dispatchEvent('change');
+        await toolbox.click('#runScenarioButton');
+        await toolbox.waitForFunction(() => /TEU that did not arrive/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
+        const lost = await toolbox.evaluate(() => [...document.querySelectorAll('#scenarioResult tr')].find((row) => row.cells[0]?.textContent === 'Port Alder').cells[1].textContent);
+        assert.ok(Math.abs(Number(lost.replace(/,/g, '')) - 337.5) <= 1, `Port Alder should miss 150 x 75% x 3 = 337.5 TEU (shown ${lost}).`);
+        assert.match(await toolbox.textContent('#scenarioResult'), /Suez Canal: transits cut by 75% from day 2 for 3 days, reaching Port Alder \(100% of its ships\)/);
+        assert.equal(await toolbox.locator('#showScenarioButton').isDisabled(), false);
+        assert.equal(log.filter((line) => line.startsWith('pageerror') || line.startsWith('error')).length, 0, log.join('\n'));
+
         // 6. The session is kept with the project: closing and reopening the window carries on where it was.
         const curated = await counts();
         await toolbox.close();
@@ -191,6 +222,8 @@ try {
         await toolbox.click('#kindTabs [data-group="ports"]');
         assert.equal(await toolbox.locator('#candidateList li', { hasText: 'Port Alder' }).locator('input[type="number"]').inputValue(), '150');
         assert.match(await toolbox.textContent('#buildResult'), /Harbour customers/);
+        assert.match(await toolbox.textContent('#scenarioResult'), /Suez Canal: transits cut by 75%/, 'and the last disruption, with its share and settings');
+        assert.equal(await toolbox.inputValue('#chokepointSelect'), 'chokepoint1');
 
         // 7. Saving the project writes the session into it: the window's state and the map data it was built from.
         const savedPath = join(scratch, 'region.kjt');

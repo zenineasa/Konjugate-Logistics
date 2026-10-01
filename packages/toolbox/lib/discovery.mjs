@@ -7,6 +7,7 @@
 
 import { boundsArea, centroid, clusterByDistance, distance, lineLength, pointInRing, ringArea, splitToSpan } from './geo.mjs';
 import { readOverpass } from './overpass.mjs';
+import { chokepointDependence } from './chokepoints.mjs';
 import { matchPorts, readPortwatchActivity, readPortwatchPorts, summariseActivity, tonnesPerTeu } from './portwatch.mjs';
 
 const tonnesPerTeuText = String(tonnesPerTeu);
@@ -335,6 +336,8 @@ export function discoverRegion(answers, options = {}) {
         const history = histories.get(match.port.portid);
         if (history) port.activity = summariseActivity(history);
     }
+    // Which chokepoints each port's ships pass, by the enclosed sea it lies in (an assumption; see chokepoints.mjs).
+    for (const port of ports) port.chokepoints = chokepointDependence(port);
     // Ports with activity first, busiest first; then the rest by their land and tags.
     ports.sort((a, b) => (b.activity ? 1 : 0) - (a.activity ? 1 : 0) || (b.activity?.teuPerDay ?? 0) - (a.activity?.teuPerDay ?? 0) || b.significance - a.significance);
     // PortWatch ports are fetched with a margin around the region; only those inside it are worth a notice.

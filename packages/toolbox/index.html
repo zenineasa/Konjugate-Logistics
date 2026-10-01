@@ -77,6 +77,27 @@
                 <div id="buildStatus"></div>
                 <div id="buildResult"></div>
             </section>
+
+            <section class="step" id="stepScenario" hidden>
+                <h2><span class="stepNumber">5</span> Chokepoint disruption</h2>
+                <p class="muted small">Fewer ships through a strait or canal for a while: the ports that depend on it receive less, and the model is forked from the day it starts.</p>
+                <label class="row small">Chokepoint <select id="chokepointSelect"></select></label>
+                <div class="transits small" id="transitSummary" hidden></div>
+                <div class="row small">
+                    <label>Cut transits by <input type="number" id="cutInput" min="0" max="100" step="5" value="50"> %</label>
+                </div>
+                <div class="row small">
+                    <label>from day <input type="number" id="startInput" min="0" step="1" value="10"></label>
+                    <label>for <input type="number" id="durationInput" min="1" step="1" value="30"> days</label>
+                </div>
+                <table class="dependence" id="dependenceTable"></table>
+                <div class="row">
+                    <button class="button primary" type="button" id="runScenarioButton">Run the disruption</button>
+                    <button class="button" type="button" id="showScenarioButton" disabled>Show in Konjugate</button>
+                </div>
+                <div id="scenarioStatus"></div>
+                <div id="scenarioResult"></div>
+            </section>
         </aside>
 
         <section class="mapArea">

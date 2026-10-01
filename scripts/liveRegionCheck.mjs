@@ -10,6 +10,8 @@
 //   node scripts/liveRegionCheck.mjs --place "Jebel Ali" [--pick 2] [--radius 40] [--run]
 //   ... [--overpass overpass.private.coffee]   another Overpass server, when the main one is overloaded
 //   ... [--arrivals history]   matched ports' arrivals follow their daily PortWatch history (default: steady average)
+//   ... [--disrupt chokepoint6:50:10:30]   with --run, also a disruption: that chokepoint's transits cut by 50% from day 10
+//       for 30 days, each kept port losing its share through it (from the sea it lies in), against the baseline
 //
 // A place search lists what it found, places and areas first; --pick chooses another than the first.
 //
@@ -26,6 +28,7 @@ import { pathToFileURL } from 'node:url';
 import { defaultSelection, discoverRegion } from '../packages/toolbox/lib/discovery.mjs';
 import { maximumSplitDepth, overpassHost, overpassRequests, overpassStatusUrl, overpassUrl, retryableStatus, retryDelaysSeconds, retryPauseSeconds, splitRequest, statusWaitSeconds } from '../packages/toolbox/lib/overpass.mjs';
 import { nominatimSearchUrl, rankPlaces } from '../packages/toolbox/lib/places.mjs';
+import { chokepointById, chokepointRecentUrl, chokepointYearlyUrl, disruptionPath, summariseTransits } from '../packages/toolbox/lib/chokepoints.mjs';
 import { portwatchActivityUrl, portwatchPortsUrl } from '../packages/toolbox/lib/portwatch.mjs';
 import { buildRegionModel } from '../packages/toolbox/lib/regionModel.mjs';
 import { createRouter } from '../packages/toolbox/lib/roadGraph.mjs';
@@ -198,6 +201,22 @@ for (const item of built.served) console.log(`  ${item.town} <- ${item.zone}: ${
 for (const warning of built.warnings) console.log(`  ! ${warning}`);
 await writeFile(join(cache, 'model.kjt.json'), JSON.stringify(built.document));
 
+// The chokepoints the kept ports depend on, and how busy each is lately against its busiest full year.
+const keptPorts = defaultSelection(discovered.candidates).ports;
+const dependedOn = [...new Set(keptPorts.flatMap((port) => Object.keys(port.chokepoints?.shares ?? {})))];
+if (keptPorts.length) console.log('\nChokepoints:');
+for (const port of keptPorts) console.log(`  ${port.name}: ${port.chokepoints?.sea ? `${port.chokepoints.sea}, ${Object.entries(port.chokepoints.shares).map(([id, share]) => `${Math.round(share * 100)}% through ${chokepointById.get(id).name}`).join(', ')}` : 'open sea, no chokepoint'}`);
+for (const id of dependedOn) {
+    try {
+        const transits = summariseTransits(
+            await cachedFetch(`PortWatch ${id} by year`, chokepointYearlyUrl(id), join(cache, `chokepoint-${id}-years.json`)),
+            await cachedFetch(`PortWatch ${id} lately`, chokepointRecentUrl(id), join(cache, `chokepoint-${id}-recent.json`)));
+        if (transits) console.log(`  ${chokepointById.get(id).name}: ${transits.recent.containerShips.toFixed(1)} container ships a day from ${transits.recent.from} to ${transits.recent.to}, against ${transits.usual.containerShips.toFixed(1)} in ${transits.usual.year}; ${Math.round(transits.drop * 100)}% fewer. By year: ${transits.years.map((year) => `${year.year} ${year.containerShips.toFixed(1)}`).join(', ')}`);
+    } catch (error) {
+        console.log(`  ${chokepointById.get(id).name}: transits could not be fetched (${error.message})`);
+    }
+}
+
 if (flag('run')) {
     const { encodeProjectFile } = await import(pathToFileURL(konjugateModule('src/projectFile.mjs')));
     const { decodeResultFile } = await import(pathToFileURL(konjugateModule('src/engineProtocol.mjs')));
@@ -234,6 +253,58 @@ if (flag('run')) {
                 const arrived = last.get(node.states.find((state) => state.symbol === 'arrived').id);
                 const queue = result.samples.map((sample) => sample.states.find((state) => state.stateId === node.states.find((item) => item.symbol === 'queue').id).value);
                 console.log(`\nEngine: ${history.port} received ${arrived.toFixed(1)} TEU over 10 days, against ${expected.toFixed(1)} in its history ${Math.abs(arrived - expected) < 1e-6 * expected ? '(follows it)' : '(DOES NOT follow it)'}; its anchorage queue ranged ${Math.min(...queue).toFixed(0)} to ${Math.max(...queue).toFixed(0)} TEU.`);
+            }
+        }
+
+        // A disruption, run here as the window's fork would follow it: each dependent port's arrivals from the day it
+        // starts are its own arrivals scaled by its share through the chokepoint times the cut.
+        if (argument('disrupt')) {
+            const [id, cutPercent, startDay, days] = argument('disrupt').split(':');
+            if (!chokepointById.has(id) || ![cutPercent, startDay, days].every((value) => Number.isFinite(Number(value)))) throw new Error('--disrupt is chokepointN:cutPercent:startDay:days.');
+            const runDays = Math.min(built.days, Number(startDay) + Number(days) + 30);
+            const runFor = async (name, document) => {
+                await writeFile(join(directory, `${name}.kjt`), await encodeProjectFile(JSON.stringify(document)));
+                await writeFile(join(directory, `${name}.json`), JSON.stringify({ targetTime: runDays * 86400, globalTimeStep: 900, outputInterval: 3600 }));
+                const exit = await new Promise((resolve, reject) => {
+                    const child = spawn(executable, ['run', join(directory, `${name}.kjt`), '--configuration', join(directory, `${name}.json`), '--output', join(directory, `${name}.kjr`)], { stdio: ['ignore', 'ignore', 'inherit'] });
+                    child.once('error', reject);
+                    child.once('exit', resolve);
+                });
+                if (exit !== 0) throw new Error(`The engine exited with ${exit} for the ${name} run.`);
+                const decoded = decodeResultFile(await readFile(join(directory, `${name}.kjr`)));
+                return (node, symbol) => {
+                    const stateId = document.nodes.find((item) => item.name === node).states.find((state) => state.symbol === symbol).id;
+                    return decoded.samples.map((sample) => [sample.time / 86400, sample.states.find((state) => state.stateId === stateId).value]);
+                };
+            };
+            const baselineDocument = builder.document({ days: runDays, stepDays: 15 / 1440, outputDays: 1 / 24 });
+            const disrupted = structuredClone(baselineDocument);
+            const affected = [];
+            for (const port of keptPorts) {
+                const share = port.chokepoints?.shares?.[id] ?? 0;
+                if (!(share > 0)) continue;
+                const builtPort = built.ports.find((item) => item.name === port.name);
+                const indexed = built.parameterIndex.findLast((entry) => entry.entity === port.name && entry.key === 'vesselArrivals');
+                const shared = disrupted.sharedParameters.find((item) => item.id === indexed.sharedParameterId);
+                shared.schedule = { interpolation: 'linear', samples: disruptionPath({ base: builtPort.schedule ?? builtPort.arrivals, dependence: share, cut: Number(cutPercent) / 100, start: Number(startDay) * 86400, duration: Number(days) * 86400, forkAt: 0, runTime: runDays * 86400 }) };
+                affected.push(`${port.name} (${Math.round(share * 100)}%)`);
+            }
+            if (!affected.length) {
+                console.log(`\nDisruption: no kept port depends on ${chokepointById.get(id).name}.`);
+            } else {
+                const [before, after] = [await runFor('baseline', baselineDocument), await runFor('disrupted', disrupted)];
+                console.log(`\nDisruption: ${chokepointById.get(id).name} cut by ${cutPercent}% from day ${startDay} for ${days} days, reaching ${affected.join(', ')}; ${runDays} days run.`);
+                const lowest = (series) => series.reduce((best, point) => (point[1] < best[1] ? point : best));
+                const highest = (series) => series.reduce((best, point) => (point[1] > best[1] ? point : best));
+                for (const port of built.ports) console.log(`  ${port.name}: ${(before(port.name, 'arrived').at(-1)[1] - after(port.name, 'arrived').at(-1)[1]).toFixed(0)} TEU did not arrive`);
+                for (const zone of [...new Set(built.lanes.map((lane) => lane.to))]) {
+                    const [day, low] = lowest(after(zone, 'stock'));
+                    console.log(`  ${zone}: stock fell to ${low.toFixed(0)} TEU on day ${day.toFixed(1)} (baseline lowest ${lowest(before(zone, 'stock'))[1].toFixed(0)})`);
+                }
+                for (const town of [...new Set(built.served.map((item) => item.town))]) {
+                    const [day, peak] = highest(after(town, 'backlog'));
+                    console.log(`  ${town}: backlog peaked at ${peak.toFixed(0)} TEU on day ${day.toFixed(1)} (baseline highest ${highest(before(town, 'backlog'))[1].toFixed(0)})`);
+                }
             }
         }
     } finally {

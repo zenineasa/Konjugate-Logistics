@@ -6,6 +6,7 @@ import { defaultSelection, discoverRegion, parsePopulation } from '../../package
 import { clusterByDistance, distance, ringArea, splitToSpan } from '../../packages/toolbox/lib/geo.mjs';
 import { maximumSplitDepth, maximumStatusWaitSeconds, overpassQueries, overpassRequests, overpassStatusUrl, overpassUrl, readOverpass, retryableStatus, retryDelaysSeconds, retryPauseSeconds, splitBbox, splitRequest, statusWaitSeconds } from '../../packages/toolbox/lib/overpass.mjs';
 import { nominatimSearchUrl, rankPlaces } from '../../packages/toolbox/lib/places.mjs';
+import { chokepointById, chokepointDependence, chokepointRecentUrl, chokepoints, chokepointYearlyUrl, disruptionPath, summariseTransits } from '../../packages/toolbox/lib/chokepoints.mjs';
 import { matchPorts, portwatchActivityUrl, portwatchPortsUrl, readPortwatchActivity, readPortwatchPorts, summariseActivity } from '../../packages/toolbox/lib/portwatch.mjs';
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
 import { createRouter } from '../../packages/toolbox/lib/roadGraph.mjs';
@@ -565,4 +566,91 @@ test('arrivals can follow a matched port’s PortWatch history, as a held daily 
     assert.equal(shortShared.schedule.samples[0][0], 0, 'model day 0 is the first replayed day');
     close(shortShared.value, (12 * 1200 + 2 * 2400) / 14 / 10, 1e-9, 'the average over the 14 days');
     assert.deepEqual(short.histories[0], { port: 'Port Alder', from: '2026-09-14', to: '2026-09-27', days: 14 });
+});
+
+test('a port inside an enclosed sea depends on the strait that closes it; others on none', () => {
+    const at = (lat, lon) => chokepointDependence({ lat, lon });
+    assert.deepEqual(at(25.01, 55.06), { sea: 'Persian Gulf', shares: { chokepoint6: 1 } }, 'Jebel Ali, through Hormuz');
+    assert.equal(at(27.15, 56.2).sea, 'Persian Gulf', 'Bandar Abbas, just inside Hormuz');
+    assert.equal(at(29.35, 47.93).sea, 'Persian Gulf', 'Kuwait');
+    assert.deepEqual(at(25.2, 56.36), { sea: null, shares: {} }, 'Fujairah, outside Hormuz');
+    assert.deepEqual(at(21.5, 39.15).shares, { chokepoint1: 0.5, chokepoint4: 0.5 }, 'Jeddah: half through Suez, half through Bab el-Mandeb');
+    assert.equal(at(11.6, 43.15).sea, null, 'Djibouti, outside Bab el-Mandeb');
+    assert.equal(at(31.26, 32.3).sea, null, 'Port Said, outside Suez');
+    assert.deepEqual(at(44.17, 28.66).shares, { chokepoint3: 1 }, 'Constanta, through the Bosporus');
+    assert.deepEqual(at(47.1, 37.5).shares, { chokepoint28: 1, chokepoint3: 1 }, 'Mariupol, through Kerch and the Bosporus');
+    assert.equal(at(40.97, 28.68).sea, null, 'Ambarli, in the Sea of Marmara');
+    assert.equal(at(-29.99, -19.9).sea, null, 'the synthetic coast');
+    assert.equal(chokepoints.length, 28);
+    assert.equal(chokepointById.get('chokepoint6').name, 'Strait of Hormuz');
+});
+
+test('a disruption path scales a port’s arrivals by its dependence and the cut, counted from the fork', () => {
+    // Read the path as the engine does: linearly between pairs, edge-held, at step starts.
+    const read = (path, time) => {
+        if (time <= path[0][0]) return path[0][1];
+        for (let index = 1; index < path.length; index += 1) {
+            if (time <= path[index][0]) {
+                const [t0, v0] = path[index - 1];
+                const [t1, v1] = path[index];
+                return v0 + (time - t0) / (t1 - t0) * (v1 - v0);
+            }
+        }
+        return path.at(-1)[1];
+    };
+    const day = 86400;
+    // A constant 100 TEU/day, 80% through the chokepoint, transits cut by half from day 10 for 5 days, forked on day 10.
+    const steady = disruptionPath({ base: 100, dependence: 0.8, cut: 0.5, start: 10 * day, duration: 5 * day, forkAt: 10 * day, runTime: 90 * day });
+    assert.deepEqual(steady.map(([, value]) => value), [60, 60, 100, 100]);
+    for (const [time, expected] of [[0, 60], [5 * day - 900, 60], [5 * day, 100], [79 * day, 100]]) assert.equal(read(steady, time), expected, `at ${time / day} days`);
+    // A held daily schedule: each day's own value, scaled during the disruption only.
+    const schedule = Array.from({ length: 20 }, (_, index) => [index * day, 100 + index]);
+    const history = disruptionPath({ base: schedule, dependence: 1, cut: 0.25, start: 12 * day, duration: 3 * day, forkAt: 12 * day, runTime: 20 * day });
+    for (let dayIndex = 12; dayIndex < 20; dayIndex += 1) {
+        for (const offset of [0, 900, day - 900]) {
+            const expected = (100 + dayIndex) * (dayIndex < 15 ? 0.75 : 1);
+            assert.ok(Math.abs(read(history, (dayIndex - 12) * day + offset) - expected) < 1e-9, `day ${dayIndex}, ${offset} s in: ${expected}`);
+        }
+    }
+    // The last held value runs to the end of the run; a disruption past the end is cut short.
+    assert.equal(disruptionPath({ base: 50, dependence: 1, cut: 1, start: 85 * day, duration: 30 * day, forkAt: 80 * day, runTime: 90 * day }).at(-1)[1], 0);
+    assert.throws(() => disruptionPath({ base: 50, dependence: 1, cut: 1, start: 5 * day, duration: day, forkAt: 10 * day, runTime: 90 * day }), /must start at or after the fork/);
+});
+
+test('a chokepoint’s recent transits are set against its busiest full year', () => {
+    const yearly = JSON.stringify({ features: [
+        { attributes: { year: 2019, containerShips: 30, days: 365 } }, { attributes: { year: 2023, containerShips: 40, days: 365 } },
+        { attributes: { year: 2026, containerShips: 60, days: 120 } }, { attributes: { year: 2024, containerShips: 12, days: 366 } }
+    ] });
+    const recent = JSON.stringify({ features: Array.from({ length: 30 }, (_, index) => ({ attributes: { date: `2026-09-${String(30 - index).padStart(2, '0')}`, n_container: index % 2 ? 8 : 12 } })) });
+    const summary = summariseTransits(yearly, recent);
+    assert.deepEqual(summary.usual, { year: 2023, containerShips: 40 }, 'a part-year (2026) does not set the usual level');
+    assert.deepEqual(summary.recent, { from: '2026-09-01', to: '2026-09-30', containerShips: 10 });
+    close(summary.drop, 0.75, 1e-12, '10 a day against 40');
+    assert.equal(summary.years.length, 4);
+    assert.equal(summariseTransits(yearly, JSON.stringify({ features: [] })), null);
+    const url = new URL(chokepointYearlyUrl('chokepoint4'));
+    assert.equal(url.pathname, '/weJ1QsnbMYJlCHdG/ArcGIS/rest/services/Daily_Chokepoints_Data/FeatureServer/0/query');
+    assert.equal(url.searchParams.get('groupByFieldsForStatistics'), 'year');
+    assert.equal(new URL(chokepointRecentUrl('chokepoint4')).searchParams.get('resultRecordCount'), '30');
+    assert.throws(() => chokepointRecentUrl("chokepoint1' OR '1'='1"), /not a PortWatch chokepoint/);
+});
+
+test('a port’s arrivals are live, so a fork can change them, and the build reports what they start from', async () => {
+    const answers = Object.fromEntries(Object.entries({ ...syntheticRegion(), ...syntheticPortwatch() }).map(([kind, value]) => [kind, [JSON.stringify(value)]]));
+    const discovered = discoverRegion(answers, { bbox: syntheticBbox });
+    assert.deepEqual(discovered.candidates.ports[0].chokepoints, { sea: null, shares: {} });
+    const built = buildRegionModel({ builder: new ModelBuilder(await loadTemplates()), selection: defaultSelection(discovered.candidates), route: createRouter(discovered.roadGraph).route, options: { arrivals: 'history' } });
+    for (const entry of built.parameterIndex.filter((item) => item.key === 'vesselArrivals')) {
+        assert.equal(entry.live, true);
+        assert.equal(entry.minimum, 0);
+        const shared = built.document.sharedParameters.find((item) => item.id === entry.sharedParameterId);
+        assert.equal(shared.mode, 'live');
+        assert.ok(shared.control.maximum >= 4 * Math.max(shared.value, ...(shared.schedule?.samples.map((sample) => sample[1]) ?? [])) && shared.control.maximum === entry.maximum);
+    }
+    assert.equal(built.days, 90);
+    const alder = built.ports.find((port) => port.name === 'Port Alder');
+    assert.equal(alder.schedule.length, 28);
+    close(alder.arrivals, 1200 * 8 / 7 / 10, 1e-9, 'its average');
+    assert.equal(built.ports.find((port) => port.name === 'Birch Harbour').schedule, null);
 });

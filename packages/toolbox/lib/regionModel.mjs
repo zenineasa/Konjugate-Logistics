@@ -47,6 +47,13 @@ export const regionModelDefaults = {
     days: 90, stepMinutes: 15, outputMinutes: 60
 };
 
+// 1, 2 or 5 times a power of ten, at or above `value`: a round slider limit.
+function niceCeiling(value) {
+    if (!(value > 0)) return 1;
+    const power = 10 ** Math.floor(Math.log10(value));
+    return [1, 2, 5, 10].map((step) => step * power).find((candidate) => candidate >= value);
+}
+
 function templateValue(templates, templateId, key) {
     const declared = templates.get(templateId)?.sharedParameters?.find((item) => item.key === key);
     if (!declared) throw new Error(`The ${templateId} template has no shared parameter "${key}".`);
@@ -303,16 +310,22 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
             initialValues: { queue: arrivals * berthingDays, stock: arrivals * 3, waitDays: arrivals * berthingDays / berthCapacity },
             shared: { vesselArrivals: arrivals, berthCapacity, outageCapacity: berthCapacity }
         }));
+        const indexed = parameterIndex.findLast((entry) => entry.entity === port.name && entry.key === 'vesselArrivals');
+        const shared = builder.sharedParameters.find((item) => item.id === indexed?.sharedParameterId);
+        if (!shared) throw new Error(`The arrivals of ${port.name} could not be found.`);
         // Arrivals that follow the port's history: a stored schedule on its own arrivals parameter. The
         // parameter keeps the average as its value, used again if the schedule is removed.
         const history = histories.get(port.id);
         if (history) {
-            const indexed = parameterIndex.findLast((entry) => entry.entity === port.name && entry.key === 'vesselArrivals');
-            const shared = builder.sharedParameters.find((item) => item.id === indexed?.sharedParameterId);
-            if (!shared) throw new Error(`The arrivals of ${port.name} could not be found to follow its history.`);
             shared.schedule = { interpolation: 'hold', samples: history.samples };
             indexed.schedule = { from: history.from, to: history.to, days: history.samples.length };
         }
+        // Live, so a scenario fork can change them (a disrupted chokepoint), with a slider up to four times the
+        // busiest day.
+        const busiest = Math.max(arrivals, ...(history?.samples.map((sample) => sample[1]) ?? []));
+        const maximum = niceCeiling(4 * busiest);
+        builder.setLive(indexed.symbol, { minimum: 0, maximum, step: maximum / 100 });
+        Object.assign(indexed, { live: true, minimum: 0, maximum });
     }
 
     // ---- zones (warehouses), their lanes from ports, and towns
@@ -383,6 +396,10 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
     const document = builder.document({ days: settings.days, stepDays: settings.stepMinutes / 1440, outputDays: settings.outputMinutes / 1440 });
     return {
         document, provenance, warnings, parameterIndex, lanes,
+        // Each port's arrivals as built: its average, and the held schedule it follows when it has one -- what a
+        // scenario that changes them starts from. And the run's length in days.
+        ports: ports.map((port) => ({ name: port.name, arrivals: supply.get(port.id), schedule: histories.get(port.id)?.samples ?? null })),
+        days: settings.days,
         // The ports whose arrivals follow their history, and the dates model day 0 and the last day stand for.
         histories: [...histories].map(([id, history]) => ({ port: ports.find((port) => port.id === id).name, from: history.from, to: history.to, days: history.samples.length })),
         unusedZones: unusedZones.map((zone) => zone.name),
