@@ -7,7 +7,7 @@ import { clusterByDistance, distance, ringArea, splitToSpan } from '../../packag
 import { maximumSplitDepth, maximumStatusWaitSeconds, overpassQueries, overpassRequests, overpassStatusUrl, overpassUrl, readOverpass, retryableStatus, retryDelaysSeconds, retryPauseSeconds, splitBbox, splitRequest, statusWaitSeconds } from '../../packages/toolbox/lib/overpass.mjs';
 import { nominatimSearchUrl, rankPlaces } from '../../packages/toolbox/lib/places.mjs';
 import { chokepointById, chokepointDependence, chokepointRecentUrl, chokepoints, chokepointYearlyUrl, disruptionPath, summariseTransits } from '../../packages/toolbox/lib/chokepoints.mjs';
-import { matchPorts, portwatchActivityUrl, portwatchPortsUrl, readPortwatchActivity, readPortwatchPorts, summariseActivity } from '../../packages/toolbox/lib/portwatch.mjs';
+import { findShift, historyWindow, matchPorts, portwatchActivityUrl, portwatchPortsUrl, readPortwatchActivity, readPortwatchPorts, summariseActivity } from '../../packages/toolbox/lib/portwatch.mjs';
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
 import { createRouter } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { parseSites } from '../../packages/toolbox/lib/sites.mjs';
@@ -653,4 +653,43 @@ test('a port’s arrivals are live, so a fork can change them, and the build rep
     assert.equal(alder.schedule.length, 28);
     close(alder.arrivals, 1200 * 8 / 7 / 10, 1e-9, 'its average');
     assert.equal(built.ports.find((port) => port.name === 'Birch Harbour').schedule, null);
+});
+
+test('a break in a port’s history is found by month, and the model can use a chosen period of it', async () => {
+    // 180 days to 2026-09-27, falling to a tenth from 2026-07-01.
+    const pw = syntheticPortwatch({ days: 180, fallFrom: '2026-07-01' });
+    const activity = summariseActivity(readPortwatchActivity(JSON.stringify(pw.portwatchActivity)));
+    assert.equal(activity.shift.month, '2026-07');
+    close(activity.shift.change, -0.9, 0.02, 'a 90% fall');
+    // A steady history has no break, and neither does a single quiet month.
+    assert.equal(summariseActivity(readPortwatchActivity(JSON.stringify(syntheticPortwatch({ days: 180 }).portwatchActivity))).shift, null);
+    const oneQuietMonth = [...Array(150)].map((_, index) => ({ date: new Date(Date.UTC(2026, 0, 1) + index * 86400000).toISOString().slice(0, 10), importTonnes: 100 }))
+        .map((day) => (day.date.startsWith('2026-03') ? { ...day, importTonnes: 10 } : day));
+    assert.equal(findShift(oneQuietMonth), null);
+
+    assert.deepEqual(historyWindow([['2026-01-01', 1], ['2026-01-02', 2], ['2026-01-03', 3], ['2026-01-04', 4]], { from: '2026-01-02', days: 2 }), [['2026-01-02', 2], ['2026-01-03', 3]]);
+    assert.deepEqual(historyWindow([['2026-01-01', 1], ['2026-01-02', 2], ['2026-01-03', 3]], { days: 2 }), [['2026-01-02', 2], ['2026-01-03', 3]]);
+
+    const answers = Object.fromEntries(Object.entries({ ...syntheticRegion(), ...pw }).map(([kind, value]) => [kind, [JSON.stringify(value)]]));
+    const discovered = discoverRegion(answers, { bbox: syntheticBbox });
+    assert.ok(discovered.notices.some((item) => item.level === 'warning' && /^Port Alder's container imports fell 90% from July 2026 in IMF PortWatch/.test(item.text)));
+    const selection = defaultSelection(discovered.candidates);
+    const route = createRouter(discovered.roadGraph).route;
+    const build = async (options) => buildRegionModel({ builder: new ModelBuilder(await loadTemplates()), selection, route, options });
+    const alderOf = (built) => built.ports.find((port) => port.name === 'Port Alder');
+
+    // The latest 90 days are mostly after the fall; from April they are all before it.
+    const latest = await build({ arrivals: 'history' });
+    const before = await build({ arrivals: 'history', historyFrom: '2026-04-01' });
+    assert.deepEqual(before.histories[0], { port: 'Port Alder', from: '2026-04-01', to: '2026-06-29', days: 90 });
+    close(alderOf(before).arrivals, 1200 * 8 / 7 / 10, 3, 'before the fall: the usual level');
+    assert.ok(alderOf(latest).arrivals < 0.5 * alderOf(latest).usual, 'the latest days sit far below the usual level');
+    close(alderOf(latest).usual, alderOf(before).arrivals, 3, 'the usual level is the one before the fall');
+    assert.match(latest.provenance.find((item) => item.entity === 'Port Alder' && item.parameter === 'Containers handed inland').detail, /Its history fell 90% from 2026-07, so this depends on the period chosen\./);
+    // A steady average over the chosen period, rather than the whole history.
+    close(alderOf(await build({ arrivals: 'average', historyFrom: '2026-04-01' })).arrivals, alderOf(before).arrivals, 1e-9, 'the same days, averaged');
+    // A period with no history falls back to the latest days, with a warning.
+    const missing = await build({ arrivals: 'history', historyFrom: '2030-01-01' });
+    assert.ok(missing.warnings.some((text) => /Port Alder's PortWatch history has no days from 2030-01-01; its latest 90 days are used instead\./.test(text)));
+    assert.equal(missing.histories[0].to, '2026-09-27');
 });

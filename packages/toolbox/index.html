@@ -73,6 +73,8 @@
                         <option value="history">Follow PortWatch history</option>
                         <option value="average">Steady average</option>
                     </select></label>
+                <label class="row small" title="The days of PortWatch history the model uses: the arrivals it replays, or the days it averages over. Empty: the latest days (replayed), or the whole year fetched (averaged).">History from
+                    <input type="date" id="historyFromInput"> <span class="muted" id="historyFromHint">empty: the latest days</span></label>
                 <label class="row small"><input type="checkbox" id="keepInStep" checked> Keep the canvas in step with changes here</label>
                 <div id="buildStatus"></div>
                 <div id="buildResult"></div>

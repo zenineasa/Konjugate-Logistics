@@ -93,7 +93,8 @@ export function syntheticRegion({ warehouses = true } = {}) {
 // Alder is listed (its point 1 km off the port land), Birch Harbour is not, and a ferry pier inside the
 // region and a port well outside it are. Port Alder's history is `days` days: 1,200 t of container
 // imports a day, with every seventh day at 2,400 t.
-export function syntheticPortwatch({ days = 28, lastDate = '2026-09-27' } = {}) {
+// With `fallFrom` (a date), imports from that day on are a tenth of what they were: a break in the history.
+export function syntheticPortwatch({ days = 28, lastDate = '2026-09-27', fallFrom = null } = {}) {
     const listed = (portid, portname, lat, lon, containers) => ({ attributes: { portid, portname, country: 'Synthetica', lat, lon, vessel_count_container: containers, vessel_count_total: containers + 10 } });
     const ports = { features: [
         listed('port9001', 'Alder', -29.99, -19.915, 420),
@@ -105,7 +106,8 @@ export function syntheticPortwatch({ days = 28, lastDate = '2026-09-27' } = {}) 
     const history = Array.from({ length: days }, (_, index) => {
         const date = new Date(end - index * 86400000).toISOString().slice(0, 10);
         const heavy = index % 7 === 0;
-        return { attributes: { portid: 'port9001', portname: 'Alder', date, portcalls_container: heavy ? 2 : 1, portcalls: heavy ? 3 : 2, import_container: heavy ? 2400 : 1200, export_container: 900 } };
+        const scale = fallFrom && date >= fallFrom ? 0.1 : 1;
+        return { attributes: { portid: 'port9001', portname: 'Alder', date, portcalls_container: heavy ? 2 : 1, portcalls: heavy ? 3 : 2, import_container: (heavy ? 2400 : 1200) * scale, export_container: 900 } };
     });
     return { portwatchPorts: ports, portwatchActivity: { features: history } };
 }

@@ -229,6 +229,11 @@ try {
         const savedPath = join(scratch, 'region.kjt');
         await app.evaluate(({ dialog }, path) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: path }); }, savedPath);
         await window.click('#saveButton');
+        // The canvas holds the disruption's results now, so Konjugate asks what to save: the model alone is enough here.
+        const asked = await window.waitForFunction(() => document.querySelector('#saveContentDialog').open, null, { timeout: 10000 }).then(() => true, () => false);
+        assert.ok(asked, 'Saving a project with the disruption\'s results should ask what to save.');
+        await window.check('#saveContentDialog input[value="model"]');
+        await window.click('#saveContentContinue');
         await waitForFile(savedPath);
         const saved = JSON.parse(await decodeProjectFile(await readFile(savedPath)));
         const entry = saved.addonData?.['konjugate.logistics.toolbox'];

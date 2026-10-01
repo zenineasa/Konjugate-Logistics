@@ -106,6 +106,7 @@ export default async function importRegion({ files, helpers, options = {} }) {
         const settings = {};
         if (Number(options.settings?.portTeuPerDay) > 0) settings.portTeuPerDay = Number(options.settings.portTeuPerDay);
         if (['average', 'history'].includes(options.settings?.arrivals)) settings.arrivals = options.settings.arrivals;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(options.settings?.historyFrom ?? '')) settings.historyFrom = options.settings.historyFrom;
         const built = buildRegionModel({ builder, selection, route: createRouter(discovered.roadGraph).route, options: settings });
         const townsServed = new Set(built.served.map((item) => item.town)).size;
         const lanesByBasis = built.lanes.reduce((counts, lane) => ({ ...counts, [lane.basis]: (counts[lane.basis] ?? 0) + 1 }), {});

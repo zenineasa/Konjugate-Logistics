@@ -383,6 +383,13 @@ export function discoverRegion(answers, options = {}) {
         const quiet = ports.filter((port) => port.portwatch && !port.activity);
         if (withActivity.length) notices.push({ kind: 'ports', level: 'info', text: `Port activity from IMF PortWatch: ${withActivity.map((port) => `${port.name} imports about ${Math.round(port.activity.teuPerDay).toLocaleString('en')} TEU a day`).join('; ')} (container tonnes over ${withActivity[0].activity.from} to ${withActivity[0].activity.to}, at an assumed ${tonnesPerTeuText} t a TEU, including containers that only change ships).` });
         if (without.length) notices.push({ kind: 'ports', level: 'info', text: `${without.map((port) => port.name).join(', ')} ${without.length === 1 ? 'is' : 'are'} not in IMF PortWatch, so ${without.length === 1 ? 'it starts' : 'they start'} with an assumed volume, which you can change.` });
+        // A break in a port's history: what it averages, and what a replay shows, depends on the period chosen.
+        const monthName = (month) => new Date(`${month}-01T00:00:00Z`).toLocaleString('en', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+        for (const port of withActivity.filter((item) => item.activity.shift)) {
+            const shift = port.activity.shift;
+            const tonnes = (value) => Math.round(value).toLocaleString('en');
+            notices.push({ kind: 'ports', level: 'warning', text: `${port.name}'s container imports ${shift.change < 0 ? 'fell' : 'rose'} ${Math.round(Math.abs(shift.change) * 100)}% from ${monthName(shift.month)} in IMF PortWatch (from about ${tonnes(shift.before)} to ${tonnes(shift.after)} t a day on average). The volume the model starts from, and what a replay shows, depend on the period chosen for the history.` });
+        }
         if (quiet.length) notices.push({ kind: 'ports', level: 'info', text: `IMF PortWatch has no recent activity for ${quiet.map((port) => `${port.name} (${port.portwatch.name})`).join(', ')}, so ${quiet.length === 1 ? 'it starts' : 'they start'} with an assumed volume, which you can change.` });
         if (unmatchedListed.length) notices.push({ kind: 'ports', level: 'info', text: `IMF PortWatch also lists ${unmatchedListed.slice(0, 4).map((listed) => listed.name).join(', ')}${unmatchedListed.length > 4 ? ` and ${unmatchedListed.length - 4} more` : ''} here, which OpenStreetMap does not map as a cargo port. Add ${unmatchedListed.length === 1 ? 'it' : 'one'} on the map if containers come through ${unmatchedListed.length === 1 ? 'it' : 'them'}.` });
     }

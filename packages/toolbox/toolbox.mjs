@@ -291,6 +291,7 @@ async function discover({ keepSites = false, keepCuration = false } = {}) {
     map.setMap(state.discovered.map);
     for (const section of ['#stepCoverage', '#stepCurate', '#stepBuild']) $(section).hidden = false;
     renderCoverage();
+    renderHistoryHint();
     renderCandidates();
     changed({ rebuild: Boolean(state.built) });
     const warnings = answer.report?.warnings ?? [];
@@ -402,6 +403,7 @@ $('#portVolume').addEventListener('change', () => {
     changed();
 });
 $('#arrivalsSelect').addEventListener('change', () => changed());
+$('#historyFromInput').addEventListener('change', () => changed());
 
 document.querySelectorAll('[data-add]').forEach((button) => button.addEventListener('click', () => {
     const kind = map.addKind === button.dataset.add ? null : button.dataset.add;
@@ -456,7 +458,7 @@ async function build({ focus = false } = {}) {
     setBusy(true);
     $('#buildStatus').innerHTML = notice('', 'Building the model: routing every lane…');
     try {
-        const answer = await call(api.runImport(importerId, { step: 'build', bbox: state.bbox, selection: selection(), settings: { portTeuPerDay: state.portVolume, arrivals: $('#arrivalsSelect').value } }));
+        const answer = await call(api.runImport(importerId, { step: 'build', bbox: state.bbox, selection: selection(), settings: { portTeuPerDay: state.portVolume, arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null } }));
         if (!answer.imported) throw new Error((answer.report?.errors ?? ['The model could not be built.']).join(' '));
         state.built = answer.data;
         await call(api.openInCanvas(null, { focus, silent: true, session: sessionState() }));
@@ -467,7 +469,7 @@ async function build({ focus = false } = {}) {
             + state.built.warnings.map((text) => notice('warning', text)).join('');
         renderBuilt();
         state.scenario = null;
-        renderScenario();
+        renderScenario({ fetchTransits: true });
     } catch (error) {
         $('#buildStatus').innerHTML = notice('error', error.message);
     } finally {
@@ -516,8 +518,8 @@ function sessionState() {
         margin: $('#marginSelect').value, bbox: state.bbox, group: state.group, portVolume: state.portVolume,
         kept: Object.fromEntries(groups.map((group) => [group, [...state.kept[group]]])),
         changes: [...state.changes], added: state.added, built: state.built, keepInStep: $('#keepInStep').checked,
-        arrivals: $('#arrivalsSelect').value,
-        disruption: { ...disruptionSettings(), dependence: [...state.dependence] }, scenario: state.scenario
+        arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null,
+        disruption: { ...disruptionSettings(), dependence: [...state.dependence], transits: [...state.transits].filter(([, value]) => value && !value.error) }, scenario: state.scenario
     };
 }
 
@@ -547,8 +549,10 @@ async function restoreSession() {
         state.group = saved.group ?? 'ports';
         $('#keepInStep').checked = saved.keepInStep !== false;
         if (saved.arrivals) $('#arrivalsSelect').value = saved.arrivals;
+        $('#historyFromInput').value = saved.historyFrom ?? '';
         if (saved.disruption) {
             state.dependence = new Map(saved.disruption.dependence ?? []);
+            state.transits = new Map(saved.disruption.transits ?? []);
             $('#cutInput').value = saved.disruption.cut ?? 50;
             $('#startInput').value = saved.disruption.startDay ?? 10;
             $('#durationInput').value = saved.disruption.days ?? 30;
@@ -611,7 +615,7 @@ function disruptionSettings() {
     };
 }
 
-function renderScenario() {
+function renderScenario({ fetchTransits = false } = {}) {
     const built = state.built;
     $('#stepScenario').hidden = !built?.ports;
     if (!built?.ports) return;
@@ -624,7 +628,8 @@ function renderScenario() {
         + `<optgroup label="${used.size ? 'Other chokepoints' : 'Chokepoints'}">${chokepoints.filter((item) => !used.has(item.id)).map(option).join('')}</optgroup>`;
     if (previous && chokepointById.has(previous)) $('#chokepointSelect').value = previous;
     renderDependence();
-    renderTransits();
+    // After a fresh build, fetch the chokepoint's transits; when restoring a session (perhaps offline), show only what was kept.
+    renderTransits({ fetch: fetchTransits });
     renderScenarioResult();
 }
 
@@ -644,11 +649,16 @@ function renderDependence() {
 }
 
 // The chokepoint's container ships a day lately against its busiest full year, from PortWatch: the cut it shows.
-async function renderTransits() {
+async function renderTransits({ fetch = true } = {}) {
     const chokepoint = $('#chokepointSelect').value;
     const box = $('#transitSummary');
     if (!chokepoint) { box.hidden = true; return; }
     box.hidden = false;
+    if (!state.transits.has(chokepoint) && !fetch) {
+        box.innerHTML = `How busy ${escape(chokepointById.get(chokepoint).name)} is lately: <button class="link" type="button" id="fetchTransits">Fetch its transits from IMF PortWatch</button>`;
+        $('#fetchTransits').addEventListener('click', () => renderTransits());
+        return;
+    }
     if (!state.transits.has(chokepoint)) {
         box.textContent = 'Fetching its transits from IMF PortWatch…';
         try {
@@ -685,6 +695,19 @@ $('#runScenarioButton').addEventListener('click', async () => {
         if (!(settings.days > 0)) throw new Error('The disruption must last at least a day.');
         const affected = state.built.ports.map((port) => ({ port, share: sharesOf(port)[settings.chokepoint] ?? 0 })).filter((item) => item.share > 0);
         if (!affected.length) throw new Error(`None of the ports depends on ${chokepointById.get(settings.chokepoint).name}. Set a port's share through it to run the disruption.`);
+        // A period already far below a port's usual traffic may be the disruption itself: cutting it again counts it twice.
+        const already = affected.filter((item) => item.port.usual > 0 && item.port.arrivals < 0.5 * item.port.usual);
+        const confirmation = JSON.stringify({ ...settings, ports: already.map((item) => item.port.name), from: $('#historyFromInput').value });
+        if (already.length && state.confirmedDisruption !== confirmation) {
+            const transits = state.transits.get(settings.chokepoint);
+            const busy = transits && !transits.error ? ` PortWatch counts ${number(transits.recent.containerShips, 1)} container ships a day through ${escape(chokepointById.get(settings.chokepoint).name)} lately, against ${number(transits.usual.containerShips, 1)} in ${transits.usual.year}.` : '';
+            status.innerHTML = `<div class="notice warning">The period modelled is already far below the usual traffic at ${already.map((item) => `${escape(item.port.name)} (${number(item.port.arrivals)} TEU a day against about ${number(item.port.usual)} before its history ${item.port.shift?.change < 0 ? 'fell' : 'changed'})`).join(', ')}.${busy} Cutting it again would count the disruption twice; choose a period before the break under History from, or <button class="link" type="button" id="runAnyway">run it anyway</button>.</div>`;
+            $('#runAnyway').addEventListener('click', () => {
+                state.confirmedDisruption = confirmation;
+                $('#runScenarioButton').click();
+            });
+            return;
+        }
         const supplied = { entities: affected.map((item) => item.port.name), samples: {} };
         for (const { port, share } of affected) {
             supplied.samples[port.name] = disruptionPath({
@@ -757,4 +780,33 @@ function renderScenarioResult() {
         <table><thead><tr><th>Town</th><th class="number">Highest backlog</th><th class="number">baseline</th><th class="number">day</th></tr></thead>
             <tbody>${towns.map((item) => `<tr><td>${escape(item.name)}</td><td${worse(item.peak, item.baseline)}>${number(item.peak)}</td><td class="number">${number(item.baseline)}</td><td class="number">${number(item.day, 1)}</td></tr>`).join('')}</tbody></table>
         <p class="muted small">The forked run is in the canvas beside the baseline; Show in Konjugate brings it forward.</p>`;
+}
+
+// ---- the period of history -----------------------------------------------------------------------------------------
+// When a port's PortWatch history has a break, say so beside the date, and offer the days just before it (a period
+// of normal traffic to start from) or across it (a month before it, to replay the break itself).
+const modelDays = 90;
+function renderHistoryHint() {
+    const ports = state.discovered?.candidates.ports.filter((port) => port.activity) ?? [];
+    const input = $('#historyFromInput');
+    const hint = $('#historyFromHint');
+    if (ports.length) {
+        input.min = ports.map((port) => port.activity.from).sort()[0];
+        input.max = ports.map((port) => port.activity.to).sort().at(-1);
+    }
+    const shifted = ports.find((port) => port.activity.shift);
+    if (!shifted) { hint.textContent = 'empty: the latest days'; return; }
+    const shift = shifted.activity.shift;
+    const breakDate = `${shift.month}-01`;
+    const before = new Date(Date.parse(`${breakDate}T00:00:00Z`) - modelDays * 86400000).toISOString().slice(0, 10);
+    const usable = before >= input.min ? before : input.min;
+    // Across the break: a month of normal traffic first, so the replay shows the fall and what follows it.
+    const across = new Date(Date.parse(`${breakDate}T00:00:00Z`) - 30 * 86400000).toISOString().slice(0, 10);
+    const month = new Date(`${breakDate}T00:00:00Z`).toLocaleString('en', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    hint.innerHTML = `${escape(shifted.name)}'s imports ${shift.change < 0 ? 'fell' : 'rose'} ${Math.round(Math.abs(shift.change) * 100)}% from ${month}: `
+        + `<button class="link" type="button" data-history-from="${usable}">before it</button> · <button class="link" type="button" data-history-from="${across}">across it</button> · <button class="link" type="button" data-history-from="">the latest days</button>`;
+    hint.querySelectorAll('[data-history-from]').forEach((button) => button.addEventListener('click', () => {
+        input.value = button.dataset.historyFrom;
+        changed();
+    }));
 }

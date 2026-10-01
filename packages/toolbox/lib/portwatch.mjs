@@ -87,8 +87,39 @@ export function summariseActivity(activity) {
         importTonnesPerDay, exportTonnesPerDay: mean('exportTonnes'), containerCallsPerDay: mean('containerCalls'),
         teuPerDay: importTonnesPerDay / tonnesPerTeu,
         // Each day's container imports, oldest first, for a model whose arrivals follow the history.
-        daily: days.map((day) => [day.date, day.importTonnes])
+        daily: days.map((day) => [day.date, day.importTonnes]),
+        shift: findShift(days)
     };
+}
+
+// A break in a port's history: the month from which its container imports, on average, are less than half or more
+// than twice what they were before. Months are compared whole, and each side needs two months of data, so a single
+// busy or quiet month is not a break. Returns { month, before, after, change } (tonnes a day; change is the
+// fraction, -0.95 for a 95% fall), or null.
+export const shiftThreshold = 2;
+export function findShift(days) {
+    const months = [...new Set(days.map((day) => day.date.slice(0, 7)))];
+    let best = null;
+    for (let index = 2; index <= months.length - 2; index += 1) {
+        const month = months[index];
+        const before = days.filter((day) => day.date.slice(0, 7) < month);
+        const after = days.filter((day) => day.date.slice(0, 7) >= month);
+        const average = (list) => list.reduce((total, day) => total + day.importTonnes, 0) / list.length;
+        const [b, a] = [average(before), average(after)];
+        if (!(b > 0 && a > 0)) continue;
+        const ratio = a / b;
+        if (Math.abs(Math.log(ratio)) >= Math.log(shiftThreshold) && (!best || Math.abs(Math.log(ratio)) > Math.abs(Math.log(best.after / best.before)))) {
+            best = { month, before: b, after: a, change: ratio - 1 };
+        }
+    }
+    return best;
+}
+
+// The days of a history a run uses: `days` days from `from` (YYYY-MM-DD), or the latest `days` days when `from` is
+// not given. Returns the [date, tonnes] rows, oldest first (fewer when the history runs out).
+export function historyWindow(daily, { from = null, days }) {
+    if (!from) return daily.slice(-days);
+    return daily.filter(([date]) => date >= from).slice(0, days);
 }
 
 // Pairs OpenStreetMap ports with PortWatch ports, each at most once, nearest pairs first, within reach.

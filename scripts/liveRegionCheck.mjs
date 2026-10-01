@@ -10,6 +10,7 @@
 //   node scripts/liveRegionCheck.mjs --place "Jebel Ali" [--pick 2] [--radius 40] [--run]
 //   ... [--overpass overpass.private.coffee]   another Overpass server, when the main one is overloaded
 //   ... [--arrivals history]   matched ports' arrivals follow their daily PortWatch history (default: steady average)
+//   ... [--from 2025-10-01]   the history period: the model's days from that date (default: the latest days)
 //   ... [--disrupt chokepoint6:50:10:30]   with --run, also a disruption: that chokepoint's transits cut by 50% from day 10
 //       for 30 days, each kept port losing its share through it (from the sea it lies in), against the baseline
 //
@@ -192,7 +193,7 @@ const routeStarted = Date.now();
 const builder = new ModelBuilder(await loadTemplates());
 const arrivalsMode = argument('arrivals') ?? 'average';
 if (!['average', 'history'].includes(arrivalsMode)) throw new Error('--arrivals is average or history.');
-const built = buildRegionModel({ builder, selection: defaultSelection(discovered.candidates), route: createRouter(discovered.roadGraph).route, options: { arrivals: arrivalsMode } });
+const built = buildRegionModel({ builder, selection: defaultSelection(discovered.candidates), route: createRouter(discovered.roadGraph).route, options: { arrivals: arrivalsMode, ...(argument('from') ? { historyFrom: argument('from') } : {}) } });
 for (const history of built.histories) console.log(`  ${history.port}: arrivals follow its history from ${history.from} (model day 0) to ${history.to}`);
 console.log(`\nModel: ${built.document.nodes.length} nodes, ${built.document.edges.length} edges, built in ${((Date.now() - routeStarted) / 1000).toFixed(1)} s.`);
 for (const item of built.provenance.filter((entry) => entry.parameter === 'Containers handed inland')) console.log(`  ${item.entity} hands inland ${item.value.toFixed(1)} TEU/day (${item.basis}): ${item.detail}`);
@@ -289,6 +290,8 @@ if (flag('run')) {
                 shared.schedule = { interpolation: 'linear', samples: disruptionPath({ base: builtPort.schedule ?? builtPort.arrivals, dependence: share, cut: Number(cutPercent) / 100, start: Number(startDay) * 86400, duration: Number(days) * 86400, forkAt: 0, runTime: runDays * 86400 }) };
                 affected.push(`${port.name} (${Math.round(share * 100)}%)`);
             }
+            const already = built.ports.filter((port) => affected.some((item) => item.startsWith(`${port.name} (`)) && port.usual > 0 && port.arrivals < 0.5 * port.usual);
+            for (const port of already) console.log(`\n! ${port.name} is modelled at ${port.arrivals.toFixed(0)} TEU a day, against about ${port.usual.toFixed(0)} before its history changed: this period may already be the disruption, and cutting it again counts it twice. Try --from a date before the break.`);
             if (!affected.length) {
                 console.log(`\nDisruption: no kept port depends on ${chokepointById.get(id).name}.`);
             } else {
