@@ -88,3 +88,24 @@ export function syntheticRegion({ warehouses = true } = {}) {
     const answer = (elements) => ({ version: 0.6, generator: 'synthetic', elements });
     return { ports: answer(ports), logistics: answer(logistics), roads: answer(roads), rail: answer(rail), places: answer(places) };
 }
+
+// IMF PortWatch answers for the same made-up coast, shaped as its ArcGIS service returns them: Port
+// Alder is listed (its point 1 km off the port land), Birch Harbour is not, and a ferry pier inside the
+// region and a port well outside it are. Port Alder's history is `days` days: 1,200 t of container
+// imports a day, with every seventh day at 2,400 t.
+export function syntheticPortwatch({ days = 28, lastDate = '2026-09-27' } = {}) {
+    const listed = (portid, portname, lat, lon, containers) => ({ attributes: { portid, portname, country: 'Synthetica', lat, lon, vessel_count_container: containers, vessel_count_total: containers + 10 } });
+    const ports = { features: [
+        listed('port9001', 'Alder', -29.99, -19.915, 420),
+        listed('port9002', 'Dunmore Ferry Pier', -29.92, -19.42, 3),
+        listed('port9003', 'Far Away Port', -31.5, -21.5, 900)
+    ] };
+    const end = new Date(`${lastDate}T00:00:00Z`).getTime();
+    // Newest first, as the service is asked for them.
+    const history = Array.from({ length: days }, (_, index) => {
+        const date = new Date(end - index * 86400000).toISOString().slice(0, 10);
+        const heavy = index % 7 === 0;
+        return { attributes: { portid: 'port9001', portname: 'Alder', date, portcalls_container: heavy ? 2 : 1, portcalls: heavy ? 3 : 2, import_container: heavy ? 2400 : 1200, export_container: 900 } };
+    });
+    return { portwatchPorts: ports, portwatchActivity: { features: history } };
+}

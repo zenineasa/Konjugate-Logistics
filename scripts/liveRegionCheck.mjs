@@ -24,6 +24,7 @@ import { pathToFileURL } from 'node:url';
 import { defaultSelection, discoverRegion } from '../packages/toolbox/lib/discovery.mjs';
 import { maximumSplitDepth, overpassHost, overpassRequests, overpassStatusUrl, overpassUrl, retryableStatus, retryDelaysSeconds, retryPauseSeconds, splitRequest, statusWaitSeconds } from '../packages/toolbox/lib/overpass.mjs';
 import { nominatimSearchUrl, rankPlaces } from '../packages/toolbox/lib/places.mjs';
+import { portwatchActivityUrl, portwatchPortsUrl } from '../packages/toolbox/lib/portwatch.mjs';
 import { buildRegionModel } from '../packages/toolbox/lib/regionModel.mjs';
 import { createRouter } from '../packages/toolbox/lib/roadGraph.mjs';
 import { konjugateModule, logisticsRoot } from './konjugatePaths.mjs';
@@ -86,6 +87,12 @@ while (queue.length) {
     // Keyed by the query itself, so a changed query is fetched afresh rather than read from an old answer.
     const file = join(cache, `${request.kind}-${request.part}-${createHash('sha256').update(request.query).digest('hex').slice(0, 8)}.json`);
     let text;
+    // A tile fetched before as quarters: go straight to the quarters, rather than download it whole again.
+    if (existsSync(`${file}.split`) && !flag('refresh')) {
+        console.log(`${label}: fetched before as four quarters`);
+        queue.unshift(...splitRequest(request));
+        continue;
+    }
     if (existsSync(file) && !flag('refresh')) {
         text = await readFile(file, 'utf8');
         console.log(`${label}: cached, ${(text.length / 1024).toFixed(0)} KB`);
@@ -112,6 +119,7 @@ while (queue.length) {
                 if (size > hostFetchLimit && request.depth < maximumSplitDepth) {
                     console.log(`${label}: ${(size / 1024).toFixed(0)} KB is over the add-on's ${hostFetchLimit / 1024 / 1024} MB fetch limit; fetching it as four quarters`);
                     queue.unshift(...splitRequest(request));
+                    await writeFile(`${file}.split`, '');
                     text = null;
                     break;
                 }
@@ -134,8 +142,35 @@ while (queue.length) {
     if (text !== null) (answers[request.kind] ??= []).push(text);
 }
 
+// IMF PortWatch: the ports around the region, then a year of history for each that matches a port found.
+// Cached like the map data; --refresh fetches it again (the history is updated weekly).
+async function cachedFetch(label, url, file) {
+    if (existsSync(file) && !flag('refresh')) {
+        const text = await readFile(file, 'utf8');
+        console.log(`${label}: cached, ${(text.length / 1024).toFixed(0)} KB`);
+        return text;
+    }
+    const started = Date.now();
+    const response = await fetch(url, { headers: { 'User-Agent': userAgent }, signal: AbortSignal.timeout(60000) });
+    const text = await response.text();
+    if (!response.ok || /^\s*\{\s*"error"/.test(text)) throw new Error(`IMF PortWatch answered ${response.status} for ${label}: ${text.slice(0, 200)}`);
+    console.log(`${label}: ${(Buffer.byteLength(text) / 1024).toFixed(0)} KB in ${((Date.now() - started) / 1000).toFixed(1)} s`);
+    await writeFile(file, text);
+    return text;
+}
+try {
+    answers.portwatchPorts = [await cachedFetch('PortWatch ports', portwatchPortsUrl(bbox), join(cache, 'portwatch-ports.json'))];
+    const portids = [...new Set(discoverRegion(answers, { bbox }).candidates.ports.map((port) => port.portwatch?.portid).filter(Boolean))];
+    answers.portwatchActivity = [];
+    for (const portid of portids) answers.portwatchActivity.push(await cachedFetch(`PortWatch ${portid}`, portwatchActivityUrl(portid), join(cache, `portwatch-${portid}.json`)));
+} catch (error) {
+    console.log(`Port activity could not be fetched (${error.message}); ports keep assumed volumes.`);
+    delete answers.portwatchPorts;
+    delete answers.portwatchActivity;
+}
+
 const started = Date.now();
-const discovered = discoverRegion(answers);
+const discovered = discoverRegion(answers, { bbox });
 console.log(`\nDiscovery took ${((Date.now() - started) / 1000).toFixed(1)} s; the road graph has ${discovered.roadGraph.vertices.size} vertices.`);
 console.log('\nCoverage:', JSON.stringify(discovered.coverage, null, 2));
 console.log('\nNotices:');
@@ -144,7 +179,7 @@ const show = (title, items, describe) => {
     console.log(`\n${title} (${items.length} found; top 10):`);
     for (const item of items.slice(0, 10)) console.log(`  ${item.name} -- ${describe(item)}`);
 };
-show('Ports', discovered.candidates.ports, (port) => `${port.areaSquareKilometres} km², ${port.parts} part(s), ${port.commercial ? 'commercial' : 'no commercial tag'}, ${port.anchorages} anchorage(s)`);
+show('Ports', discovered.candidates.ports, (port) => `${port.areaSquareKilometres} km², ${port.parts} part(s), ${port.commercial ? 'commercial' : 'no commercial tag'}, ${port.anchorages} anchorage(s)${port.portwatch ? `; PortWatch ${port.portwatch.portid} ${port.portwatch.name} at ${port.portwatch.kilometres} km` : ''}${port.activity ? `: ${Math.round(port.activity.importTonnesPerDay).toLocaleString('en')} t/day container imports = ${Math.round(port.activity.teuPerDay).toLocaleString('en')} TEU/day, ${port.activity.containerCallsPerDay.toFixed(1)} container calls/day (${port.activity.from} to ${port.activity.to})` : ''}`);
 show('Logistics zones', discovered.candidates.zones, (zone) => `${Math.round(zone.floorAreaSquareMetres / 1000)}k m² floor (${zone.floorAreaBasis}), ${zone.buildings} building(s), ${zone.roadKilometres} km to a major road`);
 show('Towns', discovered.candidates.towns, (town) => `${town.population.toLocaleString('en')} (${town.populationBasis})${town.suburbs ? `, ${town.suburbs.length} suburbs` : ''}`);
 
@@ -152,6 +187,7 @@ const routeStarted = Date.now();
 const builder = new ModelBuilder(await loadTemplates());
 const built = buildRegionModel({ builder, selection: defaultSelection(discovered.candidates), route: createRouter(discovered.roadGraph).route });
 console.log(`\nModel: ${built.document.nodes.length} nodes, ${built.document.edges.length} edges, built in ${((Date.now() - routeStarted) / 1000).toFixed(1)} s.`);
+for (const item of built.provenance.filter((entry) => entry.parameter === 'Containers handed inland')) console.log(`  ${item.entity} hands inland ${item.value.toFixed(1)} TEU/day (${item.basis}): ${item.detail}`);
 for (const lane of built.lanes) console.log(`  ${lane.name}: ${lane.rate.toFixed(1)} TEU/day, ${lane.kilometres} km, ${(lane.leadTime * 24).toFixed(1)} h, ${lane.fleet} trucks (${lane.basis})`);
 for (const item of built.served) console.log(`  ${item.town} <- ${item.zone}: ${item.demand.toFixed(1)} TEU/day, ${item.hours.toFixed(1)} h`);
 for (const warning of built.warnings) console.log(`  ! ${warning}`);

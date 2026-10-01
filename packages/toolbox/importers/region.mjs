@@ -12,6 +12,7 @@
 // Both steps read the same files again, so the importer holds no state between them.
 
 import { discoverRegion } from '../lib/discovery.mjs';
+import { portwatchAttribution } from '../lib/portwatch.mjs';
 import { mapLayers } from '../lib/mapData.mjs';
 import { ModelBuilder } from '../lib/modelBuilder.mjs';
 import { buildRegionModel, regionModelDefaults } from '../lib/regionModel.mjs';
@@ -19,6 +20,8 @@ import { createRouter } from '../lib/roadGraph.mjs';
 import { parseSites } from '../lib/sites.mjs';
 
 export const osmRoles = ['ports', 'logistics', 'roads', 'rail', 'places'];
+// IMF PortWatch: the ports around the region, and the history of each matched port.
+export const portwatchRoles = ['portwatchPorts', 'portwatchActivity'];
 export const templateIds = ['port', 'roadLane', 'railLane', 'warehouse', 'demandZone', 'roadShipment', 'railShipment', 'delivery'];
 const kinds = { ports: 'port', zones: 'zone', towns: 'town' };
 
@@ -64,14 +67,14 @@ export default async function importRegion({ files, helpers, options = {} }) {
     let sitesText = null;
     for (const file of files) {
         // A tiled kind arrives as several files, one per tile.
-        if (osmRoles.includes(file.role)) (answers[file.role] ??= []).push(file.text);
+        if (osmRoles.includes(file.role) || portwatchRoles.includes(file.role)) (answers[file.role] ??= []).push(file.text);
         if (file.role === 'sites') sitesText = file.text;
     }
     if (!Object.keys(answers).length && !sitesText) return failure('Fetch a region, use the sample region, or choose a file of your own sites first.');
 
     let discovered;
     try {
-        discovered = discoverRegion(answers);
+        discovered = discoverRegion(answers, options.bbox ? { bbox: options.bbox } : {});
     } catch (error) {
         return failure(error.message);
     }
@@ -80,11 +83,13 @@ export default async function importRegion({ files, helpers, options = {} }) {
 
     if (options.step !== 'build') {
         const bbox = regionBounds(options, discovered);
+        const map = mapLayers(discovered.layers, bbox);
+        if (answers.portwatchPorts) map.attribution = `${map.attribution} · ${portwatchAttribution}`;
         return {
             ok: true,
             data: {
                 step: 'discover', candidates: discovered.candidates, coverage: discovered.coverage, notices: discovered.notices,
-                sites: sites?.sites ?? { ports: [], zones: [], towns: [] }, map: mapLayers(discovered.layers, bbox),
+                sites: sites?.sites ?? { ports: [], zones: [], towns: [] }, map,
                 defaults: { portTeuPerDay: regionModelDefaults.portTeuPerDay }
             },
             report: { errors: [], warnings: sites?.warnings ?? [] }

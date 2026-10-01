@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
-import importRegion, { osmRoles, templateIds } from '../../packages/toolbox/importers/region.mjs';
+import importRegion, { osmRoles, portwatchRoles, templateIds } from '../../packages/toolbox/importers/region.mjs';
 import { logisticsRoot } from '../../scripts/konjugatePaths.mjs';
 import { equationHelpers } from '../../scripts/templatePlacement.mjs';
 import { syntheticBbox, syntheticRegion } from '../fixtures/syntheticRegion.mjs';
@@ -30,10 +30,10 @@ const sizeOf = (value) => Buffer.byteLength(JSON.stringify(value));
 
 test('the manifest declares a file role for every kind the importer reads, and every template it builds from', () => {
     const importer = addon.contributes.importers.find((entry) => entry.importerId === 'region');
-    assert.deepEqual(importer.files.map((file) => file.role), [...osmRoles, 'sites']);
+    assert.deepEqual(importer.files.map((file) => file.role), [...osmRoles, ...portwatchRoles, 'sites']);
     const components = plugin.contributes.filter((entry) => entry.kind === 'component').map((entry) => entry.componentId);
     for (const id of templateIds) assert.ok(components.includes(id), `${id} is a component`);
-    assert.deepEqual(addon.network.hosts.sort(), ['nominatim.openstreetmap.org', 'overpass-api.de']);
+    assert.deepEqual(addon.network.hosts.sort(), ['nominatim.openstreetmap.org', 'overpass-api.de', 'services9.arcgis.com']);
 });
 
 test('discovery returns candidates, coverage, notices and a small map, and no model', async () => {

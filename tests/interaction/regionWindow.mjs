@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { installBuiltPackages } from '../../scripts/installDev.mjs';
 import { konjugateDir, konjugateModule } from '../../scripts/konjugatePaths.mjs';
-import { syntheticRegion } from '../fixtures/syntheticRegion.mjs';
+import { syntheticPortwatch, syntheticRegion } from '../fixtures/syntheticRegion.mjs';
 
 const require = createRequire(join(konjugateDir, 'package.json'));
 const { _electron: electron } = require('playwright');
@@ -78,9 +78,12 @@ try {
                 // The map server's status page: a free slot now, so no fetch waits.
                 if (address.href === 'https://overpass-api.de/api/status') return new Response('Rate limit: 2\n2 slots available now.\n', { status: 200 });
                 if (address.hostname === 'overpass-api.de') return new Response(answers[kindOf(address.searchParams.get('data'))], { status: 200 });
+                // IMF PortWatch: the ports around the region, and Port Alder's history.
+                if (address.hostname === 'services9.arcgis.com' && address.pathname.includes('/PortWatch_ports_database/')) return new Response(answers.portwatchPorts, { status: 200 });
+                if (address.hostname === 'services9.arcgis.com' && address.pathname.includes('/Daily_Ports_Data/') && address.searchParams.get('where') === "portid='port9001'") return new Response(answers.portwatchActivity, { status: 200 });
                 return new Response('not found', { status: 404 });
             };
-        }, Object.fromEntries(Object.entries(syntheticRegion()).map(([kind, answer]) => [kind, JSON.stringify(answer)])));
+        }, Object.fromEntries(Object.entries({ ...syntheticRegion(), ...syntheticPortwatch() }).map(([kind, answer]) => [kind, JSON.stringify(answer)])));
 
         const window = await app.firstWindow();
         await window.waitForLoadState('domcontentloaded');
@@ -111,7 +114,7 @@ try {
         await toolbox.selectOption('#marginSelect', '25');
         assert.match(await toolbox.textContent('#areaSize'), /^\d+ × \d+ km/);
         await toolbox.click('#fetchButton');
-        await toolbox.waitForFunction(() => document.querySelectorAll('#fetchProgress li.done').length === 5, null, { timeout: 60000 }).catch(fail);
+        await toolbox.waitForFunction(() => document.querySelectorAll('#fetchProgress li.done').length === 6, null, { timeout: 60000 }).catch(fail);
         await toolbox.waitForFunction(() => /Port Alder/.test(document.querySelector('#candidateList')?.textContent ?? ''), null, { timeout: 30000 }).catch(fail);
         const requests = await app.evaluate(() => globalThis.logisticsRequests);
         const queries = requests.filter((url) => url.includes('overpass-api.de/api/interpreter')).map((url) => new URL(url).searchParams.get('data'));
@@ -128,6 +131,13 @@ try {
         assert.match(await toolbox.textContent('#coverageSummary'), /Warehouses\s*good/);
         assert.match(await toolbox.textContent('#notices'), /marinas, fishing and passenger harbours were left out/);
         assert.equal(await toolbox.locator('#map .site').count(), 7);
+        // Port activity: the ports list, then the history of the one port that matched (Port Alder), and nothing else.
+        const portwatch = requests.filter((url) => url.includes('services9.arcgis.com'));
+        assert.equal(portwatch.length, 2, portwatch.join('\n'));
+        assert.ok(portwatch.every((url) => new URL(url).pathname.startsWith('/weJ1QsnbMYJlCHdG/ArcGIS/rest/services/')), 'only under the IMF account');
+        assert.match(await toolbox.textContent('#fetchProgress [data-kind="portwatch"]'), /1 port matched/);
+        assert.match(await toolbox.textContent('#notices'), /Port activity from IMF PortWatch: Port Alder imports about 137 TEU a day/);
+        assert.match(await toolbox.textContent('#attribution'), /IMF PortWatch \(Source: International Monetary Fund\)/);
 
         // 3. Port Alder hands 150 TEU a day inland; build, and the model is in the canvas.
         await toolbox.locator('#candidateList li', { hasText: 'Port Alder' }).locator('input[type="number"]').fill('150');
@@ -187,8 +197,8 @@ try {
         const saved = JSON.parse(await decodeProjectFile(await readFile(savedPath)));
         const entry = saved.addonData?.['konjugate.logistics.toolbox'];
         assert.ok(entry, 'The project carries the toolbox session.');
-        assert.deepEqual([...new Set(entry.inputs.map((input) => input.role))].sort(), ['logistics', 'places', 'ports', 'rail', 'roads']);
-        assert.ok(entry.inputs.every((input) => input.url?.startsWith('https://overpass-api.de/') && input.retrievedAt), 'Every input records where and when it was fetched.');
+        assert.deepEqual([...new Set(entry.inputs.map((input) => input.role))].sort(), ['logistics', 'places', 'ports', 'portwatchActivity', 'portwatchPorts', 'rail', 'roads']);
+        assert.ok(entry.inputs.every((input) => /^https:\/\/(overpass-api\.de|services9\.arcgis\.com)\//.test(input.url ?? '') && input.retrievedAt), 'Every input records where and when it was fetched.');
         assert.equal(entry.window.kept.towns.length, 3, 'the three kept towns');
         assert.deepEqual(entry.window.added.map((site) => site.name), ['Harbour customers'], 'and the customer added on the map');
         assert.equal(saved.nodes.length, nodes + 1, 'the model with the added customer');

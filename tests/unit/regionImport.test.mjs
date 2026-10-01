@@ -6,11 +6,12 @@ import { defaultSelection, discoverRegion, parsePopulation } from '../../package
 import { clusterByDistance, distance, ringArea, splitToSpan } from '../../packages/toolbox/lib/geo.mjs';
 import { maximumSplitDepth, maximumStatusWaitSeconds, overpassQueries, overpassRequests, overpassStatusUrl, overpassUrl, readOverpass, retryableStatus, retryDelaysSeconds, retryPauseSeconds, splitBbox, splitRequest, statusWaitSeconds } from '../../packages/toolbox/lib/overpass.mjs';
 import { nominatimSearchUrl, rankPlaces } from '../../packages/toolbox/lib/places.mjs';
+import { matchPorts, portwatchActivityUrl, portwatchPortsUrl, readPortwatchActivity, readPortwatchPorts, summariseActivity } from '../../packages/toolbox/lib/portwatch.mjs';
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
 import { createRouter } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { parseSites } from '../../packages/toolbox/lib/sites.mjs';
 import { loadTemplates, ModelBuilder } from '../../scripts/templatePlacement.mjs';
-import { syntheticBbox, syntheticRegion } from '../fixtures/syntheticRegion.mjs';
+import { syntheticBbox, syntheticPortwatch, syntheticRegion } from '../fixtures/syntheticRegion.mjs';
 
 const templates = await loadTemplates();
 const close = (actual, expected, tolerance, message) => assert.ok(Math.abs(actual - expected) <= tolerance, `${message}: ${actual} is not within ${tolerance} of ${expected}`);
@@ -447,4 +448,79 @@ test('suburbs belong to the nearest settlement that reaches them; a big city rea
     assert.ok(!candidates.towns.some((item) => item.name === 'Oldtown'), 'the district is not a town of its own');
     assert.deepEqual(coverage.towns.spread.map(({ name, suburbs: count }) => [name, count]), [['Metropolis', 5], ['Tagged City', 3]]);
     assert.ok(notices.some((item) => item.text === 'Oldtown has no population mapped and lies within Metropolis, so it is counted as one of Metropolis\'s suburbs.'));
+});
+
+test('IMF PortWatch: addresses stay under the IMF account, and answers are read', () => {
+    const portsUrl = new URL(portwatchPortsUrl(syntheticBbox));
+    assert.equal(portsUrl.hostname, 'services9.arcgis.com');
+    assert.equal(portsUrl.pathname, '/weJ1QsnbMYJlCHdG/ArcGIS/rest/services/PortWatch_ports_database/FeatureServer/0/query');
+    const [west, south, east, north] = portsUrl.searchParams.get('geometry').split(',').map(Number);
+    assert.ok(west < syntheticBbox.west && south < syntheticBbox.south && east > syntheticBbox.east && north > syntheticBbox.north, 'a margin around the region');
+    const activityUrl = new URL(portwatchActivityUrl('port744'));
+    assert.equal(activityUrl.pathname, '/weJ1QsnbMYJlCHdG/ArcGIS/rest/services/Daily_Ports_Data/FeatureServer/0/query');
+    assert.equal(activityUrl.searchParams.get('where'), "portid='port744'");
+    assert.equal(activityUrl.searchParams.get('resultRecordCount'), '365');
+    assert.throws(() => portwatchActivityUrl("port1' OR '1'='1"), /not a PortWatch port id/);
+
+    const { portwatchPorts, portwatchActivity } = syntheticPortwatch();
+    assert.deepEqual(readPortwatchPorts(JSON.stringify(portwatchPorts)).map((port) => port.portid), ['port9001', 'port9002', 'port9003']);
+    const activity = readPortwatchActivity(JSON.stringify(portwatchActivity));
+    assert.equal(activity.days[0].date, '2026-08-31', 'oldest first');
+    assert.equal(activity.days.at(-1).date, '2026-09-27');
+    const summary = summariseActivity(activity);
+    close(summary.importTonnesPerDay, 1200 * 8 / 7, 1e-9, '4 of 28 days at double');
+    close(summary.teuPerDay, summary.importTonnesPerDay / 10, 1e-9);
+    assert.equal(readPortwatchActivity(JSON.stringify({ features: [] })), null);
+    assert.throws(() => readPortwatchPorts(JSON.stringify({ error: { code: 400, message: 'Invalid query', details: [] } })), /IMF PortWatch could not answer for the ports: Invalid query/);
+    // Dates from an older date field arrive as milliseconds.
+    assert.equal(readPortwatchActivity(JSON.stringify({ features: [{ attributes: { portid: 'port1', date: Date.UTC(2026, 0, 2), import_container: 5 } }] })).days[0].date, '2026-01-02');
+});
+
+test('IMF PortWatch ports are matched to OpenStreetMap ports by position, each once, nearest first', () => {
+    const near = { portid: 'portA', lat: 25, lon: 55.01, containerVessels: 10 };
+    const other = { portid: 'portB', lat: 25, lon: 55.05, containerVessels: 5000 };
+    const far = { portid: 'portC', lat: 26, lon: 55, containerVessels: 1 };
+    const matches = matchPorts([{ id: 'p1', lat: 25, lon: 55 }, { id: 'p2', lat: 25, lon: 55.04 }, { id: 'p3', lat: 25.5, lon: 56 }], [other, near, far]);
+    assert.equal(matches.get('p1').port.portid, 'portA');
+    assert.equal(matches.get('p2').port.portid, 'portB');
+    assert.equal(matches.has('p3'), false, 'nothing within reach');
+    // A small harbour reaches 5 km; a port of 12.6 km² (2 km across its radius) reaches 9 km.
+    const point = { portid: 'portD', lat: 25, lon: 55 + 7 / (111.32 * Math.cos(25 * Math.PI / 180)), containerVessels: 1 };
+    assert.equal(matchPorts([{ id: 'small', lat: 25, lon: 55, areaSquareKilometres: 0.1 }], [point]).size, 0);
+    assert.equal(matchPorts([{ id: 'large', lat: 25, lon: 55, areaSquareKilometres: 4 * Math.PI }], [point]).size, 1);
+});
+
+test('discovery matches port activity, and the model takes a matched port’s volume from it', async () => {
+    const pw = syntheticPortwatch();
+    const region = syntheticRegion();
+    const answers = Object.fromEntries(Object.entries({ ...region, ...pw }).map(([kind, value]) => [kind, [JSON.stringify(value)]]));
+    const { candidates, coverage, notices } = discoverRegion(answers, { bbox: syntheticBbox });
+    const alder = candidates.ports.find((port) => port.name === 'Port Alder');
+    assert.equal(alder.portwatch.portid, 'port9001');
+    assert.equal(alder.activity.days, 28);
+    assert.equal(candidates.ports[0].name, 'Port Alder', 'a port with activity comes first');
+    assert.equal(coverage.ports.activityMatched, 1);
+    assert.ok(notices.some((item) => /^Port activity from IMF PortWatch: Port Alder imports about 137 TEU a day/.test(item.text)));
+    assert.ok(notices.some((item) => /^Birch Harbour is not in IMF PortWatch/.test(item.text)));
+    assert.ok(notices.some((item) => /^IMF PortWatch also lists Dunmore Ferry Pier here/.test(item.text)), 'a listed port inside the region with no match');
+    assert.ok(!notices.some((item) => /Far Away Port/.test(item.text)), 'one outside the region is not mentioned');
+    // Without PortWatch, nothing changes.
+    const plain = discoverRegion(Object.fromEntries(Object.entries(region).map(([kind, value]) => [kind, [JSON.stringify(value)]])));
+    assert.equal(plain.coverage.ports.activityMatched, null);
+    assert.ok(plain.notices.some((item) => /^Port activity has not been matched yet/.test(item.text)));
+
+    const builder = new ModelBuilder(await loadTemplates());
+    const selection = defaultSelection(candidates);
+    const built = buildRegionModel({ builder, selection, route: createRouter(discoverRegion(answers).roadGraph).route });
+    const supply = built.provenance.filter((item) => item.parameter === 'Containers handed inland');
+    const alderSupply = supply.find((item) => item.entity === 'Port Alder');
+    assert.equal(alderSupply.basis, 'sourced');
+    close(alderSupply.value, 1200 * 8 / 7 / 10, 1e-9);
+    assert.match(alderSupply.detail, /^IMF PortWatch \(Source: International Monetary Fund\), Alder: container imports averaging 1,371 t a day over 2026-08-31 to 2026-09-27 \(28 days\), at an assumed 10 t a TEU/);
+    assert.equal(supply.find((item) => item.entity === 'Birch Harbour').basis, 'assumed');
+    // The inland share scales a sourced port, and the user's own figure still wins.
+    const half = buildRegionModel({ builder: new ModelBuilder(await loadTemplates()), selection, route: createRouter(discoverRegion(answers).roadGraph).route, options: { inlandShare: 0.5 } });
+    close(half.provenance.find((item) => item.entity === 'Port Alder' && item.parameter === 'Containers handed inland').value, alderSupply.value / 2, 1e-9);
+    const own = buildRegionModel({ builder: new ModelBuilder(await loadTemplates()), selection: { ...selection, ports: selection.ports.map((port) => (port.name === 'Port Alder' ? { ...port, teuPerDay: 50 } : port)) }, route: createRouter(discoverRegion(answers).roadGraph).route });
+    assert.equal(own.provenance.find((item) => item.entity === 'Port Alder' && item.parameter === 'Containers handed inland').value, 50);
 });

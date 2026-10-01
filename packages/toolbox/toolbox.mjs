@@ -8,6 +8,7 @@
 import { MapView } from './mapView.mjs';
 import { maximumSplitDepth, overpassRequests, overpassStatusUrl, overpassUrl, retryDelaysSeconds, retryPauseSeconds, splitRequest, statusWaitSeconds } from './lib/overpass.mjs';
 import { nominatimSearchUrl, rankPlaces } from './lib/places.mjs';
+import { portwatchActivityUrl, portwatchPortsUrl } from './lib/portwatch.mjs';
 
 const api = window.konjugateLauncher;
 const $ = (selector) => document.querySelector(selector);
@@ -134,11 +135,12 @@ $('#fetchButton').addEventListener('click', async () => {
     const kinds = [...new Set(requests.map((request) => request.kind))];
     const progress = $('#fetchProgress');
     progress.hidden = false;
-    progress.innerHTML = kinds.map((kind) => `<li data-kind="${kind}"><span>${labels[kind]}</span><span class="state">waiting</span></li>`).join('');
+    progress.innerHTML = [...kinds.map((kind) => `<li data-kind="${kind}"><span>${labels[kind]}</span><span class="state">waiting</span></li>`),
+        '<li data-kind="portwatch"><span>Port activity (IMF PortWatch)</span><span class="state">waiting</span></li>'].join('');
     $('#regionStatus').innerHTML = '';
     try {
         // A new region replaces the last one's data (your own sites file stays).
-        for (const kind of kinds) await call(api.clearFile(importerId, kind));
+        for (const kind of [...kinds, 'portwatchPorts', 'portwatchActivity']) await call(api.clearFile(importerId, kind));
         const bytes = {};
         // One request at a time: the public server is shared.
         const queue = [...requests];
@@ -173,13 +175,51 @@ $('#fetchButton').addEventListener('click', async () => {
                 row.querySelector('.state').textContent = `${number(bytes[request.kind] / 1024)} KB`;
             }
         }
+        const portwatchProblem = await fetchPortActivity(progress.querySelector('[data-kind="portwatch"]'));
         await discover();
+        if (portwatchProblem) $('#regionStatus').insertAdjacentHTML('beforeend', notice('warning', `Port activity could not be fetched from IMF PortWatch (${portwatchProblem}), so every port starts with an assumed volume. Fetch again later to match it.`));
     } catch (error) {
         $('#regionStatus').innerHTML = notice('error', error.message);
     } finally {
         setBusy(false);
     }
 });
+
+// IMF PortWatch: the ports around the region, then a year of history for each that matches a port found.
+// Optional: if it fails, the region still loads with assumed port volumes, and the problem is returned.
+async function fetchPortActivity(row) {
+    const show = (text) => { row.querySelector('.state').textContent = text; };
+    const fetchWithRetry = async (role, url, name) => {
+        for (let attempt = 0; ; attempt += 1) {
+            try {
+                return await call(api.fetchFile(importerId, role, url, name));
+            } catch (error) {
+                if (!busy(error.message) || attempt >= 1) throw error;
+                await countdown(row, retryDelaysSeconds[0], 'server busy');
+            }
+        }
+    };
+    try {
+        show('ports…');
+        let bytes = (await fetchWithRetry('portwatchPorts', portwatchPortsUrl(state.bbox), 'portwatch-ports.json')).bytes;
+        // Which listed ports match a port found: discovery decides, so ask it before fetching histories.
+        const first = await call(api.runImport(importerId, { bbox: state.bbox }));
+        const portids = [...new Set((first.data?.candidates.ports ?? []).map((port) => port.portwatch?.portid).filter(Boolean))];
+        for (const [index, portid] of portids.entries()) {
+            show(`history ${index + 1} of ${portids.length}…`);
+            bytes += (await fetchWithRetry('portwatchActivity', portwatchActivityUrl(portid), `portwatch-${portid}.json`)).bytes;
+        }
+        row.classList.add('done');
+        show(`${portids.length} port${portids.length === 1 ? '' : 's'} matched, ${number(bytes / 1024)} KB`);
+        return null;
+    } catch (error) {
+        row.classList.add('failed');
+        show('not available');
+        // Without the ports list, a partial set of histories would only confuse: clear both.
+        for (const role of ['portwatchPorts', 'portwatchActivity']) await call(api.clearFile(importerId, role)).catch(() => {});
+        return error.message;
+    }
+}
 
 $('#sampleButton').addEventListener('click', async () => {
     setBusy(true);
@@ -275,7 +315,12 @@ function allSites(group) {
 }
 
 function describe(site, group) {
-    if (group === 'ports') return site.user ? `Your site (${site.source})` : `${number(site.areaSquareKilometres, 2)} km² of port land${site.commercial ? ', commercial' : ''}${site.anchorages ? `, ${site.anchorages} anchorage${site.anchorages === 1 ? '' : 's'}` : ''}`;
+    if (group === 'ports') {
+        if (site.user) return `Your site (${site.source})`;
+        const land = `${number(site.areaSquareKilometres, 2)} km² of port land${site.commercial ? ', commercial' : ''}${site.anchorages ? `, ${site.anchorages} anchorage${site.anchorages === 1 ? '' : 's'}` : ''}`;
+        if (site.activity) return `${land} · IMF PortWatch (${site.portwatch.name}): about ${number(site.activity.teuPerDay)} TEU/day imported, ${number(site.activity.containerCallsPerDay, 1)} container ships a day, ${site.activity.from} to ${site.activity.to}`;
+        return site.portwatch ? `${land} · IMF PortWatch (${site.portwatch.name}): no recent activity` : land;
+    }
     if (group === 'zones') {
         if (site.user) return `Your site (${site.source})${site.floorAreaSquareMetres ? `, ${number(site.floorAreaSquareMetres)} m²` : ''}`;
         const basis = { mapped: 'mapped', approximate: 'from building outlines', estimated: 'estimated from industrial land' }[site.floorAreaBasis] ?? site.floorAreaBasis;
@@ -296,7 +341,7 @@ function renderCandidates() {
         <li data-id="${escape(site.id)}">
             <input type="checkbox" ${site.kept ? 'checked' : ''} aria-label="Keep ${escape(site.name)}">
             <span class="name" title="${escape(site.name)}">${escape(site.name)}${site.moved ? '<span class="tag">moved</span>' : ''}</span>
-            ${group === 'ports' && site.kept ? `<span><input type="number" min="0" step="10" placeholder="${state.portVolume}" value="${site.teuPerDay ?? ''}" aria-label="TEU a day handed inland at ${escape(site.name)}"> <span class="muted small">TEU/day</span></span>` : '<span></span>'}
+            ${group === 'ports' && site.kept ? `<span><input type="number" min="0" step="10" placeholder="${site.activity ? Math.round(site.activity.teuPerDay) : state.portVolume}" value="${site.teuPerDay ?? ''}" aria-label="TEU a day handed inland at ${escape(site.name)}"> <span class="muted small">TEU/day</span></span>` : '<span></span>'}
             <span class="detail">${escape(describe(site, group))}</span>
         </li>`).join('');
     $('#candidateList').querySelectorAll('li').forEach((row) => {

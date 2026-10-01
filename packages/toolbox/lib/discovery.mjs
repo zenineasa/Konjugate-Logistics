@@ -7,6 +7,9 @@
 
 import { boundsArea, centroid, clusterByDistance, distance, lineLength, pointInRing, ringArea, splitToSpan } from './geo.mjs';
 import { readOverpass } from './overpass.mjs';
+import { matchPorts, readPortwatchActivity, readPortwatchPorts, summariseActivity, tonnesPerTeu } from './portwatch.mjs';
+
+const tonnesPerTeuText = String(tonnesPerTeu);
 import { buildRoadGraph } from './roadGraph.mjs';
 
 export const discoveryDefaults = {
@@ -311,7 +314,34 @@ export function discoverRegion(answers, options = {}) {
     }).sort((a, b) => b.significance - a.significance).map((zone, index) => ({
         ...zone, name: zone.name ?? `Logistics zone ${index + 1}${zone.near ? ` (near ${zone.near})` : ''}`
     }));
-    ports.sort((a, b) => b.significance - a.significance);
+    // ---- port activity: IMF PortWatch ports matched by position, with their history where it was fetched
+    const portwatchListed = (answers.portwatchPorts ?? []).flatMap((text) => {
+        try {
+            return readPortwatchPorts(text);
+        } catch (error) {
+            throw new Error(`The IMF PortWatch ports could not be read: ${error.message}`);
+        }
+    });
+    const histories = new Map();
+    for (const text of answers.portwatchActivity ?? []) {
+        const activity = readPortwatchActivity(text);
+        if (activity) histories.set(activity.portid, activity);
+    }
+    const matches = matchPorts(ports, portwatchListed);
+    for (const port of ports) {
+        const match = matches.get(port.id);
+        if (!match) continue;
+        port.portwatch = { portid: match.port.portid, name: match.port.name, kilometres: round(match.kilometres, 1), containerVessels: match.port.containerVessels };
+        const history = histories.get(match.port.portid);
+        if (history) port.activity = summariseActivity(history);
+    }
+    // Ports with activity first, busiest first; then the rest by their land and tags.
+    ports.sort((a, b) => (b.activity ? 1 : 0) - (a.activity ? 1 : 0) || (b.activity?.teuPerDay ?? 0) - (a.activity?.teuPerDay ?? 0) || b.significance - a.significance);
+    // PortWatch ports are fetched with a margin around the region; only those inside it are worth a notice.
+    const box = settings.bbox;
+    const insideRegion = (point) => !box || (point.lat >= box.south && point.lat <= box.north && point.lon >= box.west && point.lon <= box.east);
+    const matchedIds = new Set([...matches.values()].map((match) => match.port.portid));
+    const unmatchedListed = portwatchListed.filter((listed) => !matchedIds.has(listed.portid) && listed.containerVessels > 0 && insideRegion(listed));
 
     // ---- rail
     const railLines = railFeatures.filter((feature) => feature.tags.railway === 'rail' && feature.line);
@@ -322,7 +352,7 @@ export function discoverRegion(answers, options = {}) {
     const roadKilometres = Object.values(roadGraph.kilometresByClass).reduce((total, value) => total + value, 0);
     const withPopulation = towns.filter((town) => town.populationBasis === 'OpenStreetMap' || town.populationBasis === 'shared').length;
     const coverage = {
-        ports: { found: ports.length, commercial: ports.filter((port) => port.commercial).length, marinasExcluded: marinas.length, anchorages: anchorages.length, activityMatched: null },
+        ports: { found: ports.length, commercial: ports.filter((port) => port.commercial).length, marinasExcluded: marinas.length, anchorages: anchorages.length, activityMatched: answers.portwatchPorts ? ports.filter((port) => port.activity).length : null, portwatchListed: answers.portwatchPorts ? portwatchListed.length : null },
         warehouses: {
             buildings: warehouses.length, floorAreaSquareKilometres: round(warehouses.reduce((total, item) => total + item.area.squareMetres, 0) / 1e6, 3),
             industrialLandSquareKilometres: round(industrialArea / 1e6, 2), largeParcels: largeParcels.length,
@@ -342,7 +372,17 @@ export function discoverRegion(answers, options = {}) {
     if (!ports.length) notices.push({ kind: 'ports', level: 'warning', text: 'No commercial ports are mapped in this region. Add a port yourself if the region has one.' });
     if (marinas.length) notices.push({ kind: 'ports', level: 'info', text: `${marinas.length} marina${marinas.length === 1 ? '' : 's'}, fishing and passenger harbour${marinas.length === 1 ? ' was' : 's were'} left out.` });
     if (otherIndustry) notices.push({ kind: 'warehouses', level: 'info', text: `${otherIndustry} industrial site${otherIndustry === 1 ? '' : 's'} that are not logistics (power, gas, water, communications and the like) ${otherIndustry === 1 ? 'was' : 'were'} left out.` });
-    notices.push({ kind: 'ports', level: 'info', text: 'Port activity has not been matched yet: every port starts with an assumed volume, which you can change.' });
+    if (!answers.portwatchPorts) {
+        notices.push({ kind: 'ports', level: 'info', text: 'Port activity has not been matched yet: every port starts with an assumed volume, which you can change.' });
+    } else {
+        const withActivity = ports.filter((port) => port.activity);
+        const without = ports.filter((port) => !port.portwatch);
+        const quiet = ports.filter((port) => port.portwatch && !port.activity);
+        if (withActivity.length) notices.push({ kind: 'ports', level: 'info', text: `Port activity from IMF PortWatch: ${withActivity.map((port) => `${port.name} imports about ${Math.round(port.activity.teuPerDay).toLocaleString('en')} TEU a day`).join('; ')} (container tonnes over ${withActivity[0].activity.from} to ${withActivity[0].activity.to}, at an assumed ${tonnesPerTeuText} t a TEU, including containers that only change ships).` });
+        if (without.length) notices.push({ kind: 'ports', level: 'info', text: `${without.map((port) => port.name).join(', ')} ${without.length === 1 ? 'is' : 'are'} not in IMF PortWatch, so ${without.length === 1 ? 'it starts' : 'they start'} with an assumed volume, which you can change.` });
+        if (quiet.length) notices.push({ kind: 'ports', level: 'info', text: `IMF PortWatch has no recent activity for ${quiet.map((port) => `${port.name} (${port.portwatch.name})`).join(', ')}, so ${quiet.length === 1 ? 'it starts' : 'they start'} with an assumed volume, which you can change.` });
+        if (unmatchedListed.length) notices.push({ kind: 'ports', level: 'info', text: `IMF PortWatch also lists ${unmatchedListed.slice(0, 4).map((listed) => listed.name).join(', ')}${unmatchedListed.length > 4 ? ` and ${unmatchedListed.length - 4} more` : ''} here, which OpenStreetMap does not map as a cargo port. Add ${unmatchedListed.length === 1 ? 'it' : 'one'} on the map if containers come through ${unmatchedListed.length === 1 ? 'it' : 'them'}.` });
+    }
     if (warehouseLevel === 'none') {
         notices.push({ kind: 'warehouses', level: 'warning', text: industrialArea > 0
             ? `No warehouses are mapped in this region, across ${round(industrialArea / 1e6, 1)} km² of industrial land. The model groups industrial areas into logistics zones instead, with an estimated floor area. Add your own sites for a more accurate model.`

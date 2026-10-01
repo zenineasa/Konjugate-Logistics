@@ -7,12 +7,17 @@
 // from: sourced, routed, assumed or the user's own.
 
 import { toLocal } from './geo.mjs';
+import { tonnesPerTeu } from './portwatch.mjs';
 
 export const regionModelDefaults = {
     // Containers a day a port hands inland on average, until port activity is matched: an assumption to replace.
     // It is shared among the ports in proportion to their port land, so a large container port takes more than
     // a small harbour.
     portTeuPerDay: 100,
+    // For a port with IMF PortWatch activity: the average weight of an imported TEU, and the share of its
+    // container imports handed inland (the rest only change ships there). Both assumptions to adjust.
+    tonnesPerTeu,
+    inlandShare: 1,
     // Berth capacity as a multiple of the port's arrivals.
     berthHeadroom: 1.5,
     // Hours added to every road trip for gate and yard handling.
@@ -96,21 +101,30 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
     if (!zones.length) throw new Error('Keep at least one logistics zone: towns are served from zones.');
     if (!towns.length) throw new Error('Keep at least one town or customer: it is where the demand is.');
 
-    // ---- supply: the user's figures; otherwise, until port activity is matched, an assumed volume shared by port land
+    // ---- supply: the user's figures; then IMF PortWatch activity; otherwise an assumed volume shared by port land
     const supply = new Map();
-    const assumedPorts = ports.filter((port) => !(Number(port.teuPerDay) > 0));
+    const sourced = (port) => !(Number(port.teuPerDay) > 0) && port.activity?.importTonnesPerDay > 0;
+    const assumedPorts = ports.filter((port) => !(Number(port.teuPerDay) > 0) && !sourced(port));
     const landOf = (port) => Number(port.areaSquareKilometres) || 0;
     const largestLand = Math.max(0, ...assumedPorts.map(landOf));
     // A harbour mapped as a point, or one of the user's own, still takes a tenth of the largest port's share.
     const portWeight = (port) => (largestLand > 0 ? Math.max(landOf(port), 0.1 * largestLand) : 1);
     const assumedWeight = assumedPorts.reduce((total, port) => total + portWeight(port), 0);
     for (const port of ports) {
+        if (sourced(port)) {
+            const activity = port.activity;
+            const value = activity.importTonnesPerDay / settings.tonnesPerTeu * settings.inlandShare;
+            supply.set(port.id, value);
+            note(port.name, 'Containers handed inland', value, 'TEU/day', 'sourced',
+                `IMF PortWatch (Source: International Monetary Fund), ${activity.name}: container imports averaging ${Math.round(activity.importTonnesPerDay).toLocaleString('en')} t a day over ${activity.from} to ${activity.to} (${activity.days} days), at an assumed ${settings.tonnesPerTeu} t a TEU${settings.inlandShare === 1 ? ', counting containers that only change ships there' : `, ${Math.round(settings.inlandShare * 100)}% of them handed inland (assumed)`}.`);
+            continue;
+        }
         const user = Number(port.teuPerDay) > 0;
         const value = user ? Number(port.teuPerDay) : settings.portTeuPerDay * assumedPorts.length * portWeight(port) / assumedWeight;
         supply.set(port.id, value);
         const assumption = largestLand > 0 && assumedPorts.length > 1
-            ? `Assumed until port activity is matched: ${settings.portTeuPerDay} TEU/day a port on average, shared by port land (${landOf(port).toFixed(1)} km²${landOf(port) < 0.1 * largestLand ? ', counted as a tenth of the largest' : ''}).`
-            : 'Assumed until port activity is matched.';
+            ? `Assumed, with no port activity matched: ${settings.portTeuPerDay} TEU/day a port on average, shared by port land (${landOf(port).toFixed(1)} km²${landOf(port) < 0.1 * largestLand ? ', counted as a tenth of the largest' : ''}).`
+            : 'Assumed, with no port activity matched.';
         note(port.name, 'Containers handed inland', value, 'TEU/day', user ? (port.teuPerDayBasis ?? 'user') : 'assumed', user ? port.teuPerDaySource : assumption);
     }
     const totalSupply = [...supply.values()].reduce((total, value) => total + value, 0);

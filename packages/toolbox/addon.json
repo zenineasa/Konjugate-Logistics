@@ -37,6 +37,8 @@
                     { "role": "roads", "multiple": true, "label": "Major roads", "accept": ["json"], "description": "OpenStreetMap motorways, trunk and primary roads, as Overpass returns them.", "sample": "samples/roads.json" },
                     { "role": "rail", "label": "Rail", "accept": ["json"], "description": "OpenStreetMap rail lines and yards, as Overpass returns them.", "sample": "samples/rail.json" },
                     { "role": "places", "label": "Towns and cities", "accept": ["json"], "description": "OpenStreetMap towns and cities, as Overpass returns them.", "sample": "samples/places.json" },
+                    { "role": "portwatchPorts", "label": "IMF PortWatch ports", "accept": ["json"], "description": "The IMF PortWatch ports around the region, as its ArcGIS service returns them." },
+                    { "role": "portwatchActivity", "multiple": true, "label": "IMF PortWatch port activity", "accept": ["json"], "description": "A port's daily calls and trade estimates from IMF PortWatch, one file per port." },
                     { "role": "sites", "label": "Your own sites", "accept": ["csv", "txt"], "description": "One row per site: name, kind (port, warehouse or customer), latitude, longitude, and optionally teuPerDay, floorArea and population." }
                 ]
             }
@@ -45,7 +47,8 @@
     "network": {
         "hosts": [
             "nominatim.openstreetmap.org",
-            "overpass-api.de"
+            "overpass-api.de",
+            "services9.arcgis.com"
         ]
     }
 }
