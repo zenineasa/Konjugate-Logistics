@@ -115,6 +115,9 @@ try {
         assert.match(await toolbox.textContent('#areaSize'), /^\d+ × \d+ km/);
         await toolbox.click('#fetchButton');
         await toolbox.waitForFunction(() => document.querySelectorAll('#fetchProgress li.done').length === 6, null, { timeout: 60000 }).catch(fail);
+        // The rows finish before the window discovers the region again, and the sample's Port Alder is already
+        // listed: wait for the whole fetch to end (the button is enabled again) before reading the results.
+        await toolbox.waitForFunction(() => !document.querySelector('#fetchButton').disabled, null, { timeout: 60000 }).catch(fail);
         await toolbox.waitForFunction(() => /Port Alder/.test(document.querySelector('#candidateList')?.textContent ?? ''), null, { timeout: 30000 }).catch(fail);
         const requests = await app.evaluate(() => globalThis.logisticsRequests);
         const queries = requests.filter((url) => url.includes('overpass-api.de/api/interpreter')).map((url) => new URL(url).searchParams.get('data'));
