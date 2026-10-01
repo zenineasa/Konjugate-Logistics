@@ -12,7 +12,7 @@
 // Uses Playwright from the Konjugate checkout, as the other interaction test does.
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,13 +24,36 @@ import { syntheticRegion } from '../fixtures/syntheticRegion.mjs';
 const require = createRequire(join(konjugateDir, 'package.json'));
 const { _electron: electron } = require('playwright');
 const electronPath = require('electron');
-const { encodeProjectFile } = await import(pathToFileURL(konjugateModule('src/projectFile.mjs')));
+const { decodeProjectFile, encodeProjectFile } = await import(pathToFileURL(konjugateModule('src/projectFile.mjs')));
 
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
 const scratch = await mkdtemp(join(tmpdir(), 'konjugate-logistics-region-'));
 const userData = join(scratch, 'userData');
 const extraArgs = (process.env.KONJUGATE_ELECTRON_ARGS ?? '').split(' ').filter(Boolean);
+
+async function openToolbox(app, window) {
+    await window.waitForSelector('.addonTool[data-addon-id="konjugate.logistics.toolbox"][data-command-id="openLogisticsToolbox"]', { timeout: 30000 });
+    const known = new Set(app.windows());
+    await window.click('.addonTool[data-addon-id="konjugate.logistics.toolbox"][data-command-id="openLogisticsToolbox"]');
+    for (let attempt = 0; attempt < 150; attempt += 1) {
+        const page = app.windows().find((candidate) => !known.has(candidate) && candidate.url().includes('konjugate.logistics.toolbox'));
+        if (page) {
+            await page.waitForLoadState('domcontentloaded');
+            return page;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error('The Logistics toolbox window did not open.');
+}
+
+async function waitForFile(path) {
+    for (let attempt = 0; attempt < 150; attempt += 1) {
+        try { if ((await stat(path)).size > 0) return; } catch {}
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`${path} was not written.`);
+}
 
 try {
     await installBuiltPackages(userData);
@@ -39,7 +62,7 @@ try {
         format: 'konjugate', version: 1, metadata: { units: 'SI' }, nodes: [], edges: [], sharedParameters: [],
         runConfigurations: [{ id: 1, name: 'Default', globalTimeStep: 900, outputInterval: 3600 }], activeRunConfigurationId: 1
     })));
-    const app = await electron.launch({ executablePath: electronPath, args: [konjugateDir, ...extraArgs, `--user-data-dir=${userData}`, projectPath], env });
+    let app = await electron.launch({ executablePath: electronPath, args: [konjugateDir, ...extraArgs, `--user-data-dir=${userData}`, projectPath], env });
     try {
         // The network, answered from the synthetic region; every address asked for is recorded.
         await app.evaluate((_electron, answers) => {
@@ -61,7 +84,7 @@ try {
         await window.waitForLoadState('domcontentloaded');
         await window.waitForSelector('.addonTool[data-addon-id="konjugate.logistics.toolbox"][data-command-id="openLogisticsToolbox"]', { timeout: 30000 });
         await window.click('.addonTool[data-addon-id="konjugate.logistics.toolbox"][data-command-id="openLogisticsToolbox"]');
-        let toolbox;
+        let toolbox = null;
         for (let attempt = 0; attempt < 150 && !toolbox; attempt += 1) {
             toolbox = app.windows().find((candidate) => candidate.url().includes('konjugate.logistics.toolbox'));
             if (!toolbox) await new Promise((resolve) => setTimeout(resolve, 100));
@@ -72,7 +95,7 @@ try {
         toolbox.on('pageerror', (error) => log.push(`pageerror: ${error.message}`));
         const fail = (error) => { throw new Error(`${error.message}\nToolbox window log:\n${log.join('\n')}`); };
         await toolbox.waitForLoadState('domcontentloaded');
-        const counts = () => toolbox.evaluate(() => Object.fromEntries([...document.querySelectorAll('[data-count]')].map((node) => [node.dataset.count, node.textContent])));
+        const counts = (page = toolbox) => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('[data-count]')].map((node) => [node.dataset.count, node.textContent])));
 
         // 1. The sample region, with no network at all.
         await toolbox.click('#sampleButton');
@@ -142,9 +165,55 @@ try {
         await toolbox.waitForFunction(() => /Harbour customers/.test(document.querySelector('#buildResult')?.textContent ?? ''), null, { timeout: 30000 }).catch(fail);
         assert.match(await toolbox.textContent('#buildStatus'), /4 towns served/);
         assert.equal(log.filter((line) => line.startsWith('pageerror') || line.startsWith('error')).length, 0, log.join('\n'));
-        console.log(`✓ logistics region window: the sample region and a searched region discover offline; the model (${nodes} nodes, ${edges} relationships) opens in the canvas; dragging Alder Industrial Park moves its lane from ${before} to ${after} km; a customer added on the map is served.`);
+
+        // 6. The session is kept with the project: closing and reopening the window carries on where it was.
+        const curated = await counts();
+        await toolbox.close();
+        toolbox = await openToolbox(app, window);
+        await toolbox.waitForFunction(() => /Restored the session kept with this project/.test(document.querySelector('#regionStatus').textContent), null, { timeout: 30000 });
+        assert.deepEqual(await counts(toolbox), curated);
+        assert.equal(await toolbox.evaluate(() => document.querySelector('#kindTabs .active').dataset.group), 'towns', 'it reopens on the list last shown');
+        await toolbox.click('#kindTabs [data-group="ports"]');
+        assert.equal(await toolbox.locator('#candidateList li', { hasText: 'Port Alder' }).locator('input[type="number"]').inputValue(), '150');
+        assert.match(await toolbox.textContent('#buildResult'), /Harbour customers/);
+
+        // 7. Saving the project writes the session into it: the window's state and the map data it was built from.
+        const savedPath = join(scratch, 'region.kjt');
+        await app.evaluate(({ dialog }, path) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: path }); }, savedPath);
+        await window.click('#saveButton');
+        await waitForFile(savedPath);
+        const saved = JSON.parse(await decodeProjectFile(await readFile(savedPath)));
+        const entry = saved.addonData?.['konjugate.logistics.toolbox'];
+        assert.ok(entry, 'The project carries the toolbox session.');
+        assert.deepEqual([...new Set(entry.inputs.map((input) => input.role))].sort(), ['logistics', 'places', 'ports', 'rail', 'roads']);
+        assert.ok(entry.inputs.every((input) => input.url?.startsWith('https://overpass-api.de/') && input.retrievedAt), 'Every input records where and when it was fetched.');
+        assert.equal(entry.window.kept.towns.length, 3, 'the three kept towns');
+        assert.deepEqual(entry.window.added.map((site) => site.name), ['Harbour customers'], 'and the customer added on the map');
+        assert.equal(saved.nodes.length, nodes + 1, 'the model with the added customer');
+        await app.close();
+        app = null;
+
+        // 8. Reopening the saved project on a machine with no network restores the session from the project alone.
+        const offline = await electron.launch({ executablePath: electronPath, args: [konjugateDir, ...extraArgs, `--user-data-dir=${userData}`, savedPath], env });
+        try {
+            await offline.evaluate(() => {
+                globalThis.logisticsRequests = [];
+                globalThis.fetch = async (url) => { globalThis.logisticsRequests.push(String(url)); throw new Error('offline'); };
+            });
+            const offlineWindow = await offline.firstWindow();
+            await offlineWindow.waitForLoadState('domcontentloaded');
+            const reopened = await openToolbox(offline, offlineWindow);
+            await reopened.waitForFunction(() => /Restored the session kept with this project/.test(document.querySelector('#regionStatus').textContent), null, { timeout: 30000 });
+            assert.deepEqual(await counts(reopened), curated);
+            assert.match(await reopened.textContent('#buildResult'), /Harbour customers/);
+            assert.ok(await reopened.locator('#map .lane').count() > 0, 'The built lanes are drawn again.');
+            assert.deepEqual(await offline.evaluate(() => globalThis.logisticsRequests), [], 'Nothing was fetched.');
+        } finally {
+            await offline.close().catch(() => {});
+        }
+        console.log(`✓ logistics region window: the sample region and a searched region discover offline; the model (${nodes} nodes, ${edges} relationships) opens in the canvas; dragging Alder Industrial Park moves its lane from ${before} to ${after} km; a customer added on the map is served; the session is kept with the project, saved with it, and restored from it with no network.`);
     } finally {
-        await app.close().catch(() => {});
+        await app?.close().catch(() => {});
     }
 } finally {
     await rm(scratch, { recursive: true, force: true });

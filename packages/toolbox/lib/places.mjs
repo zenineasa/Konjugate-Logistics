@@ -10,12 +10,18 @@ export function nominatimSearchUrl(query) {
     return `https://${nominatimHost}/search?format=jsonv2&limit=10&accept-language=en&q=${encodeURIComponent(query)}`;
 }
 
-// Places and areas first (a town, a port, an industrial area), then everything else (a shop that shares the name).
+// Settlements and administrative areas first, then land a user means by a name (an industrial area, a port),
+// then everything else that shares the name: a mountain, a shop, a pharmacy.
+const placeRank = (place) => {
+    const category = place.category ?? place.class;
+    if (category === 'place' || category === 'boundary') return 3;
+    if (['landuse', 'industrial', 'harbour'].includes(category) || place.type === 'port' || place.addresstype === 'industrial') return 2;
+    return 0;
+};
+
 export function rankPlaces(results) {
-    const area = (place) => ['place', 'boundary', 'landuse', 'industrial', 'harbour', 'natural'].includes(place.category ?? place.class) || place.type === 'port' || place.addresstype === 'industrial';
     return results.filter((place) => Array.isArray(place.boundingbox))
         .map((place, index) => ({ place, index }))
-        .sort((a, b) => (area(b.place) - area(a.place)) || (Number(b.place.importance ?? 0) - Number(a.place.importance ?? 0)) || (a.index - b.index))
+        .sort((a, b) => (placeRank(b.place) - placeRank(a.place)) || (Number(b.place.importance ?? 0) - Number(a.place.importance ?? 0)) || (a.index - b.index))
         .map(({ place }) => place);
 }
-

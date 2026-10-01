@@ -115,19 +115,25 @@ try {
     assert.ok(baseline.series(`${firstLane}.transportCost`).at(-1) > 0, 'baseline: transport cost should accrue.');
 
     // The busiest port's berths drop to a fifth of their capacity from day 20 to 50 (the template's outage window).
+    let arrivals;
+    let berths;
     const outage = await run('outage', {
         days: 70,
         change: (builder, built) => {
+            arrivals = built.parameterIndex.find((entry) => entry.key === 'vesselArrivals' && entry.entity === 'Port Alder').value;
+            berths = built.parameterIndex.find((entry) => entry.key === 'berthCapacity' && entry.entity === 'Port Alder').value;
             const port = built.parameterIndex.find((entry) => entry.key === 'outageCapacity' && entry.entity === 'Port Alder');
-            builder.setShared(port.symbol, port.value / 1.5 / 5);
+            builder.setShared(port.symbol, berths / 5);
         }
     });
     checkInvariants(outage);
     const queue = outage.series('Port Alder.queue');
-    // 100 TEU/day arriving against 20 handled for 30 days: about 2,400 TEU waiting by day 50.
-    assert.ok(Math.abs(queue[hour(50)] - (25 + 80 * 30)) < 30, `outage: about 2,425 TEU should be at anchorage by day 50 (got ${queue[hour(50)]}).`);
-    // Afterwards the berths clear the backlog with 50 TEU/day to spare (150 capacity, 100 arriving): 1,000 TEU in 20 days.
-    assert.ok(Math.abs(queue[hour(70)] - (queue[hour(50)] - 50 * 20)) < 30, `outage: the queue should shrink by about 1,000 TEU in the 20 days after the outage (day 70: ${queue[hour(70)]}).`);
+    // Arrivals against a fifth of the berths for 30 days, on top of the quarter-day of arrivals waiting at the start.
+    const expected = arrivals * 0.25 + (arrivals - berths / 5) * 30;
+    assert.ok(Math.abs(queue[hour(50)] - expected) < 0.01 * expected, `outage: about ${Math.round(expected)} TEU should be at anchorage by day 50 (got ${queue[hour(50)]}).`);
+    // Afterwards the berths clear the backlog with their spare capacity: berths - arrivals a day, for 20 days.
+    const cleared = (berths - arrivals) * 20;
+    assert.ok(Math.abs(queue[hour(70)] - (queue[hour(50)] - cleared)) < 0.01 * expected, `outage: the queue should shrink by about ${Math.round(cleared)} TEU in the 20 days after the outage (day 70: ${queue[hour(70)]}).`);
     console.log(`✓ region model from the synthetic region: ${baseline.document.nodes.length} nodes and ${baseline.document.edges.length} edges hold still in the baseline; a berth outage at Port Alder queues ${Math.round(queue[hour(50)]).toLocaleString('en')} TEU; containers, trucks and orders conserved.`);
 } finally {
     await rm(directory, { recursive: true, force: true });

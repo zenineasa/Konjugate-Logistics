@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { defaultSelection, discoverRegion, parsePopulation } from '../../packages/toolbox/lib/discovery.mjs';
 import { distance, ringArea } from '../../packages/toolbox/lib/geo.mjs';
-import { overpassQueries, overpassRequests, overpassUrl, readOverpass, retryableStatus, splitBbox } from '../../packages/toolbox/lib/overpass.mjs';
+import { maximumSplitDepth, overpassQueries, overpassRequests, overpassUrl, readOverpass, retryableStatus, splitBbox, splitRequest } from '../../packages/toolbox/lib/overpass.mjs';
 import { nominatimSearchUrl, rankPlaces } from '../../packages/toolbox/lib/places.mjs';
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
 import { createRouter } from '../../packages/toolbox/lib/roadGraph.mjs';
@@ -120,18 +120,24 @@ function regionModel(selectionChange = (selection) => selection, options) {
     return { selection, ...buildRegionModel({ builder: new ModelBuilder(templates), selection, route: createRouter(roadGraph).route, options }) };
 }
 
+const townDemand = (served, town) => served.filter((item) => item.town === town).reduce((total, item) => total + item.demand, 0);
+
 test('a curated region becomes a model in which every port ships what arrives and every town gets its share', () => {
     const { selection, document, lanes, served, provenance, parameterIndex } = regionModel();
     const supply = selection.ports.length * 100;
     close(served.reduce((total, item) => total + item.demand, 0), supply, 1e-9, 'demand equals what the ports hand inland');
-    close(served.find((item) => item.town === 'Cedarton').demand / served.find((item) => item.town === 'Dunmore').demand, 250 / 40, 1e-9, 'demand follows population');
-    for (const port of selection.ports) close(lanes.filter((lane) => lane.from === port.name).reduce((total, lane) => total + lane.rate, 0), 100, 1e-6, `${port.name} ships its arrivals`);
+    close(townDemand(served, 'Cedarton') / townDemand(served, 'Dunmore'), 250 / 40, 1e-9, 'demand follows population');
+    for (const town of selection.towns) close(served.filter((item) => item.town === town.name).reduce((total, item) => total + item.share, 0), 1, 1e-12, `${town.name}'s shares add up to all of it`);
+    for (const port of selection.ports) {
+        const arrivals = provenance.find((entry) => entry.entity === port.name && entry.parameter === 'Containers handed inland').value;
+        close(lanes.filter((lane) => lane.from === port.name).reduce((total, lane) => total + lane.rate, 0), arrivals, 1e-6, `${port.name} ships its arrivals`);
+    }
     for (const zone of new Set(served.map((item) => item.zone))) {
         close(lanes.filter((lane) => lane.to === zone).reduce((total, lane) => total + lane.rate, 0), served.filter((item) => item.zone === zone).reduce((total, item) => total + item.demand, 0), 1e-6, `${zone} receives its towns' demand`);
     }
     const zones = new Set(served.map((item) => item.zone)).size;
     assert.equal(document.nodes.length, selection.ports.length + zones + lanes.length + selection.towns.length);
-    assert.equal(document.edges.length, 6 * lanes.length + 3 * selection.towns.length);
+    assert.equal(document.edges.length, 6 * lanes.length + 3 * served.length, 'six edges a lane, three a delivery');
     assert.equal(document.runConfigurations[0].globalTimeStep, 900, '15-minute steps');
     assert.equal(document.runConfigurations[0].outputInterval, 3600, 'hourly outputs');
     for (const lane of lanes) {
@@ -142,6 +148,32 @@ test('a curated region becomes a model in which every port ships what arrives an
     }
     assert.ok(provenance.filter((entry) => entry.parameter === 'Containers handed inland').every((entry) => entry.basis === 'assumed'));
     assert.ok(parameterIndex.some((entry) => entry.key === 'berthCapacity' && entry.entity === 'Port Alder'));
+});
+
+test('until port activity is matched, the assumed volume is shared by port land, with a floor for small harbours', () => {
+    const { provenance } = regionModel();
+    const volume = (port) => provenance.find((entry) => entry.entity === port && entry.parameter === 'Containers handed inland');
+    // Port Alder has 1.975 km² of port land, Birch Harbour 0.399 km²: 200 TEU/day shared 1.975 : 0.399.
+    close(volume('Port Alder').value, 200 * 1.975 / (1.975 + 0.399), 0.5, 'Port Alder');
+    close(volume('Birch Harbour').value + volume('Port Alder').value, 200, 1e-9, 'the total');
+    assert.match(volume('Birch Harbour').detail, /shared by port land \(0\.4 km²\)/);
+    // A harbour mapped as a point counts as a tenth of the largest.
+    const pointHarbour = regionModel((selection) => ({ ...selection, ports: [...selection.ports, { id: 'added:quay', name: 'Small Quay', lat: -29.99, lon: -19.7 }] }));
+    const quay = pointHarbour.provenance.find((entry) => entry.entity === 'Small Quay' && entry.parameter === 'Containers handed inland');
+    close(quay.value, 300 * 0.1975 / (1.975 + 0.399 + 0.1975), 0.5, 'a point harbour');
+    assert.match(quay.detail, /counted as a tenth of the largest/);
+});
+
+test('a town draws on several nearby zones, each taking a share of its demand, and small shares go to its main zone', () => {
+    const { served, document, lanes } = regionModel();
+    const towns = new Set(served.map((item) => item.town));
+    assert.ok([...towns].some((town) => served.filter((item) => item.town === town).length > 1), 'at least one town is served by more than one zone');
+    for (const item of served) assert.ok(item.demand >= 1 || served.filter((other) => other.town === item.town).length === 1, `${item.town} from ${item.zone}: ${item.demand} TEU/day is worth its own deliveries`);
+    // Each delivery carries its share of the town's demand; for each town they add up to 1.
+    const shares = document.sharedParameters.filter((shared) => shared.symbol.startsWith('demandShare'));
+    assert.equal(shares.length, served.length);
+    close(shares.reduce((total, shared) => total + shared.value, 0), towns.size, 1e-12, 'one whole town per town');
+    for (const lane of lanes) assert.ok(lane.rate >= 2 || lanes.filter((other) => other.to === lane.to).length === 1 || lanes.filter((other) => other.from === lane.from).length === 1, `${lane.name} carries ${lane.rate} TEU/day`);
 });
 
 test('moving a site changes its lanes\' travel times and distances', () => {
@@ -161,10 +193,10 @@ test('a port with the user\'s own volume keeps it, and demand grows to match', (
     assert.equal(provenance.find((entry) => entry.entity === 'Port Alder' && entry.parameter === 'Containers handed inland').basis, 'user');
 });
 
-test('a zone nearest to no kept town is left out, and the user is told', () => {
-    const { warnings, served } = regionModel((selection) => ({ ...selection, towns: selection.towns.filter((town) => town.name === 'Dunmore') }));
-    assert.equal(new Set(served.map((item) => item.zone)).size, 1);
-    assert.ok(warnings.some((warning) => /nearest to no kept town/.test(warning)));
+test('a zone that serves none of the kept towns is left out, and the user is told', () => {
+    const { warnings, served } = regionModel((selection) => ({ ...selection, zones: [...selection.zones, { id: 'added:far', name: 'Far Depot', lat: -29.2, lon: -18.9 }] }));
+    assert.ok(!served.some((item) => item.zone === 'Far Depot'));
+    assert.ok(warnings.some((warning) => /^Far Depot serves none of the kept towns/.test(warning)));
 });
 
 test('a model cannot be built without a port, a zone and a town', () => {
@@ -192,9 +224,9 @@ test('a CSV of the user\'s own sites is read with loose headers, and bad lines a
 test('the user\'s own sites join the curated region and are used as given', () => {
     const { sites } = parseSites('name,kind,latitude,longitude,teuPerDay\nOur depot,warehouse,-29.9,-19.6,\nBig customer,customer,-29.88,-19.62,50\n');
     const { served, provenance } = regionModel((selection) => ({ ...selection, zones: [...selection.zones, ...sites.zones], towns: [...selection.towns, ...sites.towns] }));
-    const customer = served.find((item) => item.town === 'Big customer');
-    assert.equal(customer.demand, 50);
-    assert.equal(customer.zone, 'Our depot');
+    close(townDemand(served, 'Big customer'), 50, 1e-9, 'the customer\'s own demand');
+    const main = served.filter((item) => item.town === 'Big customer').sort((a, b) => b.demand - a.demand)[0];
+    assert.equal(main.zone, 'Our depot', 'mostly from the depot next door');
     assert.equal(provenance.find((entry) => entry.entity === 'Big customer' && entry.parameter === 'Demand').basis, 'user');
 });
 
@@ -298,8 +330,64 @@ test('a place search puts places and areas ahead of shops that share the name, a
         { display_name: 'Life Pharmacy, Jebel Ali', category: 'amenity', type: 'pharmacy', importance: 0.2, boundingbox: ['1', '2', '3', '4'] },
         { display_name: 'Jebel Ali Industrial Area', category: 'landuse', type: 'industrial', importance: 0.3, boundingbox: ['1', '2', '3', '4'] },
         { display_name: 'Jebel Ali', category: 'place', type: 'suburb', importance: 0.4, boundingbox: ['1', '2', '3', '4'] },
+        { display_name: 'Jabal Ali (peak)', category: 'natural', type: 'peak', importance: 0.5, boundingbox: ['1', '2', '3', '4'] },
         { display_name: 'No box', category: 'place', type: 'town', importance: 0.9 }
     ]);
-    assert.deepEqual(ranked.map((place) => place.display_name), ['Jebel Ali', 'Jebel Ali Industrial Area', 'Life Pharmacy, Jebel Ali']);
+    assert.deepEqual(ranked.map((place) => place.display_name), ['Jebel Ali', 'Jebel Ali Industrial Area', 'Jabal Ali (peak)', 'Life Pharmacy, Jebel Ali']);
     assert.match(nominatimSearchUrl('Jebel Ali'), /accept-language=en/);
+});
+
+test('a tile too large for the host is fetched again as four quarters, at most twice over', () => {
+    const [roads] = overpassRequests({ south: 25.0, west: 55.0, north: 25.3, east: 55.3 }).filter((request) => request.kind === 'roads');
+    const quarters = splitRequest(roads);
+    assert.deepEqual(quarters.map((request) => request.part), ['1.1', '1.2', '1.3', '1.4']);
+    assert.ok(quarters.every((request) => request.depth === 1 && request.kind === 'roads' && request.query.includes('"highway"')));
+    const area = (box) => (box.north - box.south) * (box.east - box.west);
+    close(quarters.reduce((total, request) => total + area(request.bbox), 0), area(roads.bbox), 1e-12, 'the quarters cover the tile');
+    assert.equal(splitRequest(quarters[0])[3].part, '1.1.4');
+    assert.equal(maximumSplitDepth, 2);
+});
+
+test('a city with mapped suburbs becomes demand areas across it, and its population is spread without counting twice', () => {
+    const city = node(20, 20, { place: 'city', name: 'Bigport', population: '1000000' });
+    // West side: three suburbs close together, one with its own population. East side: two more, 15 km away.
+    const west = [node(20.01, 19.95, { place: 'suburb', name: 'Westbank', population: '300000' }), node(20.02, 19.96, { place: 'suburb', name: 'Old Quarter' }), node(20.0, 19.965, { place: 'quarter', name: 'Harbourside' })];
+    const east = [node(20.0, 20.12, { place: 'suburb', name: 'Eastfield' }), node(20.01, 20.13, { place: 'suburb', name: 'Newtown' })];
+    const far = node(21.5, 21.5, { place: 'suburb', name: 'Far Suburb', population: '30000' });
+    const lonely = node(21.6, 21.6, { place: 'suburb', name: 'Unpopulated Suburb' });
+    const town = node(20.5, 20.5, { place: 'town', name: 'Smalltown', population: '40000' });
+    const { candidates, notices, coverage } = discoverRegion({ places: answer([city, ...west, ...east, far, lonely, town]) });
+    const areas = candidates.towns.filter((item) => item.city === 'Bigport');
+    assert.equal(areas.length, 2, 'two areas: west and east');
+    // 1,000,000 people: Westbank's own 300,000, and the other 700,000 shared evenly by the four suburbs without a figure.
+    const westArea = areas.find((item) => item.suburbs.includes('Westbank'));
+    const eastArea = areas.find((item) => item.suburbs.includes('Eastfield'));
+    assert.equal(westArea.population, 300000 + 2 * 175000);
+    assert.equal(eastArea.population, 2 * 175000);
+    assert.equal(westArea.name, 'Bigport: Westbank, Harbourside and 1 more');
+    assert.equal(westArea.populationBasis, 'shared', '350,000 of its 650,000 are an even share of the city');
+    assert.equal(eastArea.populationBasis, 'shared', 'an even share of the city');
+    assert.ok(!candidates.towns.some((item) => item.name === 'Bigport'), 'the city itself is not counted again');
+    assert.ok(candidates.towns.some((item) => item.name === 'Far Suburb' && item.population === 30000), 'a populated suburb far from any settlement is a place of its own');
+    assert.ok(!candidates.towns.some((item) => item.name === 'Unpopulated Suburb'));
+    assert.ok(candidates.towns.some((item) => item.name === 'Smalltown'), 'a town with no mapped suburbs stays one point');
+    assert.deepEqual(coverage.towns.spread, [{ name: 'Bigport', suburbs: 5, areas: 2 }]);
+    assert.ok(notices.some((item) => /^Bigport's 1,000,000 people are spread over 2 areas of its 5 mapped suburbs; for 4 suburbs without a population, how many live in each is assumed/.test(item.text)));
+});
+
+test('demand areas take their share of demand in the model, labelled as an even share of the city', () => {
+    const builder = new ModelBuilder(templates);
+    const discovered = discoverRegion({
+        ...syntheticRegion(),
+        places: answer([
+            node(-29.74, -19.7, { place: 'city', name: 'Cedarton', population: '250000' }),
+            node(-29.745, -19.71, { place: 'suburb', name: 'North End' }), node(-29.75, -19.72, { place: 'suburb', name: 'Mill Lane' }),
+            node(-29.80, -19.60, { place: 'suburb', name: 'River Side' })
+        ])
+    });
+    const built = buildRegionModel({ builder, selection: defaultSelection(discovered.candidates), route: createRouter(discovered.roadGraph).route });
+    const areas = [...new Set(built.served.map((item) => item.town))];
+    assert.equal(areas.length, 2);
+    const note = built.provenance.find((entry) => entry.parameter === 'Demand' && entry.entity.startsWith('Cedarton: '));
+    assert.match(note.detail, /an even share of Cedarton's population among its suburbs, an assumption/);
 });

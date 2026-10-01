@@ -1,7 +1,7 @@
 /* Copyright © 2026 Zenin Easa Panthakkalakath */
 
 // Builds a runnable model from a curated region: each kept port, logistics zone and town becomes a
-// node from the component templates, towns are served from their nearest zone, each zone is supplied
+// node from the component templates, each town draws on the nearby zones, each zone is supplied
 // by nearby ports over road lanes whose travel times and distances come from routing, and every
 // initial value is the steady state, so the baseline holds still. Every value records where it came
 // from: sourced, routed, assumed or the user's own.
@@ -9,7 +9,9 @@
 import { toLocal } from './geo.mjs';
 
 export const regionModelDefaults = {
-    // Containers a day a port hands inland, until port activity is matched: an assumption to replace.
+    // Containers a day a port hands inland on average, until port activity is matched: an assumption to replace.
+    // It is shared among the ports in proportion to their port land, so a large container port takes more than
+    // a small harbour.
     portTeuPerDay: 100,
     // Berth capacity as a multiple of the port's arrivals.
     berthHeadroom: 1.5,
@@ -17,8 +19,14 @@ export const regionModelDefaults = {
     gateHours: 2,
     // A zone orders from at most this many ports, preferring nearer ones.
     portsPerZone: 2,
-    // A port's share of a zone's supply below this is dropped (unless the port would be left unused).
+    // A lane carrying less than this share of its zone's supply, or less than this many TEU a day, is dropped
+    // where the rest can still balance: a lane of a fraction of a truck a day is noise, not a route.
     minimumShare: 0.1,
+    minimumLaneTeuPerDay: 2,
+    // A town draws on up to this many logistics zones, in proportion to their significance (floor area and
+    // road access) and nearness; a zone this many hours further away gets 1/e the weight.
+    zonesPerTown: 4,
+    townGravityHours: 0.5,
     // How quickly preference falls with travel time: a port this many hours further away gets 1/e the weight.
     gravityHours: 3,
     // Idle trucks kept per lane, in multiples of what one loading period needs.
@@ -88,13 +96,22 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
     if (!zones.length) throw new Error('Keep at least one logistics zone: towns are served from zones.');
     if (!towns.length) throw new Error('Keep at least one town or customer: it is where the demand is.');
 
-    // ---- supply
+    // ---- supply: the user's figures; otherwise, until port activity is matched, an assumed volume shared by port land
     const supply = new Map();
+    const assumedPorts = ports.filter((port) => !(Number(port.teuPerDay) > 0));
+    const landOf = (port) => Number(port.areaSquareKilometres) || 0;
+    const largestLand = Math.max(0, ...assumedPorts.map(landOf));
+    // A harbour mapped as a point, or one of the user's own, still takes a tenth of the largest port's share.
+    const portWeight = (port) => (largestLand > 0 ? Math.max(landOf(port), 0.1 * largestLand) : 1);
+    const assumedWeight = assumedPorts.reduce((total, port) => total + portWeight(port), 0);
     for (const port of ports) {
         const user = Number(port.teuPerDay) > 0;
-        const value = user ? Number(port.teuPerDay) : settings.portTeuPerDay;
+        const value = user ? Number(port.teuPerDay) : settings.portTeuPerDay * assumedPorts.length * portWeight(port) / assumedWeight;
         supply.set(port.id, value);
-        note(port.name, 'Containers handed inland', value, 'TEU/day', user ? (port.teuPerDayBasis ?? 'user') : 'assumed', user ? port.teuPerDaySource : 'Default until port activity is matched.');
+        const assumption = largestLand > 0 && assumedPorts.length > 1
+            ? `Assumed until port activity is matched: ${settings.portTeuPerDay} TEU/day a port on average, shared by port land (${landOf(port).toFixed(1)} km²${landOf(port) < 0.1 * largestLand ? ', counted as a tenth of the largest' : ''}).`
+            : 'Assumed until port activity is matched.';
+        note(port.name, 'Containers handed inland', value, 'TEU/day', user ? (port.teuPerDayBasis ?? 'user') : 'assumed', user ? port.teuPerDaySource : assumption);
     }
     const totalSupply = [...supply.values()].reduce((total, value) => total + value, 0);
 
@@ -119,26 +136,37 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
     for (const town of weighted) {
         demand.set(town.id, remainder * weightOf(town) / weightTotal);
         note(town.name, 'Demand', demand.get(town.id), 'TEU/day', 'assumed',
-            `Share of the ports' inland volume by population (${town.populationBasis === 'OpenStreetMap' ? 'population from OpenStreetMap' : town.populationBasis === 'user' ? 'your population figure' : 'assumed size'}).`);
+            `Share of the ports' inland volume by population (${{
+                OpenStreetMap: 'population from OpenStreetMap',
+                user: 'your population figure',
+                shared: `an even share of ${town.city ?? 'the city'}'s population among its suburbs, an assumption`
+            }[town.populationBasis] ?? 'assumed size'}).`);
     }
 
-    // ---- towns to their nearest zone
-    const townRoutes = new Map();
-    const zoneOfTown = new Map();
+    // ---- towns to zones: each town draws on up to zonesPerTown nearby zones, by significance and nearness
+    const zoneWeight = (zone) => Number(zone.significance) > 0 && Number.isFinite(Number(zone.significance)) ? Number(zone.significance)
+        : Number(zone.floorAreaSquareMetres) > 0 ? Number(zone.floorAreaSquareMetres) : null;
+    const knownWeights = zones.map(zoneWeight).filter((value) => value !== null).sort((a, b) => a - b);
+    // A zone of the user's own, with no floor area given, counts as a typical one of the region.
+    const typicalWeight = knownWeights.length ? knownWeights[Math.floor(knownWeights.length / 2)] : 1;
+    const allocations = []; // { town, zone, share, leg }
     for (const town of towns) {
-        let best = null;
-        for (const zone of zones) {
+        const options = zones.map((zone) => {
             const leg = route(zone, town);
-            if (!best || leg.hours < best.leg.hours) best = { zone, leg };
-        }
-        zoneOfTown.set(town.id, best.zone);
-        townRoutes.set(town.id, best.leg);
+            return { zone, leg, weight: (zoneWeight(zone) ?? typicalWeight) * Math.exp(-leg.hours / settings.townGravityHours) };
+        }).sort((a, b) => b.weight - a.weight);
+        const nearby = options.slice(0, settings.zonesPerTown).filter((option) => option.weight >= settings.minimumShare * options[0].weight);
+        // A share of less than half a lane's minimum is not worth its own deliveries: it goes to the town's main zone.
+        const nearbyWeight = nearby.reduce((sum, option) => sum + option.weight, 0);
+        const kept = nearby.filter((option, index) => index === 0 || demand.get(town.id) * option.weight / nearbyWeight >= settings.minimumLaneTeuPerDay / 2);
+        const total = kept.reduce((sum, option) => sum + option.weight, 0);
+        for (const option of kept) allocations.push({ town, zone: option.zone, share: option.weight / total, leg: option.leg });
     }
     const zoneDemand = new Map();
-    for (const town of towns) zoneDemand.set(zoneOfTown.get(town.id).id, (zoneDemand.get(zoneOfTown.get(town.id).id) ?? 0) + demand.get(town.id));
+    for (const allocation of allocations) zoneDemand.set(allocation.zone.id, (zoneDemand.get(allocation.zone.id) ?? 0) + allocation.share * demand.get(allocation.town.id));
     const usedZones = zones.filter((zone) => zoneDemand.get(zone.id) > 0);
     const unusedZones = zones.filter((zone) => !(zoneDemand.get(zone.id) > 0));
-    if (unusedZones.length) warnings.push(`${unusedZones.map((zone) => zone.name).join(', ')} ${unusedZones.length === 1 ? 'is' : 'are'} nearest to no kept town, so ${unusedZones.length === 1 ? 'it was' : 'they were'} left out of the model.`);
+    if (unusedZones.length) warnings.push(`${unusedZones.map((zone) => zone.name).join(', ')} ${unusedZones.length === 1 ? 'serves' : 'serve'} none of the kept towns (${unusedZones.length === 1 ? 'it is' : 'they are'} not among the nearest few to any), so ${unusedZones.length === 1 ? 'it was' : 'they were'} left out of the model. Keep a town nearby, or add a customer of your own, to use ${unusedZones.length === 1 ? 'it' : 'them'}.`);
 
     // ---- zones to ports: nearest ports, balanced so every port ships what arrives and every zone gets what it needs
     const legs = new Map();
@@ -147,36 +175,41 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
         const key = `${zone.id}|${port.id}`;
         return { key, zone: zone.id, port: port.id, weight: supply.get(port.id) * Math.exp(-legs.get(key).hours / settings.gravityHours) };
     };
-    let support = new Set();
-    for (const zone of usedZones) {
-        [...ports].sort((a, b) => legs.get(`${zone.id}|${a.id}`).hours - legs.get(`${zone.id}|${b.id}`).hours)
-            .slice(0, settings.portsPerZone).forEach((port) => support.add(`${zone.id}|${port.id}`));
-    }
-    for (const port of ports) {
-        if ([...support].some((key) => key.endsWith(`|${port.id}`))) continue;
-        const nearest = [...usedZones].sort((a, b) => legs.get(`${a.id}|${port.id}`).hours - legs.get(`${b.id}|${port.id}`).hours)[0];
-        support.add(`${nearest.id}|${port.id}`);
-    }
+    const nearestPorts = (zone) => [...ports].sort((a, b) => legs.get(`${zone.id}|${a.id}`).hours - legs.get(`${zone.id}|${b.id}`).hours);
     const pairsOf = (keys) => usedZones.flatMap((zone) => ports.filter((port) => keys.has(`${zone.id}|${port.id}`)).map((port) => pairFor(zone, port)));
-    let flows = balanceFlows(pairsOf(support), zoneDemand, supply);
-    if (flows) {
-        // Drop small shares where the rest can still balance.
-        const pruned = new Set([...support].filter((key) => {
+    // Each zone draws on its nearest few ports, one more at a time until every port ships what arrives and every zone gets what it needs.
+    let support = null;
+    let flows = null;
+    let portsPerZone = Math.min(settings.portsPerZone, ports.length);
+    for (; portsPerZone <= ports.length && !flows; portsPerZone += 1) {
+        support = new Set();
+        for (const zone of usedZones) nearestPorts(zone).slice(0, portsPerZone).forEach((port) => support.add(`${zone.id}|${port.id}`));
+        for (const port of ports) {
+            if ([...support].some((key) => key.endsWith(`|${port.id}`))) continue;
+            const nearest = [...usedZones].sort((a, b) => legs.get(`${a.id}|${port.id}`).hours - legs.get(`${b.id}|${port.id}`).hours)[0];
+            support.add(`${nearest.id}|${port.id}`);
+        }
+        flows = balanceFlows(pairsOf(support), zoneDemand, supply);
+    }
+    if (!flows) throw new Error('The flows between ports and zones could not be balanced.');
+    if (portsPerZone - 1 > settings.portsPerZone) warnings.push(`The nearest ${settings.portsPerZone} ports could not supply every zone in balance, so zones draw on up to ${portsPerZone - 1}.`);
+    // Then drop the smallest lanes, one at a time, while the rest still balances.
+    for (;;) {
+        const small = [...support].filter((key) => {
             const [zoneId, portId] = key.split('|');
             const onlyForPort = [...support].filter((other) => other.endsWith(`|${portId}`)).length === 1;
             const onlyForZone = [...support].filter((other) => other.startsWith(`${zoneId}|`)).length === 1;
-            return onlyForPort || onlyForZone || flows.get(key) >= settings.minimumShare * zoneDemand.get(zoneId);
-        }));
-        const prunedFlows = pruned.size < support.size ? balanceFlows(pairsOf(pruned), zoneDemand, supply) : flows;
-        if (prunedFlows) { support = pruned; flows = prunedFlows; }
+            return !onlyForPort && !onlyForZone && flows.get(key) < Math.max(settings.minimumShare * zoneDemand.get(zoneId), settings.minimumLaneTeuPerDay);
+        }).sort((a, b) => flows.get(a) - flows.get(b));
+        let dropped = false;
+        for (const key of small) {
+            const trial = new Set(support);
+            trial.delete(key);
+            const balanced = balanceFlows(pairsOf(trial), zoneDemand, supply);
+            if (balanced) { support = trial; flows = balanced; dropped = true; break; }
+        }
+        if (!dropped) break;
     }
-    if (!flows) {
-        // Nearby ports alone cannot balance the region: let every zone draw on every port.
-        support = new Set(usedZones.flatMap((zone) => ports.map((port) => `${zone.id}|${port.id}`)));
-        flows = balanceFlows(pairsOf(support), zoneDemand, supply);
-        warnings.push('Nearby ports alone could not supply every zone in balance, so zones also draw on more distant ports.');
-    }
-    if (!flows) throw new Error('The flows between ports and zones could not be balanced.');
 
     // ---- layout: north up, the region spread over about 80 units so names on the canvas stay apart
     const everything = [...ports, ...usedZones, ...towns];
@@ -243,6 +276,7 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
         flowsByZone.get(zoneId).push({ port: ports.find((port) => port.id === portId), rate: flows.get(key), leg: legs.get(key) });
     }
     const lanes = [];
+    const warehouses = new Map();
     for (const zone of usedZones) {
         const zoneFlows = flowsByZone.get(zone.id).filter((flow) => flow.rate > 1e-9);
         const total = zoneDemand.get(zone.id);
@@ -277,15 +311,25 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
             note(laneName, 'Fleet', fleet, 'trucks', 'assumed', `Enough for the baseline flow of ${lane.rate.toFixed(1)} TEU/day, plus a reserve.`);
             lanes.push({ name: laneName, from: lane.port.name, to: zone.name, rate: lane.rate, leadTime, kilometres, fleet, basis: lane.leg.basis });
         }
-        const served = towns.filter((town) => zoneOfTown.get(town.id).id === zone.id);
-        for (const town of served) {
-            const townDemand = demand.get(town.id);
-            const node = place('demandZone', town.name, {
-                name: town.name, position: position(town),
-                initialValues: { backlog: townDemand * responseDays, demandRate: townDemand },
-                shared: { baseDemand: townDemand }
+        warehouses.set(zone.id, warehouse);
+    }
+
+    // ---- towns, each served by its zones
+    for (const town of towns) {
+        const townDemand = demand.get(town.id);
+        const node = place('demandZone', town.name, {
+            name: town.name, position: position(town),
+            initialValues: { backlog: townDemand * responseDays, demandRate: townDemand },
+            shared: { baseDemand: townDemand }
+        });
+        for (const allocation of allocations.filter((item) => item.town === town)) {
+            const zoneTotal = zoneDemand.get(allocation.zone.id);
+            bundle('delivery', `${town.name} from ${allocation.zone.name}`, { warehouse: warehouses.get(allocation.zone.id), zone: node }, {
+                shared: { share: allocation.share * townDemand / zoneTotal, demandShare: allocation.share }
             });
-            bundle('delivery', town.name, { warehouse, zone: node }, { shared: { share: townDemand / total } });
+            if (allocations.filter((item) => item.town === town).length > 1) {
+                note(town.name, `Share served from ${allocation.zone.name}`, allocation.share * 100, '%', 'assumed', `By the zone's size and road access, and ${allocation.leg.hours.toFixed(1)} h by road.`);
+            }
         }
     }
 
@@ -293,6 +337,7 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
     return {
         document, provenance, warnings, parameterIndex, lanes,
         unusedZones: unusedZones.map((zone) => zone.name),
-        served: towns.map((town) => ({ town: town.name, zone: zoneOfTown.get(town.id).name, demand: demand.get(town.id), hours: townRoutes.get(town.id).hours }))
+        // One entry per town and zone serving it: the zone's share of the town's demand.
+        served: allocations.map((allocation) => ({ town: allocation.town.name, zone: allocation.zone.name, share: allocation.share, demand: allocation.share * demand.get(allocation.town.id), hours: allocation.leg.hours }))
     };
 }

@@ -21,7 +21,13 @@ export const discoveryDefaults = {
     // Industrial parcels at least this large count towards warehouse coverage.
     coverageParcelMinimumSquareMetres: 50000,
     // Settlement sizes assumed where OpenStreetMap has no population.
-    assumedPopulation: { city: 100000, town: 20000 }
+    assumedPopulation: { city: 100000, town: 20000 },
+    // A city or town with at least this many mapped suburbs is split into demand areas, so its people are
+    // spread across it rather than placed at its centre. Suburbs belong to the nearest settlement within
+    // these distances, and suburbs closer than areaClusterMetres form one area.
+    suburbsForAreas: 3,
+    suburbReachMetres: { city: 25000, town: 10000 },
+    areaClusterMetres: 4000
 };
 
 const marinaCategories = /^(marina|marina_no_facilities|yacht|fishing|leisure|ferry|passenger)$/;
@@ -184,8 +190,15 @@ export function discoverRegion(answers, options = {}) {
         };
     });
 
-    // ---- towns
-    const towns = placeFeatures.filter((feature) => feature.osmType === 'node' && /^(city|town)$/.test(feature.tags.place ?? '')).map((feature) => {
+    // ---- towns: cities and towns, and, where a settlement's suburbs are mapped, demand areas across it
+    const settlements = [];
+    const suburbs = [];
+    for (const feature of placeFeatures) {
+        if (feature.osmType !== 'node') continue;
+        if (/^(city|town)$/.test(feature.tags.place ?? '')) settlements.push(feature);
+        else if (/^(suburb|quarter)$/.test(feature.tags.place ?? '')) suburbs.push(feature);
+    }
+    const settlementTown = (feature) => {
         const population = parsePopulation(feature.tags.population);
         return {
             id: `town:node/${feature.osmId}`, kind: 'town', name: nameOf(feature.tags) ?? `Unnamed ${feature.tags.place}`,
@@ -194,7 +207,60 @@ export function discoverRegion(answers, options = {}) {
             populationBasis: population ? 'OpenStreetMap' : 'assumed',
             significance: population ?? settings.assumedPopulation[feature.tags.place], source: 'OpenStreetMap'
         };
-    }).sort((a, b) => b.significance - a.significance);
+    };
+    // Each suburb belongs to the nearest settlement within reach.
+    const suburbsOf = new Map(settlements.map((settlement) => [settlement, []]));
+    const unclaimed = [];
+    for (const suburb of suburbs) {
+        let owner = null;
+        let ownerMetres = Infinity;
+        for (const settlement of settlements) {
+            const metres = distance(suburb.point, settlement.point);
+            if (metres <= settings.suburbReachMetres[settlement.tags.place] && metres < ownerMetres) { owner = settlement; ownerMetres = metres; }
+        }
+        if (owner) suburbsOf.get(owner).push(suburb); else unclaimed.push(suburb);
+    }
+    const towns = [];
+    const spread = []; // { name, suburbs, areas, assumed } for the notice
+    for (const settlement of settlements) {
+        const town = settlementTown(settlement);
+        const itsSuburbs = suburbsOf.get(settlement);
+        if (itsSuburbs.length < settings.suburbsForAreas) { towns.push(town); continue; }
+        // The settlement's people, spread over its suburbs: a suburb's own population where mapped, and an even
+        // share of the rest where not. A settlement whose suburbs between them hold more people than it is said
+        // to keeps the suburbs' figures.
+        const known = itsSuburbs.map((suburb) => parsePopulation(suburb.tags.population));
+        const knownTotal = known.reduce((total, value) => total + (value ?? 0), 0);
+        const unknownCount = known.filter((value) => value === null).length;
+        const rest = Math.max(0, town.population - knownTotal);
+        const evenShare = unknownCount ? rest / unknownCount : 0;
+        const members = itsSuburbs.map((suburb, index) => ({ suburb, population: known[index] ?? evenShare, assumed: known[index] === null }));
+        const areas = clusterByDistance(members, (member) => member.suburb.point, settings.areaClusterMetres);
+        for (const area of areas) {
+            const population = area.reduce((total, member) => total + member.population, 0);
+            if (!(population > 0)) continue;
+            const largest = [...area].sort((a, b) => b.population - a.population || (nameOf(a.suburb.tags) ?? '').localeCompare(nameOf(b.suburb.tags) ?? ''));
+            const names = largest.map((member) => nameOf(member.suburb.tags)).filter(Boolean);
+            const point = centroid(area.map((member) => member.suburb.point), area.map((member) => member.population || 1));
+            const assumedShare = area.filter((member) => member.assumed).reduce((total, member) => total + member.population, 0) / population;
+            towns.push({
+                id: `town:area/${settlement.osmId}/${largest[0].suburb.osmId}`, kind: 'town',
+                name: `${town.name}: ${names.slice(0, 2).join(', ')}${names.length > 2 ? ` and ${names.length - 2} more` : ''}`,
+                lat: point.lat, lon: point.lon, place: 'area', city: town.name, suburbs: names,
+                population: Math.round(population),
+                populationBasis: assumedShare > 0.5 ? (town.populationBasis === 'OpenStreetMap' ? 'shared' : 'assumed') : 'OpenStreetMap',
+                significance: Math.round(population), source: 'OpenStreetMap'
+            });
+        }
+        spread.push({ name: town.name, suburbs: itsSuburbs.length, areas: areas.length, assumed: unknownCount, population: town.population, populationBasis: town.populationBasis });
+    }
+    // A suburb with its own population and no settlement nearby is a place of its own.
+    for (const suburb of unclaimed) {
+        const population = parsePopulation(suburb.tags.population);
+        if (!population) continue;
+        towns.push({ ...settlementTown(suburb), place: suburb.tags.place, population, populationBasis: 'OpenStreetMap', significance: population });
+    }
+    towns.sort((a, b) => b.significance - a.significance);
 
     const nearestTownName = (point) => {
         let best = null;
@@ -231,7 +297,7 @@ export function discoverRegion(answers, options = {}) {
 
     // ---- coverage
     const roadKilometres = Object.values(roadGraph.kilometresByClass).reduce((total, value) => total + value, 0);
-    const withPopulation = towns.filter((town) => town.populationBasis === 'OpenStreetMap').length;
+    const withPopulation = towns.filter((town) => town.populationBasis === 'OpenStreetMap' || town.populationBasis === 'shared').length;
     const coverage = {
         ports: { found: ports.length, commercial: ports.filter((port) => port.commercial).length, marinasExcluded: marinas.length, anchorages: anchorages.length, activityMatched: null },
         warehouses: {
@@ -246,7 +312,7 @@ export function discoverRegion(answers, options = {}) {
             components: roadGraph.components, level: roadKilometres > 0 ? 'mapped' : 'none'
         },
         rail: { lineKilometres: round(railKilometres, 1), yards: railYards },
-        towns: { found: towns.length, withPopulation, level: !towns.length ? 'none' : withPopulation === towns.length ? 'good' : 'partial' }
+        towns: { found: towns.length, withPopulation, settlements: settlements.length, suburbs: suburbs.length, spread: spread.map(({ name, suburbs: count, areas }) => ({ name, suburbs: count, areas })), level: !towns.length ? 'none' : withPopulation === towns.length ? 'good' : 'partial' }
     };
 
     const notices = [];
@@ -266,8 +332,11 @@ export function discoverRegion(answers, options = {}) {
     }
     if (!roadKilometres) notices.push({ kind: 'roads', level: 'warning', text: 'No major roads are mapped here, so travel times are straight-line estimates.' });
     else if (roadGraph.components > 1) notices.push({ kind: 'roads', level: 'info', text: `The major roads form ${roadGraph.components} separate networks; sites are routed on the largest, and straight-line estimates are used where a site is far from it.` });
+    for (const city of spread) {
+        notices.push({ kind: 'towns', level: 'info', text: `${city.name}'s ${city.populationBasis === 'OpenStreetMap' ? `${city.population.toLocaleString('en')} people are` : 'people are'} spread over ${city.areas} area${city.areas === 1 ? '' : 's'} of its ${city.suburbs} mapped suburbs${city.assumed ? `; ${city.assumed === city.suburbs ? 'how many live in each suburb is' : `for ${city.assumed} suburbs without a population, how many live in each is`} assumed (an even share)` : ''}.` });
+    }
     if (towns.length && withPopulation < towns.length) {
-        notices.push({ kind: 'towns', level: 'info', text: `Population is missing for ${towns.length - withPopulation} of ${towns.length} towns and cities. Demand for those uses an assumed size (${settings.assumedPopulation.city.toLocaleString('en')} for a city, ${settings.assumedPopulation.town.toLocaleString('en')} for a town), an estimate you can change.` });
+        notices.push({ kind: 'towns', level: 'info', text: `Population is missing for ${towns.length - withPopulation} of ${towns.length} towns, cities and areas. Demand for those uses an assumed size (${settings.assumedPopulation.city.toLocaleString('en')} for a city, ${settings.assumedPopulation.town.toLocaleString('en')} for a town), an estimate you can change.` });
     }
     if (!towns.length) notices.push({ kind: 'towns', level: 'warning', text: 'No towns or cities are mapped here, so there is no demand to serve. Add customers yourself.' });
 
@@ -277,7 +346,7 @@ export function discoverRegion(answers, options = {}) {
 }
 
 // A first selection a user then curates: the most significant few of each kind.
-export function defaultSelection(candidates, { ports = 3, zones = 6, towns = 8 } = {}) {
+export function defaultSelection(candidates, { ports = 3, zones = 6, towns = 12 } = {}) {
     return {
         ports: candidates.ports.slice(0, ports),
         zones: candidates.zones.slice(0, zones),

@@ -14,13 +14,14 @@
 // needed to fetch again. Map data © OpenStreetMap contributors, ODbL.
 
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { defaultSelection, discoverRegion } from '../packages/toolbox/lib/discovery.mjs';
-import { overpassRequests, overpassUrl, retryableStatus, retryDelaysSeconds } from '../packages/toolbox/lib/overpass.mjs';
+import { maximumSplitDepth, overpassRequests, overpassUrl, retryableStatus, retryDelaysSeconds, splitRequest } from '../packages/toolbox/lib/overpass.mjs';
 import { nominatimSearchUrl, rankPlaces } from '../packages/toolbox/lib/places.mjs';
 import { buildRegionModel } from '../packages/toolbox/lib/regionModel.mjs';
 import { createRouter } from '../packages/toolbox/lib/roadGraph.mjs';
@@ -66,9 +67,12 @@ const cache = join(logisticsRoot, 'out', 'regionCache', key);
 await mkdir(cache, { recursive: true });
 const answers = {};
 const pause = (seconds) => new Promise((resolve) => setTimeout(resolve, seconds * 1000));
-for (const request of overpassRequests(bbox)) {
-    const label = request.parts > 1 ? `${request.kind} ${request.part}/${request.parts}` : request.kind;
-    const file = join(cache, `${request.kind}-${request.part}.json`);
+const queue = overpassRequests(bbox);
+while (queue.length) {
+    const request = queue.shift();
+    const label = request.parts > 1 || request.depth ? `${request.kind} ${request.part}/${request.parts}` : request.kind;
+    // Keyed by the query itself, so a changed query is fetched afresh rather than read from an old answer.
+    const file = join(cache, `${request.kind}-${request.part}-${createHash('sha256').update(request.query).digest('hex').slice(0, 8)}.json`);
     let text;
     if (existsSync(file) && !flag('refresh')) {
         text = await readFile(file, 'utf8');
@@ -80,6 +84,13 @@ for (const request of overpassRequests(bbox)) {
             text = await response.text();
             if (response.ok) {
                 const size = Buffer.byteLength(text);
+                // As the add-on does: a tile too large to accept is fetched again as four quarters.
+                if (size > hostFetchLimit && request.depth < maximumSplitDepth) {
+                    console.log(`${label}: ${(size / 1024).toFixed(0)} KB is over the add-on's ${hostFetchLimit / 1024 / 1024} MB fetch limit; fetching it as four quarters`);
+                    queue.unshift(...splitRequest(request));
+                    text = null;
+                    break;
+                }
                 console.log(`${label}: ${(size / 1024).toFixed(0)} KB in ${((Date.now() - started) / 1000).toFixed(1)} s${size > hostFetchLimit ? `  -- OVER the add-on's ${hostFetchLimit / 1024 / 1024} MB fetch limit` : ''}${Date.now() - started > 20000 ? '  -- SLOWER than the add-on\u2019s 20 s fetch limit' : ''}`);
                 await writeFile(file, text);
                 break;
@@ -90,7 +101,7 @@ for (const request of overpassRequests(bbox)) {
         }
         await pause(1);
     }
-    (answers[request.kind] ??= []).push(text);
+    if (text !== null) (answers[request.kind] ??= []).push(text);
 }
 
 const started = Date.now();
@@ -105,7 +116,7 @@ const show = (title, items, describe) => {
 };
 show('Ports', discovered.candidates.ports, (port) => `${port.areaSquareKilometres} km², ${port.parts} part(s), ${port.commercial ? 'commercial' : 'no commercial tag'}, ${port.anchorages} anchorage(s)`);
 show('Logistics zones', discovered.candidates.zones, (zone) => `${Math.round(zone.floorAreaSquareMetres / 1000)}k m² floor (${zone.floorAreaBasis}), ${zone.buildings} building(s), ${zone.roadKilometres} km to a major road`);
-show('Towns', discovered.candidates.towns, (town) => `${town.population.toLocaleString('en')} (${town.populationBasis})`);
+show('Towns', discovered.candidates.towns, (town) => `${town.population.toLocaleString('en')} (${town.populationBasis})${town.suburbs ? `, ${town.suburbs.length} suburbs` : ''}`);
 
 const routeStarted = Date.now();
 const builder = new ModelBuilder(await loadTemplates());

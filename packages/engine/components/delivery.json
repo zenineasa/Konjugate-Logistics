@@ -6,7 +6,7 @@
     "domains": [
         "logistics"
     ],
-    "description": "Serves a demand zone from a warehouse: ships towards clearing the zone's backlog within the response time, drawing at most this zone's allocation share of the warehouse's stock per draw-down time, and only while the warehouse holds more than the serve-only-above level (0 serves the zone until the warehouse is empty; a higher level protects stock for other zones). Two matched edges move the shipment out of the warehouse into the zone's deliveries and clear the same amount from its backlog, and a third feeds the zone's demand into the warehouse's forecast. Select the warehouse and the demand zone, then click this bundle.",
+    "description": "Serves a demand zone from a warehouse: ships towards clearing the zone's backlog within the response time, drawing at most this zone's allocation share of the warehouse's stock per draw-down time, and only while the warehouse holds more than the serve-only-above level (0 serves the zone until the warehouse is empty; a higher level protects stock for other zones). Two matched edges move the shipment out of the warehouse into the zone's deliveries and clear the same amount from its backlog, and a third feeds the zone's demand into the warehouse's forecast. When several warehouses serve one zone, each takes its share of the zone's demand: of the backlog it clears and of the demand it forecasts (the shares add up to 1; 1 serves the whole zone). Select the warehouse and the demand zone, then click this bundle.",
     "color": "#73b9c2",
     "endpoints": [
         {
@@ -33,6 +33,14 @@
             "symbol": "safetyStock",
             "value": 0,
             "unit": "TEU",
+            "scope": "instance"
+        },
+        {
+            "key": "demandShare",
+            "name": "Share of the zone's demand",
+            "symbol": "demandShare",
+            "value": 1,
+            "unit": "",
             "scope": "instance"
         },
         {
@@ -85,8 +93,13 @@
                 "role": "target",
                 "state": "delivered"
             },
-            "latex": "\\begin{cases} \\frac{1}{\\mathrm{secondsPerDay}} \\cdot \\min(\\frac{\\mathrm{targetBacklog}}{\\mathrm{responseDays}}, \\frac{\\mathrm{share} \\cdot \\mathrm{sourceStock}}{\\mathrm{drawDownDays}}) & \\mathrm{sourceStock} > \\mathrm{safetyStock} \\\\ 0 & \\text{otherwise} \\end{cases}",
+            "latex": "\\begin{cases} \\frac{1}{\\mathrm{secondsPerDay}} \\cdot \\min(\\frac{\\mathrm{demandShare} \\cdot \\mathrm{targetBacklog}}{\\mathrm{responseDays}}, \\frac{\\mathrm{share} \\cdot \\mathrm{sourceStock}}{\\mathrm{drawDownDays}}) & \\mathrm{sourceStock} > \\mathrm{safetyStock} \\\\ 0 & \\text{otherwise} \\end{cases}",
             "parameters": [
+                {
+                    "name": "Share of the zone's demand",
+                    "symbol": "demandShare",
+                    "shared": "demandShare"
+                },
                 {
                     "name": "Allocation share",
                     "symbol": "share",
@@ -128,8 +141,13 @@
                 "role": "target",
                 "state": "backlog"
             },
-            "latex": "-(\\begin{cases} \\frac{1}{\\mathrm{secondsPerDay}} \\cdot \\min(\\frac{\\mathrm{targetBacklog}}{\\mathrm{responseDays}}, \\frac{\\mathrm{share} \\cdot \\mathrm{sourceStock}}{\\mathrm{drawDownDays}}) & \\mathrm{sourceStock} > \\mathrm{safetyStock} \\\\ 0 & \\text{otherwise} \\end{cases})",
+            "latex": "-(\\begin{cases} \\frac{1}{\\mathrm{secondsPerDay}} \\cdot \\min(\\frac{\\mathrm{demandShare} \\cdot \\mathrm{targetBacklog}}{\\mathrm{responseDays}}, \\frac{\\mathrm{share} \\cdot \\mathrm{sourceStock}}{\\mathrm{drawDownDays}}) & \\mathrm{sourceStock} > \\mathrm{safetyStock} \\\\ 0 & \\text{otherwise} \\end{cases})",
             "parameters": [
+                {
+                    "name": "Share of the zone's demand",
+                    "symbol": "demandShare",
+                    "shared": "demandShare"
+                },
                 {
                     "name": "Allocation share",
                     "symbol": "share",
@@ -169,8 +187,13 @@
                 "role": "target",
                 "state": "forecast"
             },
-            "latex": "\\frac{\\mathrm{sourceDemandRate}}{\\mathrm{secondsPerDay} \\cdot \\mathrm{smoothingDays}}",
+            "latex": "\\frac{\\mathrm{demandShare} \\cdot \\mathrm{sourceDemandRate}}{\\mathrm{secondsPerDay} \\cdot \\mathrm{smoothingDays}}",
             "parameters": [
+                {
+                    "name": "Share of the zone's demand",
+                    "symbol": "demandShare",
+                    "shared": "demandShare"
+                },
                 {
                     "name": "Demand smoothing time",
                     "symbol": "smoothingDays",

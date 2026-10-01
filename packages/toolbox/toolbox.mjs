@@ -6,7 +6,7 @@
 // reads files and runs the importer.
 
 import { MapView } from './mapView.mjs';
-import { overpassRequests, overpassUrl, retryDelaysSeconds } from './lib/overpass.mjs';
+import { maximumSplitDepth, overpassRequests, overpassUrl, retryDelaysSeconds, splitRequest } from './lib/overpass.mjs';
 import { nominatimSearchUrl, rankPlaces } from './lib/places.mjs';
 
 const api = window.konjugateLauncher;
@@ -15,7 +15,7 @@ const importerId = 'region';
 const groups = ['ports', 'zones', 'towns'];
 const kindOfGroup = { ports: 'port', zones: 'zone', towns: 'town' };
 const groupOfKind = { port: 'ports', zone: 'zones', town: 'towns' };
-const defaultKeep = { ports: 3, zones: 6, towns: 8 };
+const defaultKeep = { ports: 3, zones: 6, towns: 12 };
 const maximumSpanKilometres = 250;
 
 const state = {
@@ -127,9 +127,11 @@ $('#fetchButton').addEventListener('click', async () => {
         for (const kind of kinds) await call(api.clearFile(importerId, kind));
         const bytes = {};
         // One request at a time: the public server is shared.
-        for (const request of requests) {
+        const queue = [...requests];
+        while (queue.length) {
+            const request = queue.shift();
             const row = progress.querySelector(`[data-kind="${request.kind}"]`);
-            const label = request.parts > 1 ? `part ${request.part} of ${request.parts}` : 'fetching';
+            const label = request.parts > 1 || request.depth ? `part ${request.part} of ${request.parts}` : 'fetching';
             for (let attempt = 0; ; attempt += 1) {
                 row.querySelector('.state').textContent = `${label}…`;
                 try {
@@ -137,6 +139,11 @@ $('#fetchButton').addEventListener('click', async () => {
                     bytes[request.kind] = (bytes[request.kind] ?? 0) + answer.bytes;
                     break;
                 } catch (error) {
+                    // Too large to accept: fetch the tile again as four quarters.
+                    if (/larger than the size limit/.test(error.message) && request.depth < maximumSplitDepth) {
+                        queue.unshift(...splitRequest(request));
+                        break;
+                    }
                     if (!busy(error.message) || attempt >= retryDelaysSeconds.length) {
                         row.classList.add('failed');
                         row.querySelector('.state').textContent = 'failed';
@@ -148,7 +155,7 @@ $('#fetchButton').addEventListener('click', async () => {
                     }
                 }
             }
-            if (request.part === request.parts) {
+            if (!queue.some((next) => next.kind === request.kind) && bytes[request.kind] !== undefined) {
                 row.classList.add('done');
                 row.querySelector('.state').textContent = `${number(bytes[request.kind] / 1024)} KB`;
             }
@@ -202,15 +209,17 @@ function resetCuration() {
     map.setFlows(null);
 }
 
-async function discover({ keepSites = false } = {}) {
+async function discover({ keepSites = false, keepCuration = false } = {}) {
     const answer = await call(api.runImport(importerId, state.bbox ? { bbox: state.bbox } : {}));
     if (answer.report?.errors?.length) throw new Error(answer.report.errors.join(' '));
     const previous = state.discovered;
     state.discovered = answer.data;
     const { candidates, sites } = state.discovered;
     // A new region starts with the most significant of each kind kept; the user's own sites are always kept.
-    const sameRegion = keepSites && previous;
+    const sameRegion = (keepSites && previous) || keepCuration;
     for (const group of groups) {
+        // A restored session keeps exactly what was kept.
+        if (keepCuration) continue;
         if (!sameRegion) {
             state.kept[group].clear();
             candidates[group].slice(0, defaultKeep[group]).forEach((site) => state.kept[group].add(site.id));
@@ -259,7 +268,9 @@ function describe(site, group) {
         const basis = { mapped: 'mapped', approximate: 'from building outlines', estimated: 'estimated from industrial land' }[site.floorAreaBasis] ?? site.floorAreaBasis;
         return `${number(site.floorAreaSquareMetres / 1000)}k m² floor area (${basis})${site.buildings ? `, ${site.buildings} buildings` : ''}${site.roadKilometres !== null && site.roadKilometres !== undefined ? `, ${number(site.roadKilometres, 1)} km to a major road` : ''}`;
     }
-    return site.user ? `Your site (${site.source})${site.teuPerDay ? `, ${site.teuPerDay} TEU/day` : ''}` : `Population ${number(site.population)}${site.populationBasis === 'assumed' ? ' (assumed)' : ''}`;
+    if (site.user) return `Your site (${site.source})${site.teuPerDay ? `, ${site.teuPerDay} TEU/day` : ''}`;
+    const basis = { assumed: ' (assumed)', shared: ` (an even share of ${site.city}'s population)` }[site.populationBasis] ?? '';
+    return `Population ${number(site.population)}${basis}${site.suburbs?.length ? ` · ${site.suburbs.length} suburb${site.suburbs.length === 1 ? '' : 's'}: ${site.suburbs.slice(0, 4).join(', ')}${site.suburbs.length > 4 ? '…' : ''}` : ''}`;
 }
 
 function renderCandidates() {
@@ -385,7 +396,7 @@ async function build({ focus = false } = {}) {
         const answer = await call(api.runImport(importerId, { step: 'build', bbox: state.bbox, selection: selection(), settings: { portTeuPerDay: state.portVolume } }));
         if (!answer.imported) throw new Error((answer.report?.errors ?? ['The model could not be built.']).join(' '));
         state.built = answer.data;
-        await call(api.openInCanvas(null, { focus, silent: true }));
+        await call(api.openInCanvas(null, { focus, silent: true, session: sessionState() }));
         $('#showButton').disabled = false;
         $('#buildStatus').innerHTML = notice('ok', `${answer.report.summary}: ${state.built.nodes} nodes and ${state.built.edges} relationships, now in the canvas.`)
             + state.built.warnings.map((text) => notice('warning', text)).join('');
@@ -429,6 +440,61 @@ $('#showButton').addEventListener('click', async () => {
     try { await call(api.openInCanvas(null, { focus: true, silent: true })); } catch (error) { $('#buildStatus').innerHTML = notice('error', error.message); }
 });
 
+// ---- the session kept with the project ------------------------------------------------------------------
+// Everything the window needs to carry on where it was: the place, the curation and the last build's tables. The
+// host keeps the fetched map data beside it, so a saved project reopens its region offline.
+function sessionState() {
+    return {
+        version: 1, place: state.place ? { display_name: state.place.display_name, boundingbox: state.place.boundingbox } : null,
+        margin: $('#marginSelect').value, bbox: state.bbox, group: state.group, portVolume: state.portVolume,
+        kept: Object.fromEntries(groups.map((group) => [group, [...state.kept[group]]])),
+        changes: [...state.changes], added: state.added, built: state.built, keepInStep: $('#keepInStep').checked
+    };
+}
+
+async function restoreSession() {
+    if (!api?.restoreSession) return;
+    let answer;
+    try {
+        answer = await call(api.restoreSession());
+    } catch {
+        return;
+    }
+    const saved = answer.session;
+    if (!saved || saved.version !== 1) return;
+    setBusy(true);
+    try {
+        state.place = saved.place;
+        state.bbox = saved.bbox;
+        if (saved.margin) $('#marginSelect').value = saved.margin;
+        if (state.place) {
+            $('#chosenRegion').hidden = false;
+            $('#chosenName').textContent = state.place.display_name;
+        }
+        for (const group of groups) state.kept[group] = new Set(saved.kept?.[group] ?? []);
+        state.changes = new Map(saved.changes ?? []);
+        state.added = saved.added ?? [];
+        state.portVolume = saved.portVolume ?? null;
+        state.group = saved.group ?? 'ports';
+        $('#keepInStep').checked = saved.keepInStep !== false;
+        state.built = null;
+        await discover({ keepCuration: true });
+        if (saved.built) {
+            state.built = saved.built;
+            renderBuilt();
+            $('#showButton').disabled = false;
+        }
+        const when = answer.savedAt ? new Date(answer.savedAt).toLocaleString() : 'earlier';
+        const fetched = answer.inputs.filter((input) => input.retrievedAt).map((input) => input.retrievedAt).sort()[0];
+        $('#regionStatus').innerHTML = notice('ok', `Restored the session kept with this project (saved ${when}).${fetched ? ` Its map data was fetched on ${new Date(fetched).toLocaleDateString()}; fetch again for newer data.` : ''}`);
+        $('#buildStatus').innerHTML = saved.built ? notice('ok', `The model in the canvas is the one this session built: ${saved.built.nodes} nodes and ${saved.built.edges} relationships.`) : '';
+    } catch (error) {
+        $('#regionStatus').innerHTML = notice('error', `The session kept with this project could not be restored: ${error.message}`);
+    } finally {
+        setBusy(false);
+    }
+}
+
 function setBusy(busy) {
     state.busy = busy;
     for (const selector of ['#fetchButton', '#sampleButton', '#sitesButton', '#searchButton']) $(selector).disabled = busy;
@@ -440,3 +506,4 @@ function setBusy(busy) {
 }
 
 if (!api) $('#regionStatus').innerHTML = notice('error', 'This window must be opened from Konjugate.');
+else restoreSession();

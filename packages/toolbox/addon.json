@@ -9,7 +9,11 @@
     "permissions": [
         "data.import",
         "model.open",
-        "network.fetch"
+        "network.fetch",
+        "project.data"
+    ],
+    "requires": [
+        "projectSession"
     ],
     "contributes": {
         "toolstrip": [

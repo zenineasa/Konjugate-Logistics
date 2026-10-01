@@ -17,7 +17,7 @@ export function overpassQueries(bbox) {
         logistics: `${head}(way["building"="warehouse"]${box};nwr["industrial"~"^(warehouse|logistics|distribution)$"]${box};)->.w;.w out bb qt;(way["landuse"="industrial"]${box};relation["landuse"="industrial"]${box};)->.l;.l out geom qt;`,
         roads: `${head}way["highway"~"^(${majorRoads})$"]${box};out geom qt;`,
         rail: `${head}(way["railway"="rail"]["service"!~"^(siding|spur|yard)$"]${box};)->.r;.r out geom qt;(nwr["railway"="yard"]${box};nwr["landuse"="railway"]${box};nwr["railway"="station"]["usage"="freight"]${box};)->.y;.y out center qt;`,
-        places: `${head}node["place"~"^(city|town)$"]${box};out qt;`
+        places: `${head}node["place"~"^(city|town|suburb|quarter)$"]${box};out qt;`
     };
 }
 
@@ -43,14 +43,28 @@ export function splitBbox(bbox, maximumKilometres = maximumTileKilometres) {
     return tiles;
 }
 
-// Every request a region needs: { kind, part, parts, query }, one per kind, or one per tile for the tiled kinds.
+// Every request a region needs: { kind, part, parts, depth, bbox, query }, one per kind, or one per tile for the tiled kinds.
 export function overpassRequests(bbox) {
     const requests = [];
     for (const kind of Object.keys(overpassQueries(bbox))) {
         const tiles = tiledKinds.includes(kind) ? splitBbox(bbox) : [bbox];
-        tiles.forEach((tile, index) => requests.push({ kind, part: index + 1, parts: tiles.length, query: overpassQueries(tile)[kind] }));
+        tiles.forEach((tile, index) => requests.push({ kind, part: `${index + 1}`, parts: tiles.length, depth: 0, bbox: tile, query: overpassQueries(tile)[kind] }));
     }
     return requests;
+}
+
+// A tile whose answer is too large for the host to accept (a dense city centre's roads, say) is fetched again
+// as four quarters, at most this many times over.
+export const maximumSplitDepth = 2;
+
+export function splitRequest(request) {
+    const { south, west, north, east } = request.bbox;
+    const middleLat = (south + north) / 2;
+    const middleLon = (west + east) / 2;
+    return [
+        { south, west, north: middleLat, east: middleLon }, { south, west: middleLon, north: middleLat, east },
+        { south: middleLat, west, north, east: middleLon }, { south: middleLat, west: middleLon, north, east }
+    ].map((tile, index) => ({ ...request, part: `${request.part}.${index + 1}`, depth: request.depth + 1, bbox: tile, query: overpassQueries(tile)[request.kind] }));
 }
 
 // A public server that is busy answers 429 (too many requests) or 502 to 504 (gave up waiting): worth another try later.
