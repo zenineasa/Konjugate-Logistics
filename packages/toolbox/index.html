@@ -73,6 +73,10 @@
                         <option value="history">Follow PortWatch history</option>
                         <option value="average">Steady average</option>
                     </select></label>
+                <div class="row small" title="PortWatch gives container imports in tonnes. An imported TEU weighs this much on average (loaded boxes more, empties less), and this share of the imports is handed inland: the rest only changes ships at the port (transhipment). Both are assumptions; set them from figures you trust.">
+                    <label>An imported TEU weighs <input type="number" id="tonnesPerTeuInput" min="1" max="40" step="0.5" value="10"> t;</label>
+                    <label><input type="number" id="inlandShareInput" min="1" max="100" step="5" value="100"> % goes inland</label>
+                </div>
                 <label class="row small" title="The days of PortWatch history the model uses: the arrivals it replays, or the days it averages over. Empty: the latest days (replayed), or the whole year fetched (averaged).">History from
                     <input type="date" id="historyFromInput"> <span class="muted" id="historyFromHint">empty: the latest days</span></label>
                 <label class="row small"><input type="checkbox" id="keepInStep" checked> Keep the canvas in step with changes here</label>
@@ -91,6 +95,10 @@
                 <div class="row small">
                     <label>from day <input type="number" id="startInput" min="0" step="1" value="10"></label>
                     <label>for <input type="number" id="durationInput" min="1" step="1" value="30"> days</label>
+                </div>
+                <div class="row small" title="Cargo kept out may be lost (diverted elsewhere, cancelled) or only delayed: ships that wait or sail around arrive after the disruption ends. The delayed part arrives evenly over the days given, on top of the usual traffic.">
+                    <label>Of the cargo kept out, <input type="number" id="delayedInput" min="0" max="100" step="10" value="0"> % arrives later,</label>
+                    <label>over <input type="number" id="catchUpInput" min="1" step="1" value="20"> days</label>
                 </div>
                 <table class="dependence" id="dependenceTable"></table>
                 <div class="row">

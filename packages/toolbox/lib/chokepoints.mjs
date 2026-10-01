@@ -116,7 +116,11 @@ export function summariseTransits(yearlyText, recentText) {
 //   base: the port's arrivals without the disruption: a number, or a held schedule [[seconds, value], ...]
 //   cut: the share of the chokepoint's transits lost (0..1); dependence: the port's share through it (0..1)
 //   start, duration, forkAt, runTime: seconds (the fork at or before the start)
-export function disruptionPath({ base, dependence, cut, start, duration, forkAt, runTime }) {
+//   delayedShare (0..1): the part of the cargo kept out that is delayed rather than lost: it arrives after the
+//     disruption ends, at an even extra rate over catchUp seconds (what would arrive after the run is lost to it)
+// Returns the path, and how much cargo (value x seconds, TEU when the values are TEU a day and divided by a day) was
+// kept out and later delivered within the run, as { path, keptOut, caughtUp }; disruptionPath() alone gives the path.
+export function disruptionPlan({ base, dependence, cut, start, duration, forkAt, runTime, delayedShare = 0, catchUp = 0 }) {
     if (!(forkAt <= start && start < runTime && duration > 0)) throw new Error('A disruption must start at or after the fork and before the end of the run, and last a while.');
     const schedule = Array.isArray(base) ? base : [[0, base]];
     const baseAt = (time) => {
@@ -128,9 +132,17 @@ export function disruptionPath({ base, dependence, cut, start, duration, forkAt,
         return value;
     };
     const end = Math.min(start + duration, runTime);
-    const factor = 1 - Math.min(1, Math.max(0, dependence)) * Math.min(1, Math.max(0, cut));
-    const valueAt = (time) => baseAt(time) * (time >= start && time < end ? factor : 1);
-    const breaks = [...new Set([forkAt, start, end, runTime, ...schedule.map(([time]) => time).filter((time) => time > forkAt && time < runTime)])].sort((a, b) => a - b);
+    const share = Math.min(1, Math.max(0, dependence)) * Math.min(1, Math.max(0, cut));
+    const factor = 1 - share;
+    // The cargo kept out, integrated over the held base: each stretch between the base's own samples.
+    const inside = [...new Set([start, end, ...schedule.map(([time]) => time).filter((time) => time > start && time < end)])].sort((a, b) => a - b);
+    let keptOut = 0;
+    for (let index = 0; index + 1 < inside.length; index += 1) keptOut += baseAt(inside[index]) * share * (inside[index + 1] - inside[index]);
+    const delayed = Math.min(1, Math.max(0, delayedShare)) * keptOut;
+    const catchUpEnd = catchUp > 0 ? Math.min(end + catchUp, runTime) : end;
+    const catchUpRate = catchUp > 0 && delayed > 0 ? delayed / catchUp : 0;
+    const valueAt = (time) => baseAt(time) * (time >= start && time < end ? factor : 1) + (time >= end && time < catchUpEnd ? catchUpRate : 0);
+    const breaks = [...new Set([forkAt, start, end, catchUpEnd, runTime, ...schedule.map(([time]) => time).filter((time) => time > forkAt && time < runTime)])].sort((a, b) => a - b);
     const path = [];
     for (let index = 0; index + 1 < breaks.length; index += 1) {
         const from = breaks[index];
@@ -142,5 +154,9 @@ export function disruptionPath({ base, dependence, cut, start, duration, forkAt,
         }
         path.push([from - forkAt, value], [to - forkAt - Math.min(1, (to - from) / 2), value]);
     }
-    return path;
+    return { path, keptOut, caughtUp: catchUpRate * (catchUpEnd - end) };
+}
+
+export function disruptionPath(options) {
+    return disruptionPlan(options).path;
 }

@@ -8,7 +8,7 @@
 import { MapView } from './mapView.mjs';
 import { maximumSplitDepth, overpassRequests, overpassStatusUrl, overpassUrl, retryDelaysSeconds, retryPauseSeconds, splitRequest, statusWaitSeconds } from './lib/overpass.mjs';
 import { nominatimSearchUrl, rankPlaces } from './lib/places.mjs';
-import { chokepointById, chokepointDependence, chokepointRecentUrl, chokepoints, chokepointYearlyUrl, disruptionPath, summariseTransits } from './lib/chokepoints.mjs';
+import { chokepointById, chokepointDependence, chokepointRecentUrl, chokepoints, chokepointYearlyUrl, disruptionPlan, summariseTransits } from './lib/chokepoints.mjs';
 import { portwatchActivityUrl, portwatchPortsUrl } from './lib/portwatch.mjs';
 
 const api = window.konjugateLauncher;
@@ -323,7 +323,7 @@ function describe(site, group) {
     if (group === 'ports') {
         if (site.user) return `Your site (${site.source})`;
         const land = `${number(site.areaSquareKilometres, 2)} km² of port land${site.commercial ? ', commercial' : ''}${site.anchorages ? `, ${site.anchorages} anchorage${site.anchorages === 1 ? '' : 's'}` : ''}`;
-        if (site.activity) return `${land} · IMF PortWatch (${site.portwatch.name}): about ${number(site.activity.teuPerDay)} TEU/day imported, ${number(site.activity.containerCallsPerDay, 1)} container ships a day, ${site.activity.from} to ${site.activity.to}`;
+        if (site.activity) return `${land} · IMF PortWatch (${site.portwatch.name}): about ${number(site.activity.importTonnesPerDay / conversion().tonnesPerTeu * conversion().inlandShare)} TEU/day inland, ${number(site.activity.containerCallsPerDay, 1)} container ships a day, ${site.activity.from} to ${site.activity.to}`;
         return site.portwatch ? `${land} · IMF PortWatch (${site.portwatch.name}): no recent activity` : land;
     }
     if (group === 'zones') {
@@ -346,7 +346,7 @@ function renderCandidates() {
         <li data-id="${escape(site.id)}">
             <input type="checkbox" ${site.kept ? 'checked' : ''} aria-label="Keep ${escape(site.name)}">
             <span class="name" title="${escape(site.name)}">${escape(site.name)}${site.moved ? '<span class="tag">moved</span>' : ''}</span>
-            ${group === 'ports' && site.kept ? `<span><input type="number" min="0" step="10" placeholder="${site.activity ? Math.round(site.activity.teuPerDay) : state.portVolume}" value="${site.teuPerDay ?? ''}" aria-label="TEU a day handed inland at ${escape(site.name)}"> <span class="muted small">TEU/day</span></span>` : '<span></span>'}
+            ${group === 'ports' && site.kept ? `<span><input type="number" min="0" step="10" placeholder="${site.activity ? Math.round(site.activity.importTonnesPerDay / conversion().tonnesPerTeu * conversion().inlandShare) : state.portVolume}" value="${site.teuPerDay ?? ''}" aria-label="TEU a day handed inland at ${escape(site.name)}"> <span class="muted small">TEU/day</span></span>` : '<span></span>'}
             <span class="detail">${escape(describe(site, group))}</span>
         </li>`).join('');
     $('#candidateList').querySelectorAll('li').forEach((row) => {
@@ -404,6 +404,16 @@ $('#portVolume').addEventListener('change', () => {
 });
 $('#arrivalsSelect').addEventListener('change', () => changed());
 $('#historyFromInput').addEventListener('change', () => changed());
+// How PortWatch's tonnes become TEU handed inland: the weight of a TEU, and the share not transhipped.
+function conversion() {
+    const tonnes = Number($('#tonnesPerTeuInput').value);
+    const share = Number($('#inlandShareInput').value);
+    return {
+        tonnesPerTeu: tonnes >= 1 && tonnes <= 40 ? tonnes : 10,
+        inlandShare: share > 0 && share <= 100 ? share / 100 : 1
+    };
+}
+for (const selector of ['#tonnesPerTeuInput', '#inlandShareInput']) $(selector).addEventListener('change', () => { renderCandidates(); changed(); });
 
 document.querySelectorAll('[data-add]').forEach((button) => button.addEventListener('click', () => {
     const kind = map.addKind === button.dataset.add ? null : button.dataset.add;
@@ -458,7 +468,7 @@ async function build({ focus = false } = {}) {
     setBusy(true);
     $('#buildStatus').innerHTML = notice('', 'Building the model: routing every lane…');
     try {
-        const answer = await call(api.runImport(importerId, { step: 'build', bbox: state.bbox, selection: selection(), settings: { portTeuPerDay: state.portVolume, arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null } }));
+        const answer = await call(api.runImport(importerId, { step: 'build', bbox: state.bbox, selection: selection(), settings: { portTeuPerDay: state.portVolume, arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion() } }));
         if (!answer.imported) throw new Error((answer.report?.errors ?? ['The model could not be built.']).join(' '));
         state.built = answer.data;
         await call(api.openInCanvas(null, { focus, silent: true, session: sessionState() }));
@@ -518,7 +528,7 @@ function sessionState() {
         margin: $('#marginSelect').value, bbox: state.bbox, group: state.group, portVolume: state.portVolume,
         kept: Object.fromEntries(groups.map((group) => [group, [...state.kept[group]]])),
         changes: [...state.changes], added: state.added, built: state.built, keepInStep: $('#keepInStep').checked,
-        arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null,
+        arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(),
         disruption: { ...disruptionSettings(), dependence: [...state.dependence], transits: [...state.transits].filter(([, value]) => value && !value.error) }, scenario: state.scenario
     };
 }
@@ -550,12 +560,16 @@ async function restoreSession() {
         $('#keepInStep').checked = saved.keepInStep !== false;
         if (saved.arrivals) $('#arrivalsSelect').value = saved.arrivals;
         $('#historyFromInput').value = saved.historyFrom ?? '';
+        $('#tonnesPerTeuInput').value = saved.tonnesPerTeu ?? 10;
+        $('#inlandShareInput').value = Math.round((saved.inlandShare ?? 1) * 100);
         if (saved.disruption) {
             state.dependence = new Map(saved.disruption.dependence ?? []);
             state.transits = new Map(saved.disruption.transits ?? []);
             $('#cutInput').value = saved.disruption.cut ?? 50;
             $('#startInput').value = saved.disruption.startDay ?? 10;
             $('#durationInput').value = saved.disruption.days ?? 30;
+            $('#delayedInput').value = saved.disruption.delayed ?? 0;
+            $('#catchUpInput').value = saved.disruption.catchUpDays ?? 20;
             state.savedChokepoint = saved.disruption.chokepoint ?? null;
         }
         state.built = null;
@@ -611,7 +625,8 @@ const seaOf = (port) => {
 function disruptionSettings() {
     return {
         chokepoint: $('#chokepointSelect').value || null,
-        cut: Number($('#cutInput').value), startDay: Number($('#startInput').value), days: Number($('#durationInput').value)
+        cut: Number($('#cutInput').value), startDay: Number($('#startInput').value), days: Number($('#durationInput').value),
+        delayed: Number($('#delayedInput').value) || 0, catchUpDays: Number($('#catchUpInput').value) || 0
     };
 }
 
@@ -693,6 +708,8 @@ $('#runScenarioButton').addEventListener('click', async () => {
         if (!(settings.cut > 0 && settings.cut <= 100)) throw new Error('Cut the transits by more than 0% and at most 100%.');
         if (!(settings.startDay >= 0 && start < runTime)) throw new Error(`Start the disruption from day 0 to day ${state.built.days - 1}.`);
         if (!(settings.days > 0)) throw new Error('The disruption must last at least a day.');
+        if (!(settings.delayed >= 0 && settings.delayed <= 100)) throw new Error('The share of the cargo that arrives later is from 0% to 100%.');
+        if (settings.delayed > 0 && !(settings.catchUpDays > 0)) throw new Error('The delayed cargo must arrive over at least a day.');
         const affected = state.built.ports.map((port) => ({ port, share: sharesOf(port)[settings.chokepoint] ?? 0 })).filter((item) => item.share > 0);
         if (!affected.length) throw new Error(`None of the ports depends on ${chokepointById.get(settings.chokepoint).name}. Set a port's share through it to run the disruption.`);
         // A period already far below a port's usual traffic may be the disruption itself: cutting it again counts it twice.
@@ -709,17 +726,22 @@ $('#runScenarioButton').addEventListener('click', async () => {
             return;
         }
         const supplied = { entities: affected.map((item) => item.port.name), samples: {} };
+        const volumes = {};
         for (const { port, share } of affected) {
-            supplied.samples[port.name] = disruptionPath({
+            const plan = disruptionPlan({
                 base: port.schedule ?? port.arrivals, dependence: share, cut: settings.cut / 100,
-                start, duration: settings.days * day, forkAt: start, runTime
+                start, duration: settings.days * day, forkAt: start, runTime,
+                delayedShare: settings.delayed / 100, catchUp: settings.catchUpDays * day
             });
+            supplied.samples[port.name] = plan.path;
+            // TEU: the paths are TEU a day over seconds.
+            volumes[port.name] = { keptOut: plan.keptOut / day, caughtUp: plan.caughtUp / day };
         }
         setBusy(true);
         $('#runScenarioButton').disabled = true;
         status.innerHTML = notice('', 'Running the baseline and the disruption…');
         const answer = await call(api.runScenario('chokepointDisruption', { supplied, forkAt: start, runTime, signals: ['arrived', 'queue', 'stock', 'backlog'] }));
-        state.scenario = summariseDisruption(answer, settings, affected.map((item) => ({ port: item.port.name, share: item.share })));
+        state.scenario = summariseDisruption(answer, settings, affected.map((item) => ({ port: item.port.name, share: item.share, ...volumes[item.port.name] })));
         status.innerHTML = '';
         renderScenarioResult();
         await call(api.openInCanvas('chokepointDisruption', { focus: false, silent: true, session: sessionState() }));
@@ -772,9 +794,12 @@ function renderScenarioResult() {
     const worse = (now, before) => (now > before * 1.01 + 0.5 ? ' class="number worse"' : ' class="number"');
     const towns = [...result.towns].sort((a, b) => (b.peak - b.baseline) - (a.peak - a.baseline)).slice(0, 8);
     $('#scenarioResult').innerHTML = `
-        <p class="small">${escape(result.chokepoint)}: transits cut by ${settings.cut}% from day ${settings.startDay} for ${settings.days} days, reaching ${result.affected.map((item) => `${escape(item.port)} (${Math.round(item.share * 100)}% of its ships)`).join(', ')}.</p>
-        <table><thead><tr><th>Port</th><th class="number">TEU that did not arrive</th></tr></thead>
-            <tbody>${result.ports.map((port) => `<tr><td>${escape(port.name)}</td><td class="number">${number(port.lost)}</td></tr>`).join('')}</tbody></table>
+        <p class="small">${escape(result.chokepoint)}: transits cut by ${settings.cut}% from day ${settings.startDay} for ${settings.days} days, reaching ${result.affected.map((item) => `${escape(item.port)} (${Math.round(item.share * 100)}% of its ships)`).join(', ')}${settings.delayed > 0 ? `; ${settings.delayed}% of the cargo kept out arrives over the ${settings.catchUpDays} days after` : '; the cargo kept out is lost'}.</p>
+        <table><thead><tr><th>Port</th><th class="number">Kept out (TEU)</th><th class="number">arrived later</th><th class="number">never arrived</th></tr></thead>
+            <tbody>${result.ports.map((port) => {
+                const affected = result.affected.find((item) => item.port === port.name);
+                return `<tr><td>${escape(port.name)}</td><td class="number">${affected?.keptOut !== undefined ? number(affected.keptOut) : number(port.lost)}</td><td class="number">${number(affected?.caughtUp ?? 0)}</td><td class="number">${number(port.lost)}</td></tr>`;
+            }).join('')}</tbody></table>
         <table><thead><tr><th>Warehouse</th><th class="number">Lowest stock</th><th class="number">baseline</th><th class="number">day</th></tr></thead>
             <tbody>${result.warehouses.map((item) => `<tr><td>${escape(item.name)}</td><td${worse(item.baseline, item.low)}>${number(item.low)}</td><td class="number">${number(item.baseline)}</td><td class="number">${number(item.day, 1)}</td></tr>`).join('')}</tbody></table>
         <table><thead><tr><th>Town</th><th class="number">Highest backlog</th><th class="number">baseline</th><th class="number">day</th></tr></thead>

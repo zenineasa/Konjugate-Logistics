@@ -10,7 +10,7 @@ import test from 'node:test';
 import importRegion, { osmRoles, portwatchRoles, templateIds } from '../../packages/toolbox/importers/region.mjs';
 import { logisticsRoot } from '../../scripts/konjugatePaths.mjs';
 import { equationHelpers } from '../../scripts/templatePlacement.mjs';
-import { syntheticBbox, syntheticRegion } from '../fixtures/syntheticRegion.mjs';
+import { syntheticBbox, syntheticPortwatch, syntheticRegion } from '../fixtures/syntheticRegion.mjs';
 
 const plugin = JSON.parse(await readFile(join(logisticsRoot, 'packages', 'engine', 'plugin.json'), 'utf8'));
 const addon = JSON.parse(await readFile(join(logisticsRoot, 'packages', 'toolbox', 'addon.json'), 'utf8'));
@@ -114,4 +114,21 @@ test('a CSV of the user\'s own sites alone is enough to discover, and its sites 
     assert.equal(built.ok, true, JSON.stringify(built.report));
     assert.equal(built.data.lanes[0].basis, 'straight-line', 'with no roads fetched, travel times are straight-line estimates');
     assert.equal(built.data.served[0].demand, 80);
+});
+
+test('the window’s history period and conversion reach the model, and values out of range are ignored', async () => {
+    const pw = syntheticPortwatch();
+    const files = [...regionFiles(), ...Object.entries(pw).map(([role, answer]) => ({ role, name: `${role}.json`, text: JSON.stringify(answer), encoding: 'utf-8' }))];
+    const discovered = (await importRegion({ files, helpers, options: { bbox: syntheticBbox } })).data.candidates;
+    const selection = { ports: discovered.ports.map((port) => ({ id: port.id })), zones: discovered.zones.slice(0, 2).map((zone) => ({ id: zone.id })), towns: discovered.towns.map((town) => ({ id: town.id })) };
+    const volume = async (settings) => {
+        const result = await importRegion({ files, helpers, options: { step: 'build', bbox: syntheticBbox, selection, settings } });
+        assert.equal(result.ok, true, JSON.stringify(result.report));
+        return result.data.provenance.find((item) => item.entity === 'Port Alder' && item.parameter === 'Containers handed inland').value;
+    };
+    const usual = await volume({});
+    assert.ok(Math.abs(await volume({ tonnesPerTeu: 20, inlandShare: 0.5 }) - usual / 4) < 1e-9);
+    assert.equal(await volume({ tonnesPerTeu: 0, inlandShare: 2, historyFrom: 'last week' }), usual, 'out of range or malformed: the defaults');
+    const replayed = await importRegion({ files, helpers, options: { step: 'build', bbox: syntheticBbox, selection, settings: { arrivals: 'history', historyFrom: '2026-09-14' } } });
+    assert.deepEqual(replayed.data.histories, [{ port: 'Port Alder', from: '2026-09-14', to: '2026-09-27', days: 14 }]);
 });

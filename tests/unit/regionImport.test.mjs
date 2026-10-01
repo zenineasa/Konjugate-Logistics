@@ -6,7 +6,7 @@ import { defaultSelection, discoverRegion, parsePopulation } from '../../package
 import { clusterByDistance, distance, ringArea, splitToSpan } from '../../packages/toolbox/lib/geo.mjs';
 import { maximumSplitDepth, maximumStatusWaitSeconds, overpassQueries, overpassRequests, overpassStatusUrl, overpassUrl, readOverpass, retryableStatus, retryDelaysSeconds, retryPauseSeconds, splitBbox, splitRequest, statusWaitSeconds } from '../../packages/toolbox/lib/overpass.mjs';
 import { nominatimSearchUrl, rankPlaces } from '../../packages/toolbox/lib/places.mjs';
-import { chokepointById, chokepointDependence, chokepointRecentUrl, chokepoints, chokepointYearlyUrl, disruptionPath, summariseTransits } from '../../packages/toolbox/lib/chokepoints.mjs';
+import { chokepointById, chokepointDependence, chokepointRecentUrl, chokepoints, chokepointYearlyUrl, disruptionPath, disruptionPlan, summariseTransits } from '../../packages/toolbox/lib/chokepoints.mjs';
 import { findShift, historyWindow, matchPorts, portwatchActivityUrl, portwatchPortsUrl, readPortwatchActivity, readPortwatchPorts, summariseActivity } from '../../packages/toolbox/lib/portwatch.mjs';
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
 import { createRouter } from '../../packages/toolbox/lib/roadGraph.mjs';
@@ -692,4 +692,43 @@ test('a break in a port’s history is found by month, and the model can use a c
     const missing = await build({ arrivals: 'history', historyFrom: '2030-01-01' });
     assert.ok(missing.warnings.some((text) => /Port Alder's PortWatch history has no days from 2030-01-01; its latest 90 days are used instead\./.test(text)));
     assert.equal(missing.histories[0].to, '2026-09-27');
+});
+
+test('cargo kept out by a disruption can arrive later instead, evenly over the days after it ends', () => {
+    const day = 86400;
+    const read = (path, time) => {
+        if (time <= path[0][0]) return path[0][1];
+        for (let index = 1; index < path.length; index += 1) {
+            if (time <= path[index][0]) {
+                const [t0, v0] = path[index - 1];
+                const [t1, v1] = path[index];
+                return v0 + (time - t0) / (t1 - t0) * (v1 - v0);
+            }
+        }
+        return path.at(-1)[1];
+    };
+    // 100 TEU a day, half kept out for 10 days from day 5: 500 TEU; 60% of it arrives over the 5 days after, 60 TEU a day more.
+    const plan = disruptionPlan({ base: 100, dependence: 1, cut: 0.5, start: 5 * day, duration: 10 * day, forkAt: 5 * day, runTime: 60 * day, delayedShare: 0.6, catchUp: 5 * day });
+    close(plan.keptOut / day, 500, 1e-9, 'kept out');
+    close(plan.caughtUp / day, 300, 1e-9, 'arriving later');
+    for (const [time, expected] of [[0, 50], [10 * day - 900, 50], [10 * day, 160], [15 * day - 900, 160], [15 * day, 100], [50 * day, 100]]) assert.ok(Math.abs(read(plan.path, time) - expected) < 1e-9, `${time / day} days after the fork: ${expected}`);
+    // Over the run, what arrives is the usual total less what is lost: 55 days x 100 - 500 + 300.
+    let total = 0;
+    for (let time = 0; time < 55 * day; time += 900) total += read(plan.path, time) * 900 / day;
+    close(total, 5500 - 200, 1e-6, 'arrived over the run');
+    // Delayed cargo that would arrive after the run ends is lost to it.
+    const late = disruptionPlan({ base: 100, dependence: 1, cut: 0.5, start: 5 * day, duration: 10 * day, forkAt: 5 * day, runTime: 17 * day, delayedShare: 1, catchUp: 5 * day });
+    close(late.caughtUp / day, 200, 1e-9, 'two of the five catch-up days fit in the run');
+    // A held schedule: the cargo kept out follows each day's own value.
+    const schedule = Array.from({ length: 10 }, (_, index) => [index * day, 10 * (index + 1)]);
+    close(disruptionPlan({ base: schedule, dependence: 0.5, cut: 1, start: 2 * day, duration: 3 * day, forkAt: 0, runTime: 10 * day }).keptOut / day, 0.5 * (30 + 40 + 50), 1e-9, 'half of days 2 to 4');
+});
+
+test('the weight of a TEU and the share handed inland set a matched port’s volume', async () => {
+    const answers = Object.fromEntries(Object.entries({ ...syntheticRegion(), ...syntheticPortwatch() }).map(([kind, value]) => [kind, [JSON.stringify(value)]]));
+    const discovered = discoverRegion(answers, { bbox: syntheticBbox });
+    const built = buildRegionModel({ builder: new ModelBuilder(await loadTemplates()), selection: defaultSelection(discovered.candidates), route: createRouter(discovered.roadGraph).route, options: { tonnesPerTeu: 12, inlandShare: 0.6 } });
+    const alder = built.provenance.find((item) => item.entity === 'Port Alder' && item.parameter === 'Containers handed inland');
+    close(alder.value, 1200 * 8 / 7 / 12 * 0.6, 1e-9, '1,371 t a day at 12 t a TEU, 60% inland');
+    assert.match(alder.detail, /at an assumed 12 t a TEU, 60% of them handed inland \(assumed\)/);
 });

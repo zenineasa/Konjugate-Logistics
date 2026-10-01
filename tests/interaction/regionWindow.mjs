@@ -205,9 +205,17 @@ try {
         await alderShare.fill('100');
         await alderShare.dispatchEvent('change');
         await toolbox.click('#runScenarioButton');
-        await toolbox.waitForFunction(() => /TEU that did not arrive/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
-        const lost = await toolbox.evaluate(() => [...document.querySelectorAll('#scenarioResult tr')].find((row) => row.cells[0]?.textContent === 'Port Alder').cells[1].textContent);
-        assert.ok(Math.abs(Number(lost.replace(/,/g, '')) - 337.5) <= 1, `Port Alder should miss 150 x 75% x 3 = 337.5 TEU (shown ${lost}).`);
+        await toolbox.waitForFunction(() => /Kept out \(TEU\)/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
+        const alderRow = () => toolbox.evaluate(() => [...[...document.querySelectorAll('#scenarioResult tr')].find((row) => row.cells[0]?.textContent === 'Port Alder').cells].map((cell) => Number(cell.textContent.replace(/,/g, ''))));
+        const [, keptOut, caughtUp, lost] = await alderRow();
+        assert.ok(Math.abs(keptOut - 337.5) <= 1 && Math.abs(lost - 337.5) <= 1 && caughtUp === 0, `Port Alder should miss 150 x 75% x 3 = 337.5 TEU, all of it lost (shown ${keptOut}, ${caughtUp}, ${lost}).`);
+        // Again with 60% of it delayed, arriving over 5 days after: 202.5 TEU arrive later, and 135 never do.
+        await toolbox.fill('#delayedInput', '60');
+        await toolbox.fill('#catchUpInput', '5');
+        await toolbox.click('#runScenarioButton');
+        await toolbox.waitForFunction(() => /60% of the cargo kept out arrives over the 5 days after/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
+        const [, keptOutAgain, caughtUpAgain, lostAgain] = await alderRow();
+        assert.ok(Math.abs(keptOutAgain - 337.5) <= 1 && Math.abs(caughtUpAgain - 202.5) <= 1 && Math.abs(lostAgain - 135) <= 1, `60% of 337.5 TEU should arrive later and 135 never (shown ${keptOutAgain}, ${caughtUpAgain}, ${lostAgain}).`);
         assert.match(await toolbox.textContent('#scenarioResult'), /Suez Canal: transits cut by 75% from day 2 for 3 days, reaching Port Alder \(100% of its ships\)/);
         assert.equal(await toolbox.locator('#showScenarioButton').isDisabled(), false);
         assert.equal(log.filter((line) => line.startsWith('pageerror') || line.startsWith('error')).length, 0, log.join('\n'));

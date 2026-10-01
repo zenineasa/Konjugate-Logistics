@@ -11,8 +11,10 @@
 //   ... [--overpass overpass.private.coffee]   another Overpass server, when the main one is overloaded
 //   ... [--arrivals history]   matched ports' arrivals follow their daily PortWatch history (default: steady average)
 //   ... [--from 2025-10-01]   the history period: the model's days from that date (default: the latest days)
-//   ... [--disrupt chokepoint6:50:10:30]   with --run, also a disruption: that chokepoint's transits cut by 50% from day 10
-//       for 30 days, each kept port losing its share through it (from the sea it lies in), against the baseline
+//   ... [--disrupt chokepoint6:50:10:30[:60:20]]   with --run, also a disruption: that chokepoint's transits cut by 50% from
+//       day 10 for 30 days, each kept port losing its share through it (from the sea it lies in), against the baseline;
+//       optionally 60% of the cargo kept out arrives later, over the 20 days after
+//   ... [--tonnes-per-teu 12] [--inland-share 0.6]   how PortWatch's tonnes become TEU handed inland (default 10 t, all of it)
 //
 // A place search lists what it found, places and areas first; --pick chooses another than the first.
 //
@@ -29,7 +31,7 @@ import { pathToFileURL } from 'node:url';
 import { defaultSelection, discoverRegion } from '../packages/toolbox/lib/discovery.mjs';
 import { maximumSplitDepth, overpassHost, overpassRequests, overpassStatusUrl, overpassUrl, retryableStatus, retryDelaysSeconds, retryPauseSeconds, splitRequest, statusWaitSeconds } from '../packages/toolbox/lib/overpass.mjs';
 import { nominatimSearchUrl, rankPlaces } from '../packages/toolbox/lib/places.mjs';
-import { chokepointById, chokepointRecentUrl, chokepointYearlyUrl, disruptionPath, summariseTransits } from '../packages/toolbox/lib/chokepoints.mjs';
+import { chokepointById, chokepointRecentUrl, chokepointYearlyUrl, disruptionPlan, summariseTransits } from '../packages/toolbox/lib/chokepoints.mjs';
 import { portwatchActivityUrl, portwatchPortsUrl } from '../packages/toolbox/lib/portwatch.mjs';
 import { buildRegionModel } from '../packages/toolbox/lib/regionModel.mjs';
 import { createRouter } from '../packages/toolbox/lib/roadGraph.mjs';
@@ -193,7 +195,11 @@ const routeStarted = Date.now();
 const builder = new ModelBuilder(await loadTemplates());
 const arrivalsMode = argument('arrivals') ?? 'average';
 if (!['average', 'history'].includes(arrivalsMode)) throw new Error('--arrivals is average or history.');
-const built = buildRegionModel({ builder, selection: defaultSelection(discovered.candidates), route: createRouter(discovered.roadGraph).route, options: { arrivals: arrivalsMode, ...(argument('from') ? { historyFrom: argument('from') } : {}) } });
+const built = buildRegionModel({ builder, selection: defaultSelection(discovered.candidates), route: createRouter(discovered.roadGraph).route, options: {
+    arrivals: arrivalsMode, ...(argument('from') ? { historyFrom: argument('from') } : {}),
+    ...(argument('tonnes-per-teu') ? { tonnesPerTeu: Number(argument('tonnes-per-teu')) } : {}),
+    ...(argument('inland-share') ? { inlandShare: Number(argument('inland-share')) } : {})
+} });
 for (const history of built.histories) console.log(`  ${history.port}: arrivals follow its history from ${history.from} (model day 0) to ${history.to}`);
 console.log(`\nModel: ${built.document.nodes.length} nodes, ${built.document.edges.length} edges, built in ${((Date.now() - routeStarted) / 1000).toFixed(1)} s.`);
 for (const item of built.provenance.filter((entry) => entry.parameter === 'Containers handed inland')) console.log(`  ${item.entity} hands inland ${item.value.toFixed(1)} TEU/day (${item.basis}): ${item.detail}`);
@@ -260,9 +266,10 @@ if (flag('run')) {
         // A disruption, run here as the window's fork would follow it: each dependent port's arrivals from the day it
         // starts are its own arrivals scaled by its share through the chokepoint times the cut.
         if (argument('disrupt')) {
-            const [id, cutPercent, startDay, days] = argument('disrupt').split(':');
-            if (!chokepointById.has(id) || ![cutPercent, startDay, days].every((value) => Number.isFinite(Number(value)))) throw new Error('--disrupt is chokepointN:cutPercent:startDay:days.');
-            const runDays = Math.min(built.days, Number(startDay) + Number(days) + 30);
+            const [id, cutPercent, startDay, days, delayedPercent = '0', catchUpDays = '0'] = argument('disrupt').split(':');
+            if (!chokepointById.has(id) || ![cutPercent, startDay, days, delayedPercent, catchUpDays].every((value) => Number.isFinite(Number(value)))) throw new Error('--disrupt is chokepointN:cutPercent:startDay:days[:delayedPercent:catchUpDays].');
+            const runDays = Math.min(built.days, Number(startDay) + Number(days) + Math.max(30, Number(catchUpDays) + 10));
+            const volumes = new Map();
             const runFor = async (name, document) => {
                 await writeFile(join(directory, `${name}.kjt`), await encodeProjectFile(JSON.stringify(document)));
                 await writeFile(join(directory, `${name}.json`), JSON.stringify({ targetTime: runDays * 86400, globalTimeStep: 900, outputInterval: 3600 }));
@@ -287,7 +294,12 @@ if (flag('run')) {
                 const builtPort = built.ports.find((item) => item.name === port.name);
                 const indexed = built.parameterIndex.findLast((entry) => entry.entity === port.name && entry.key === 'vesselArrivals');
                 const shared = disrupted.sharedParameters.find((item) => item.id === indexed.sharedParameterId);
-                shared.schedule = { interpolation: 'linear', samples: disruptionPath({ base: builtPort.schedule ?? builtPort.arrivals, dependence: share, cut: Number(cutPercent) / 100, start: Number(startDay) * 86400, duration: Number(days) * 86400, forkAt: 0, runTime: runDays * 86400 }) };
+                const plan = disruptionPlan({
+                    base: builtPort.schedule ?? builtPort.arrivals, dependence: share, cut: Number(cutPercent) / 100, start: Number(startDay) * 86400, duration: Number(days) * 86400,
+                    forkAt: 0, runTime: runDays * 86400, delayedShare: Number(delayedPercent) / 100, catchUp: Number(catchUpDays) * 86400
+                });
+                shared.schedule = { interpolation: 'linear', samples: plan.path };
+                volumes.set(port.name, { keptOut: plan.keptOut / 86400, caughtUp: plan.caughtUp / 86400 });
                 affected.push(`${port.name} (${Math.round(share * 100)}%)`);
             }
             const already = built.ports.filter((port) => affected.some((item) => item.startsWith(`${port.name} (`)) && port.usual > 0 && port.arrivals < 0.5 * port.usual);
@@ -296,10 +308,14 @@ if (flag('run')) {
                 console.log(`\nDisruption: no kept port depends on ${chokepointById.get(id).name}.`);
             } else {
                 const [before, after] = [await runFor('baseline', baselineDocument), await runFor('disrupted', disrupted)];
-                console.log(`\nDisruption: ${chokepointById.get(id).name} cut by ${cutPercent}% from day ${startDay} for ${days} days, reaching ${affected.join(', ')}; ${runDays} days run.`);
+                console.log(`\nDisruption: ${chokepointById.get(id).name} cut by ${cutPercent}% from day ${startDay} for ${days} days, reaching ${affected.join(', ')}${Number(delayedPercent) > 0 ? `; ${delayedPercent}% of the cargo kept out arrives over the ${catchUpDays} days after` : ''}; ${runDays} days run.`);
+                for (const [name, volume] of volumes) console.log(`  ${name}: ${volume.keptOut.toFixed(0)} TEU kept out, ${volume.caughtUp.toFixed(0)} of them arriving later`);
                 const lowest = (series) => series.reduce((best, point) => (point[1] < best[1] ? point : best));
                 const highest = (series) => series.reduce((best, point) => (point[1] > best[1] ? point : best));
-                for (const port of built.ports) console.log(`  ${port.name}: ${(before(port.name, 'arrived').at(-1)[1] - after(port.name, 'arrived').at(-1)[1]).toFixed(0)} TEU did not arrive`);
+                for (const port of built.ports) {
+                    const queue = after(port.name, 'queue');
+                    console.log(`  ${port.name}: ${(before(port.name, 'arrived').at(-1)[1] - after(port.name, 'arrived').at(-1)[1]).toFixed(0)} TEU never arrived; anchorage queue up to ${highest(queue)[1].toFixed(0)} TEU on day ${highest(queue)[0].toFixed(1)} (baseline ${highest(before(port.name, 'queue'))[1].toFixed(0)})`);
+                }
                 for (const zone of [...new Set(built.lanes.map((lane) => lane.to))]) {
                     const [day, low] = lowest(after(zone, 'stock'));
                     console.log(`  ${zone}: stock fell to ${low.toFixed(0)} TEU on day ${day.toFixed(1)} (baseline lowest ${lowest(before(zone, 'stock'))[1].toFixed(0)})`);
