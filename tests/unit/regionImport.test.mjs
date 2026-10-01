@@ -524,3 +524,45 @@ test('discovery matches port activity, and the model takes a matched port’s vo
     const own = buildRegionModel({ builder: new ModelBuilder(await loadTemplates()), selection: { ...selection, ports: selection.ports.map((port) => (port.name === 'Port Alder' ? { ...port, teuPerDay: 50 } : port)) }, route: createRouter(discoverRegion(answers).roadGraph).route });
     assert.equal(own.provenance.find((item) => item.entity === 'Port Alder' && item.parameter === 'Containers handed inland').value, 50);
 });
+
+test('arrivals can follow a matched port’s PortWatch history, as a held daily schedule on its arrivals', async () => {
+    const answers = Object.fromEntries(Object.entries({ ...syntheticRegion(), ...syntheticPortwatch() }).map(([kind, value]) => [kind, [JSON.stringify(value)]]));
+    const discovered = discoverRegion(answers, { bbox: syntheticBbox });
+    const selection = defaultSelection(discovered.candidates);
+    const route = createRouter(discovered.roadGraph).route;
+    const build = async (options) => buildRegionModel({ builder: new ModelBuilder(await loadTemplates()), selection, route, options });
+    const arrivalsOf = (built) => {
+        const indexed = built.parameterIndex.find((entry) => entry.entity === 'Port Alder' && entry.key === 'vesselArrivals');
+        return { indexed, shared: built.document.sharedParameters.find((item) => item.id === indexed.sharedParameterId) };
+    };
+
+    // The default keeps a steady average: no schedule.
+    const steady = await build({});
+    assert.equal(arrivalsOf(steady).shared.schedule, undefined);
+    assert.deepEqual(steady.histories, []);
+
+    // Following history over a 90-day run: all 28 days of the fixture, one sample a day in seconds, each day's
+    // container imports in TEU, held; the parameter's value (and the model's balance) is their average.
+    const replayed = await build({ arrivals: 'history' });
+    const { indexed, shared } = arrivalsOf(replayed);
+    assert.equal(shared.schedule.interpolation, 'hold');
+    assert.equal(shared.schedule.samples.length, 28);
+    assert.deepEqual(shared.schedule.samples.slice(0, 2), [[0, 120], [86400, 120]]);
+    assert.deepEqual(shared.schedule.samples.at(-1), [27 * 86400, 240], 'the newest day is a heavy one');
+    close(shared.value, 1200 * 8 / 7 / 10, 1e-9, 'the average over the replayed days');
+    assert.deepEqual(indexed.schedule, { from: '2026-08-31', to: '2026-09-27', days: 28 });
+    assert.deepEqual(replayed.histories, [{ port: 'Port Alder', from: '2026-08-31', to: '2026-09-27', days: 28 }]);
+    const note = replayed.provenance.find((item) => item.entity === 'Port Alder' && item.parameter === 'Containers handed inland');
+    assert.match(note.detail, /the arrivals follow each day's container imports from 2026-08-31 \(model day 0\) to 2026-09-27 \(28 days\), averaging 1,371 t a day/);
+    // A port without history keeps its assumed constant.
+    const birch = replayed.parameterIndex.find((entry) => entry.entity === 'Birch Harbour' && entry.key === 'vesselArrivals');
+    assert.equal(replayed.document.sharedParameters.find((item) => item.id === birch.sharedParameterId).schedule, undefined);
+
+    // A 14-day run replays the latest 14 days only, and averages over them (2 heavy days among them).
+    const short = await build({ arrivals: 'history', days: 14 });
+    const shortShared = arrivalsOf(short).shared;
+    assert.equal(shortShared.schedule.samples.length, 14);
+    assert.equal(shortShared.schedule.samples[0][0], 0, 'model day 0 is the first replayed day');
+    close(shortShared.value, (12 * 1200 + 2 * 2400) / 14 / 10, 1e-9, 'the average over the 14 days');
+    assert.deepEqual(short.histories[0], { port: 'Port Alder', from: '2026-09-14', to: '2026-09-27', days: 14 });
+});

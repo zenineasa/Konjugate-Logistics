@@ -4,6 +4,8 @@
 // through the real engine CLI:
 //   - baseline: every stock, queue and rate holds its starting value, and costs accrue
 //   - berth outage at the busiest port: ships queue at anchorage, and the queue clears afterwards
+//   - arrivals that follow the port's IMF PortWatch history (a stored parameter schedule): each day's
+//     arrivals are that day's imports, and the busy days queue ships beyond the berths' capacity
 // Both must conserve containers, conserve every road lane's trucks, and keep each warehouse's on-order
 // count equal to what waits on and travels along its lanes.
 //
@@ -20,7 +22,7 @@ import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
 import { createRouter } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { konjugateModule } from '../../scripts/konjugatePaths.mjs';
 import { loadTemplates, ModelBuilder } from '../../scripts/templatePlacement.mjs';
-import { syntheticRegion } from '../fixtures/syntheticRegion.mjs';
+import { syntheticPortwatch, syntheticRegion } from '../fixtures/syntheticRegion.mjs';
 
 const { encodeProjectFile } = await import(pathToFileURL(konjugateModule('src/projectFile.mjs')));
 const { decodeResultFile } = await import(pathToFileURL(konjugateModule('src/engineProtocol.mjs')));
@@ -32,6 +34,8 @@ const day = 86400;
 const templates = await loadTemplates();
 const { candidates, roadGraph } = discoverRegion(syntheticRegion());
 const route = createRouter(roadGraph).route;
+// The same region with Port Alder matched to its (synthetic) PortWatch history.
+const withHistory = discoverRegion(Object.fromEntries(Object.entries({ ...syntheticRegion(), ...syntheticPortwatch() }).map(([kind, value]) => [kind, [JSON.stringify(value)]])));
 
 function execute(args) {
     return new Promise((resolve, reject) => {
@@ -41,9 +45,9 @@ function execute(args) {
     });
 }
 
-async function run(name, { days, change = () => {} }) {
+async function run(name, { days, change = () => {}, region = candidates, options = {} }) {
     const builder = new ModelBuilder(templates);
-    const built = buildRegionModel({ builder, selection: defaultSelection(candidates), route });
+    const built = buildRegionModel({ builder, selection: defaultSelection(region), route, options });
     change(builder, built);
     const document = builder.document({ days, stepDays: 15 / 1440, outputDays: 1 / 24 });
     const inputPath = join(directory, `${name}.kjt`);
@@ -134,7 +138,21 @@ try {
     // Afterwards the berths clear the backlog with their spare capacity: berths - arrivals a day, for 20 days.
     const cleared = (berths - arrivals) * 20;
     assert.ok(Math.abs(queue[hour(70)] - (queue[hour(50)] - cleared)) < 0.01 * expected, `outage: the queue should shrink by about ${Math.round(cleared)} TEU in the 20 days after the outage (day 70: ${queue[hour(70)]}).`);
-    console.log(`✓ region model from the synthetic region: ${baseline.document.nodes.length} nodes and ${baseline.document.edges.length} edges hold still in the baseline; a berth outage at Port Alder queues ${Math.round(queue[hour(50)]).toLocaleString('en')} TEU; containers, trucks and orders conserved.`);
+
+    // Port Alder's arrivals follow its 28 days of history: 120 TEU a day, 240 every seventh day.
+    const history = await run('history', { days: 28, region: withHistory.candidates, options: { arrivals: 'history' } });
+    checkInvariants(history);
+    const samples = history.document.sharedParameters.find((item) => item.id === history.built.parameterIndex.find((entry) => entry.entity === 'Port Alder' && entry.key === 'vesselArrivals').sharedParameterId).schedule.samples;
+    const arrived = history.series('Port Alder.arrived');
+    let total = 0;
+    for (let dayIndex = 0; dayIndex < 28; dayIndex += 1) {
+        total += samples[dayIndex][1];
+        assert.ok(Math.abs(arrived[hour(dayIndex + 1)] - total) < 1e-6 * total, `history: by the end of day ${dayIndex + 1}, ${total} TEU should have arrived (got ${arrived[hour(dayIndex + 1)]}).`);
+    }
+    const historyBerths = history.built.parameterIndex.find((entry) => entry.key === 'berthCapacity' && entry.entity === 'Port Alder').value;
+    const historyQueue = history.series('Port Alder.queue');
+    assert.ok(240 > historyBerths && Math.max(...historyQueue) > historyQueue[0] + 0.5 * (240 - historyBerths), `history: a 240 TEU day beyond ${historyBerths.toFixed(0)} TEU of berths should queue ships (largest queue ${Math.max(...historyQueue)}).`);
+    console.log(`✓ region model from the synthetic region: ${baseline.document.nodes.length} nodes and ${baseline.document.edges.length} edges hold still in the baseline; a berth outage at Port Alder queues ${Math.round(queue[hour(50)]).toLocaleString('en')} TEU; arrivals following PortWatch history match it day by day and queue ships on the busy days; containers, trucks and orders conserved.`);
 } finally {
     await rm(directory, { recursive: true, force: true });
 }

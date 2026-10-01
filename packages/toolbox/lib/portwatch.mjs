@@ -85,7 +85,9 @@ export function summariseActivity(activity) {
     return {
         portid: activity.portid, name: activity.name, from: days[0].date, to: days.at(-1).date, days: days.length,
         importTonnesPerDay, exportTonnesPerDay: mean('exportTonnes'), containerCallsPerDay: mean('containerCalls'),
-        teuPerDay: importTonnesPerDay / tonnesPerTeu
+        teuPerDay: importTonnesPerDay / tonnesPerTeu,
+        // Each day's container imports, oldest first, for a model whose arrivals follow the history.
+        daily: days.map((day) => [day.date, day.importTonnes])
     };
 }
 

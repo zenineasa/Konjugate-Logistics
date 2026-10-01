@@ -68,6 +68,11 @@
                     <button class="button primary" type="button" id="buildButton">Build model</button>
                     <button class="button" type="button" id="showButton" disabled>Show in Konjugate</button>
                 </div>
+                <label class="row small" title="For ports matched to IMF PortWatch. Steady average: the baseline holds still. Follow history: each day's arrivals over the run are that port's container imports on the matching day, the latest days of its history.">Port arrivals
+                    <select id="arrivalsSelect">
+                        <option value="history">Follow PortWatch history</option>
+                        <option value="average">Steady average</option>
+                    </select></label>
                 <label class="row small"><input type="checkbox" id="keepInStep" checked> Keep the canvas in step with changes here</label>
                 <div id="buildStatus"></div>
                 <div id="buildResult"></div>

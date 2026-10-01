@@ -13,7 +13,8 @@
         "project.data"
     ],
     "requires": [
-        "projectSession"
+        "projectSession",
+        "parameterSchedules"
     ],
     "contributes": {
         "toolstrip": [

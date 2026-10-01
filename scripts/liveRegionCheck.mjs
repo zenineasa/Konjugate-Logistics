@@ -3,11 +3,13 @@
 // Region import against real OpenStreetMap data, for development: fetches a region from the public
 // Overpass API (one query per kind, one at a time), caches the answers in out/regionCache/, and prints
 // what discovery found, the coverage report and notices, and the model a default selection builds.
-// With --run it also runs that model through the engine CLI and checks that the baseline holds still.
+// With --run it also runs that model through the engine CLI and checks that the baseline holds still, or, with
+// --arrivals history, that each matched port's arrivals follow its PortWatch history day by day.
 //
 //   node scripts/liveRegionCheck.mjs --bbox south,west,north,east [--run] [--refresh]
 //   node scripts/liveRegionCheck.mjs --place "Jebel Ali" [--pick 2] [--radius 40] [--run]
 //   ... [--overpass overpass.private.coffee]   another Overpass server, when the main one is overloaded
+//   ... [--arrivals history]   matched ports' arrivals follow their daily PortWatch history (default: steady average)
 //
 // A place search lists what it found, places and areas first; --pick chooses another than the first.
 //
@@ -185,7 +187,10 @@ show('Towns', discovered.candidates.towns, (town) => `${town.population.toLocale
 
 const routeStarted = Date.now();
 const builder = new ModelBuilder(await loadTemplates());
-const built = buildRegionModel({ builder, selection: defaultSelection(discovered.candidates), route: createRouter(discovered.roadGraph).route });
+const arrivalsMode = argument('arrivals') ?? 'average';
+if (!['average', 'history'].includes(arrivalsMode)) throw new Error('--arrivals is average or history.');
+const built = buildRegionModel({ builder, selection: defaultSelection(discovered.candidates), route: createRouter(discovered.roadGraph).route, options: { arrivals: arrivalsMode } });
+for (const history of built.histories) console.log(`  ${history.port}: arrivals follow its history from ${history.from} (model day 0) to ${history.to}`);
 console.log(`\nModel: ${built.document.nodes.length} nodes, ${built.document.edges.length} edges, built in ${((Date.now() - routeStarted) / 1000).toFixed(1)} s.`);
 for (const item of built.provenance.filter((entry) => entry.parameter === 'Containers handed inland')) console.log(`  ${item.entity} hands inland ${item.value.toFixed(1)} TEU/day (${item.basis}): ${item.detail}`);
 for (const lane of built.lanes) console.log(`  ${lane.name}: ${lane.rate.toFixed(1)} TEU/day, ${lane.kilometres} km, ${(lane.leadTime * 24).toFixed(1)} h, ${lane.fleet} trucks (${lane.basis})`);
@@ -216,7 +221,21 @@ if (flag('run')) {
             if (cumulative.has(state.stateId)) continue;
             worst = Math.max(worst, Math.abs(state.value - first.get(state.stateId)) / Math.max(1, Math.abs(first.get(state.stateId))));
         }
-        console.log(`\nEngine: 10 days in 15-minute steps; the largest relative drift of any stock is ${worst.toExponential(2)} ${worst < 1e-6 ? '(holds still)' : '(NOT steady)'}.`);
+        if (!built.histories.length) {
+            console.log(`\nEngine: 10 days in 15-minute steps; the largest relative drift of any stock is ${worst.toExponential(2)} ${worst < 1e-6 ? '(holds still)' : '(NOT steady)'}.`);
+        } else {
+            // Each port whose arrivals follow its history: what arrived over the 10 days against the schedule's 10 days.
+            const last = new Map(result.samples.at(-1).states.map((state) => [state.stateId, state.value]));
+            for (const history of built.histories) {
+                const node = document.nodes.find((item) => item.name === history.port);
+                const indexed = built.parameterIndex.findLast((entry) => entry.entity === history.port && entry.key === 'vesselArrivals');
+                const samples = document.sharedParameters.find((item) => item.id === indexed.sharedParameterId).schedule.samples;
+                const expected = samples.filter(([time]) => time < 10 * 86400).reduce((total, [, value]) => total + value, 0);
+                const arrived = last.get(node.states.find((state) => state.symbol === 'arrived').id);
+                const queue = result.samples.map((sample) => sample.states.find((state) => state.stateId === node.states.find((item) => item.symbol === 'queue').id).value);
+                console.log(`\nEngine: ${history.port} received ${arrived.toFixed(1)} TEU over 10 days, against ${expected.toFixed(1)} in its history ${Math.abs(arrived - expected) < 1e-6 * expected ? '(follows it)' : '(DOES NOT follow it)'}; its anchorage queue ranged ${Math.min(...queue).toFixed(0)} to ${Math.max(...queue).toFixed(0)} TEU.`);
+            }
+        }
     } finally {
         await rm(directory, { recursive: true, force: true });
     }

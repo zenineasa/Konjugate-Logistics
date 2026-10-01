@@ -397,6 +397,7 @@ $('#portVolume').addEventListener('change', () => {
     if (value > 0) state.portVolume = value;
     changed();
 });
+$('#arrivalsSelect').addEventListener('change', () => changed());
 
 document.querySelectorAll('[data-add]').forEach((button) => button.addEventListener('click', () => {
     const kind = map.addKind === button.dataset.add ? null : button.dataset.add;
@@ -451,12 +452,14 @@ async function build({ focus = false } = {}) {
     setBusy(true);
     $('#buildStatus').innerHTML = notice('', 'Building the model: routing every lane…');
     try {
-        const answer = await call(api.runImport(importerId, { step: 'build', bbox: state.bbox, selection: selection(), settings: { portTeuPerDay: state.portVolume } }));
+        const answer = await call(api.runImport(importerId, { step: 'build', bbox: state.bbox, selection: selection(), settings: { portTeuPerDay: state.portVolume, arrivals: $('#arrivalsSelect').value } }));
         if (!answer.imported) throw new Error((answer.report?.errors ?? ['The model could not be built.']).join(' '));
         state.built = answer.data;
         await call(api.openInCanvas(null, { focus, silent: true, session: sessionState() }));
         $('#showButton').disabled = false;
+        const histories = state.built.histories ?? [];
         $('#buildStatus').innerHTML = notice('ok', `${answer.report.summary}: ${state.built.nodes} nodes and ${state.built.edges} relationships, now in the canvas.`)
+            + (histories.length ? notice('', `Arrivals follow IMF PortWatch history: ${histories.map((item) => `${item.port} from ${item.from} (model day 0) to ${item.to}`).join('; ')}.`) : '')
             + state.built.warnings.map((text) => notice('warning', text)).join('');
         renderBuilt();
     } catch (error) {
@@ -506,7 +509,8 @@ function sessionState() {
         version: 1, place: state.place ? { display_name: state.place.display_name, boundingbox: state.place.boundingbox } : null,
         margin: $('#marginSelect').value, bbox: state.bbox, group: state.group, portVolume: state.portVolume,
         kept: Object.fromEntries(groups.map((group) => [group, [...state.kept[group]]])),
-        changes: [...state.changes], added: state.added, built: state.built, keepInStep: $('#keepInStep').checked
+        changes: [...state.changes], added: state.added, built: state.built, keepInStep: $('#keepInStep').checked,
+        arrivals: $('#arrivalsSelect').value
     };
 }
 
@@ -535,6 +539,7 @@ async function restoreSession() {
         state.portVolume = saved.portVolume ?? null;
         state.group = saved.group ?? 'ports';
         $('#keepInStep').checked = saved.keepInStep !== false;
+        if (saved.arrivals) $('#arrivalsSelect').value = saved.arrivals;
         state.built = null;
         await discover({ keepCuration: true });
         if (saved.built) {

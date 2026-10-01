@@ -105,6 +105,7 @@ export default async function importRegion({ files, helpers, options = {} }) {
         const builder = new ModelBuilder(await loadTemplates(helpers), helpers);
         const settings = {};
         if (Number(options.settings?.portTeuPerDay) > 0) settings.portTeuPerDay = Number(options.settings.portTeuPerDay);
+        if (['average', 'history'].includes(options.settings?.arrivals)) settings.arrivals = options.settings.arrivals;
         const built = buildRegionModel({ builder, selection, route: createRouter(discovered.roadGraph).route, options: settings });
         const townsServed = new Set(built.served.map((item) => item.town)).size;
         const lanesByBasis = built.lanes.reduce((counts, lane) => ({ ...counts, [lane.basis]: (counts[lane.basis] ?? 0) + 1 }), {});
@@ -113,7 +114,7 @@ export default async function importRegion({ files, helpers, options = {} }) {
             document: built.document,
             parameterIndex: built.parameterIndex,
             data: {
-                step: 'build', lanes: built.lanes, served: built.served, provenance: built.provenance, warnings: built.warnings,
+                step: 'build', lanes: built.lanes, served: built.served, provenance: built.provenance, warnings: built.warnings, histories: built.histories,
                 unusedZones: built.unusedZones, nodes: built.document.nodes.length, edges: built.document.edges.length, lanesByBasis
             },
             report: {

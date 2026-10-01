@@ -18,6 +18,12 @@ export const regionModelDefaults = {
     // container imports handed inland (the rest only change ships there). Both assumptions to adjust.
     tonnesPerTeu,
     inlandShare: 1,
+    // A port with IMF PortWatch history: 'average' keeps its arrivals at a steady average, so the
+    // baseline holds still; 'history' has them follow its daily container imports over the latest
+    // `days` days of the history (model day 0 is the first of them), held for each day, through a
+    // stored parameter schedule. The average is then taken over the same days, so arrivals and
+    // demand balance over the run.
+    arrivals: 'average',
     // Berth capacity as a multiple of the port's arrivals.
     berthHeadroom: 1.5,
     // Hours added to every road trip for gate and yard handling.
@@ -103,6 +109,8 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
 
     // ---- supply: the user's figures; then IMF PortWatch activity; otherwise an assumed volume shared by port land
     const supply = new Map();
+    const histories = new Map(); // port id -> { samples: [[seconds, TEU/day]], from, to } when arrivals follow history
+    const secondsPerDay = templateValue(templates, 'port', 'secondsPerDay');
     const sourced = (port) => !(Number(port.teuPerDay) > 0) && port.activity?.importTonnesPerDay > 0;
     const assumedPorts = ports.filter((port) => !(Number(port.teuPerDay) > 0) && !sourced(port));
     const landOf = (port) => Number(port.areaSquareKilometres) || 0;
@@ -113,10 +121,25 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
     for (const port of ports) {
         if (sourced(port)) {
             const activity = port.activity;
-            const value = activity.importTonnesPerDay / settings.tonnesPerTeu * settings.inlandShare;
+            const teu = (tonnes) => tonnes / settings.tonnesPerTeu * settings.inlandShare;
+            const conversion = `at an assumed ${settings.tonnesPerTeu} t a TEU${settings.inlandShare === 1 ? ', counting containers that only change ships there' : `, ${Math.round(settings.inlandShare * 100)}% of them handed inland (assumed)`}`;
+            const replay = settings.arrivals === 'history' && activity.daily?.length ? activity.daily.slice(-settings.days) : null;
+            if (replay) {
+                const start = Date.parse(`${replay[0][0]}T00:00:00Z`);
+                const samples = replay.map(([date, tonnes]) => [Math.round((Date.parse(`${date}T00:00:00Z`) - start) / 86400000) * secondsPerDay, teu(tonnes)]);
+                const value = samples.reduce((total, sample) => total + sample[1], 0) / samples.length;
+                const from = replay[0][0];
+                const to = replay.at(-1)[0];
+                supply.set(port.id, value);
+                histories.set(port.id, { samples, from, to });
+                note(port.name, 'Containers handed inland', value, 'TEU/day', 'sourced',
+                    `IMF PortWatch (Source: International Monetary Fund), ${activity.name}: the arrivals follow each day's container imports from ${from} (model day 0) to ${to} (${samples.length} days), averaging ${Math.round(value * settings.tonnesPerTeu / settings.inlandShare).toLocaleString('en')} t a day, ${conversion}.`);
+                continue;
+            }
+            const value = teu(activity.importTonnesPerDay);
             supply.set(port.id, value);
             note(port.name, 'Containers handed inland', value, 'TEU/day', 'sourced',
-                `IMF PortWatch (Source: International Monetary Fund), ${activity.name}: container imports averaging ${Math.round(activity.importTonnesPerDay).toLocaleString('en')} t a day over ${activity.from} to ${activity.to} (${activity.days} days), at an assumed ${settings.tonnesPerTeu} t a TEU${settings.inlandShare === 1 ? ', counting containers that only change ships there' : `, ${Math.round(settings.inlandShare * 100)}% of them handed inland (assumed)`}.`);
+                `IMF PortWatch (Source: International Monetary Fund), ${activity.name}: container imports averaging ${Math.round(activity.importTonnesPerDay).toLocaleString('en')} t a day over ${activity.from} to ${activity.to} (${activity.days} days), ${conversion}.`);
             continue;
         }
         const user = Number(port.teuPerDay) > 0;
@@ -280,6 +303,16 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
             initialValues: { queue: arrivals * berthingDays, stock: arrivals * 3, waitDays: arrivals * berthingDays / berthCapacity },
             shared: { vesselArrivals: arrivals, berthCapacity, outageCapacity: berthCapacity }
         }));
+        // Arrivals that follow the port's history: a stored schedule on its own arrivals parameter. The
+        // parameter keeps the average as its value, used again if the schedule is removed.
+        const history = histories.get(port.id);
+        if (history) {
+            const indexed = parameterIndex.findLast((entry) => entry.entity === port.name && entry.key === 'vesselArrivals');
+            const shared = builder.sharedParameters.find((item) => item.id === indexed?.sharedParameterId);
+            if (!shared) throw new Error(`The arrivals of ${port.name} could not be found to follow its history.`);
+            shared.schedule = { interpolation: 'hold', samples: history.samples };
+            indexed.schedule = { from: history.from, to: history.to, days: history.samples.length };
+        }
     }
 
     // ---- zones (warehouses), their lanes from ports, and towns
@@ -350,6 +383,8 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
     const document = builder.document({ days: settings.days, stepDays: settings.stepMinutes / 1440, outputDays: settings.outputMinutes / 1440 });
     return {
         document, provenance, warnings, parameterIndex, lanes,
+        // The ports whose arrivals follow their history, and the dates model day 0 and the last day stand for.
+        histories: [...histories].map(([id, history]) => ({ port: ports.find((port) => port.id === id).name, from: history.from, to: history.to, days: history.samples.length })),
         unusedZones: unusedZones.map((zone) => zone.name),
         // One entry per town and zone serving it: the zone's share of the town's demand.
         served: allocations.map((allocation) => ({ town: allocation.town.name, zone: allocation.zone.name, share: allocation.share, demand: allocation.share * demand.get(allocation.town.id), hours: allocation.leg.hours }))
