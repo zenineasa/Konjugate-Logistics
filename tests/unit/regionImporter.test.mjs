@@ -30,17 +30,20 @@ const sizeOf = (value) => Buffer.byteLength(JSON.stringify(value));
 
 test('the manifest declares a file role for every kind the importer reads, and every template it builds from', () => {
     const importer = addon.contributes.importers.find((entry) => entry.importerId === 'region');
-    assert.deepEqual(importer.files.map((file) => file.role), [...osmRoles, ...portwatchRoles, 'sites']);
+    assert.deepEqual(importer.files.map((file) => file.role), [...osmRoles, ...portwatchRoles, 'sites', 'operator']);
     const components = plugin.contributes.filter((entry) => entry.kind === 'component').map((entry) => entry.componentId);
     for (const id of templateIds) assert.ok(components.includes(id), `${id} is a component`);
     assert.deepEqual(addon.network.hosts.sort(), ['nominatim.openstreetmap.org', 'overpass-api.de', 'services9.arcgis.com']);
-    // The chokepoint disruption: a scenario that follows a path the window supplies for each port's arrivals, forked when the window says.
+    // The scenarios: each follows paths the window supplies, per parameter, forked when the window says.
     assert.ok(addon.permissions.includes('scenario.run'));
-    assert.ok(addon.requires.includes('scenarioForkTime') && addon.requires.includes('parameterSchedules'));
-    const [scenario] = addon.contributes.scenarios;
-    assert.equal(scenario.scenarioId, 'chokepointDisruption');
-    assert.deepEqual(scenario.interventions, [{ parameter: 'vesselArrivals', target: 'supplied', samples: true }]);
-    assert.equal(scenario.runTime, 90 * 86400);
+    for (const feature of ['scenarioForkTime', 'parameterSchedules', 'suppliedPerParameter']) assert.ok(addon.requires.includes(feature), feature);
+    assert.deepEqual(addon.contributes.scenarios.map((scenario) => [scenario.scenarioId, scenario.interventions.map((item) => item.parameter)]), [
+        ['chokepointDisruption', ['vesselArrivals']], ['roadClosure', ['laneOpen', 'orderShare', 'leadTime', 'distance']], ['fleetChange', ['fleetSize', 'fleetSize2']], ['demandSurge', ['baseDemand']]
+    ]);
+    for (const scenario of addon.contributes.scenarios) {
+        assert.equal(scenario.runTime, 90 * 86400);
+        assert.ok(scenario.interventions.every((item) => item.target === 'supplied' && item.samples === true));
+    }
 });
 
 test('discovery returns candidates, coverage, notices and a small map, and no model', async () => {
@@ -131,4 +134,66 @@ test('the window’s history period and conversion reach the model, and values o
     assert.equal(await volume({ tonnesPerTeu: 0, inlandShare: 2, historyFrom: 'last week' }), usual, 'out of range or malformed: the defaults');
     const replayed = await importRegion({ files, helpers, options: { step: 'build', bbox: syntheticBbox, selection, settings: { arrivals: 'history', historyFrom: '2026-09-14' } } });
     assert.deepEqual(replayed.data.histories, [{ port: 'Port Alder', from: '2026-09-14', to: '2026-09-27', days: 14 }]);
+});
+
+test('every lane and town has its own live parameters for the scenarios, however the symbols are numbered', async () => {
+    const discovered = (await importRegion({ files: regionFiles(), helpers })).data.candidates;
+    const selection = { ports: discovered.ports.map((port) => ({ id: port.id })), zones: discovered.zones.map((zone) => ({ id: zone.id })), towns: discovered.towns.map((town) => ({ id: town.id })) };
+    const result = await importRegion({ files: regionFiles(), helpers, options: { step: 'build', selection } });
+    assert.ok(result.data.lanes.length >= 2, 'more than one lane, so symbols such as fleetSize2 are numbered');
+    const scenarioKeys = addon.contributes.scenarios.flatMap((scenario) => scenario.interventions.map((item) => item.parameter));
+    const entitiesOf = { vesselArrivals: result.data.ports.map((port) => port.name), baseDemand: result.data.towns.map((town) => town.name) };
+    for (const key of new Set(scenarioKeys)) {
+        for (const entity of entitiesOf[key] ?? result.data.lanes.map((lane) => lane.name)) {
+            const entries = result.parameterIndex.filter((entry) => entry.key === key && entry.entity === entity);
+            assert.equal(entries.length, 1, `${key} of ${entity} is indexed once`);
+            assert.ok(entries[0].live, `${key} of ${entity} is live`);
+            const shared = result.document.sharedParameters.find((item) => item.id === entries[0].sharedParameterId);
+            assert.equal(shared.mode, 'live');
+            assert.ok(shared.control.minimum <= shared.value && shared.value <= shared.control.maximum);
+        }
+    }
+    // No two entries share a parameter: each lane's second size is its own, not another lane's first.
+    const ids = result.parameterIndex.map((entry) => entry.sharedParameterId);
+    assert.equal(new Set(ids).size, ids.length);
+    for (const lane of result.data.lanes) {
+        const value = (key) => result.document.sharedParameters.find((item) => item.id === result.parameterIndex.find((entry) => entry.key === key && entry.entity === lane.name).sharedParameterId).value;
+        assert.deepEqual([value('fleetSize'), value('fleetSize2'), value('laneOpen')], [lane.fleet, lane.fleet2, 1], lane.name);
+    }
+});
+
+test('the window can ask for an invented operator, or read the user\'s own from a file', async () => {
+    const discovered = (await importRegion({ files: regionFiles(), helpers })).data.candidates;
+    const selection = { ports: discovered.ports.map((port) => ({ id: port.id })), zones: discovered.zones.map((zone) => ({ id: zone.id })), towns: discovered.towns.map((town) => ({ id: town.id })) };
+    const build = (settings, extra = []) => importRegion({ files: [...regionFiles(), ...extra], helpers, options: { step: 'build', selection, settings } });
+    const invented = await build({ operator: 'synthetic' });
+    assert.equal(invented.ok, true, JSON.stringify(invented.report));
+    assert.equal(invented.data.operator.synthetic, true);
+    assert.ok(invented.data.lanes.some((lane) => lane.operator) && invented.data.operator.lanes.length >= 2);
+    assert.ok(invented.data.provenance.some((entry) => entry.basis === 'synthetic'));
+    assert.ok(!invented.data.warnings.some((text) => /fall behind/.test(text)), 'an invented operator keeps up with its lanes');
+    // Every input says where it comes from: sourced (or routed over sourced roads), assumed, synthetic or yours, and
+    // the model-wide constants are listed too.
+    assert.ok(invented.data.provenance.every((entry) => ['sourced', 'routed', 'assumed', 'synthetic', 'user'].includes(entry.basis)), [...new Set(invented.data.provenance.map((entry) => entry.basis))].join(', '));
+    const modelWide = invented.document.sharedParameters.filter((shared) => !invented.parameterIndex.some((entry) => entry.sharedParameterId === shared.id) && shared.symbol !== 'secondsPerDay');
+    assert.ok(modelWide.length > 10);
+    for (const shared of modelWide) assert.ok(invented.data.provenance.some((entry) => (entry.entity === 'Every component' || entry.entity === invented.data.operator.name) && entry.value === shared.value), `${shared.name} is labelled`);
+    // Asked for the user's own without a file.
+    assert.match((await build({ operator: 'file' })).report.errors[0], /Choose a file of your fleet operator/);
+    const lane = invented.data.lanes.find((item) => item.operator);
+    const own = {
+        name: 'Our trucks', trucks: [{ id: 'big', label: '40 ft', teu: 2, costPerKm: 2, costPerDay: 300 }],
+        depots: [{ name: 'Yard', lat: discovered.ports[0].lat, lon: discovered.ports[0].lon, trucks: { big: 100 } }],
+        contracts: [{ from: lane.from, to: lane.to }, { from: 'Nowhere', to: 'Else' }]
+    };
+    const file = (value) => [{ role: 'operator', name: 'operator.json', text: JSON.stringify(value), encoding: 'utf-8' }];
+    const yours = await build({ operator: 'file' }, file(own));
+    assert.equal(yours.ok, true, JSON.stringify(yours.report));
+    assert.equal(yours.data.operator.synthetic, false);
+    assert.equal(yours.data.lanes.find((item) => item.name === lane.name).fleet, 100);
+    assert.equal(yours.data.provenance.find((entry) => entry.entity === lane.name && entry.parameter === 'Fleet').basis, 'user');
+    assert.ok(yours.data.warnings.some((text) => /Nowhere → Else match/.test(text)), 'a contract with no lane is reported');
+    // A saved invented operator stays labelled invented; a broken file is refused plainly.
+    assert.equal((await build({ operator: 'file' }, file({ ...own, synthetic: true }))).data.operator.synthetic, true);
+    assert.match((await build({ operator: 'file' }, file({ ...own, depots: [] }))).report.errors[0], /^Your fleet operator file: The operator: it needs at least one depot/);
 });

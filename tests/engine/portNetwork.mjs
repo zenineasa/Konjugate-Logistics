@@ -76,10 +76,18 @@ function checkInvariants({ name, series, has }, { fleetsChange = false } = {}) {
         series('Port.arrived').map((value) => -value)
     ]);
     assert.ok(maxDrift(containers) < 1e-6, `${name}: containers must be conserved (drift ${maxDrift(containers)} TEU).`);
-    // Trucks: idle + returning + loaded trucks, per road lane, unless the scenario hires trucks.
+    // Trucks: idle + returning + loaded trucks of each size, per road lane, unless the scenario hires trucks; and the
+    // loaded trucks of both sizes carry exactly the containers in transit.
     for (const lane of fleetsChange ? ['Road lane B'] : ['Road lane A', 'Road lane B']) {
-        const trucks = sum([series(`${lane}.idleTrucks`), series(`${lane}.returning`), loaded(series, lane).map((value) => value / 2)]);
-        assert.ok(maxDrift(trucks) < 1e-6, `${name}: ${lane} must keep its trucks (drift ${maxDrift(trucks)}).`);
+        for (const size of ['', '2']) {
+            const trucks = sum([series(`${lane}.idleTrucks${size}`), series(`${lane}.returning${size}`), series(`${lane}.loadedTrucks${size}`)]);
+            assert.ok(maxDrift(trucks) < 1e-6, `${name}: ${lane} must keep its trucks${size ? ' of the second size' : ''} (drift ${maxDrift(trucks)}).`);
+        }
+    }
+    for (const lane of ['Road lane A', 'Road lane B']) {
+        const carried = sum([series(`${lane}.loadedTrucks`).map((value) => 2 * value), series(`${lane}.loadedTrucks2`)]);
+        const gap = carried.map((value, index) => value - loaded(series, lane)[index]);
+        assert.ok(Math.max(...gap.map(Math.abs)) < 1e-6, `${name}: ${lane}'s loaded trucks must carry exactly what is in transit.`);
     }
     // On order = what waits on and travels along the warehouse's lanes.
     const lanesOf = { 'Warehouse A': lanes.filter((lane) => lane !== 'Road lane B'), 'Warehouse B': ['Road lane B'] };
@@ -147,7 +155,7 @@ try {
     // and lane A carries Warehouse A's 70 TEU/day again.
     const hiring = await run('hiring', { laneAFleet: 90, laneAFleetSize: 170 });
     checkInvariants(hiring, { fleetsChange: true });
-    const fleetA = sum([hiring.series('Road lane A.idleTrucks'), hiring.series('Road lane A.returning'), loaded(hiring.series, 'Road lane A').map((value) => value / 2)]);
+    const fleetA = sum([hiring.series('Road lane A.idleTrucks'), hiring.series('Road lane A.returning'), hiring.series('Road lane A.loadedTrucks')]);
     assert.ok(Math.abs(fleetA[20] - 170) < 1, `hiring: lane A should reach 170 trucks within 20 days (got ${fleetA[20]}).`);
     assert.ok(Math.abs(average(hiring.series('Road lane A.arriving'), 60, 120) - 70) < 0.5, 'hiring: lane A should carry 70 TEU/day again.');
     assert.ok(fill(hiring.series, 'Zone 2', 20, 90) > fill(shortage.series, 'Zone 2', 20, 90) + 0.2, 'hiring: Zone 2 should be served far better.');

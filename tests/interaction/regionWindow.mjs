@@ -9,6 +9,8 @@
 //   - a port's volume is set, the model is built and appears in the canvas with the importer's node count
 //   - dragging a kept site on the map rebuilds the model with new lane distances
 //   - a customer added on the map is served in the rebuilt model
+//   - a chokepoint disruption; then an invented fleet operator, labelled synthetic, and a road closure, a fleet cut
+//     and a demand surge from the scenario tabs
 // Uses Playwright from the Konjugate checkout, as the other interaction test does.
 
 import assert from 'node:assert/strict';
@@ -220,6 +222,45 @@ try {
         assert.equal(await toolbox.locator('#showScenarioButton').isDisabled(), false);
         assert.equal(log.filter((line) => line.startsWith('pageerror') || line.startsWith('error')).length, 0, log.join('\n'));
 
+        // 5c. An invented fleet operator: the model is rebuilt with its trucks, labelled synthetic.
+        await toolbox.selectOption('#operatorSelect', 'synthetic');
+        await toolbox.waitForFunction(() => /Quayside Haulage \(an invented operator\)/.test(document.querySelector('#buildResult').textContent), null, { timeout: 60000 }).catch(fail);
+        assert.match(await toolbox.textContent('#buildResult'), /synthetic: invented and plausible, not a real company/);
+        assert.ok(await toolbox.locator('#buildResult .basis.synthetic', { hasText: 'operator' }).count() >= 2, 'its lanes are marked');
+        assert.match(await toolbox.textContent('#buildResult details summary'), /\d+ synthetic/);
+        assert.ok(!/fall behind/.test(await toolbox.textContent('#buildStatus')), 'it keeps up with its lanes');
+        const runTab = async (tab, expected, setUp = async () => {}) => {
+            await toolbox.click(`#scenarioTabs [data-scenario="${tab}"]`);
+            assert.equal(await toolbox.locator(`.scenarioPanel[data-panel="${tab}"]`).isVisible(), true);
+            await setUp();
+            await toolbox.click('#runScenarioButton');
+            await toolbox.waitForFunction((pattern) => new RegExp(pattern).test(document.querySelector('#scenarioResult').textContent), expected.source, { timeout: 120000 }).catch(fail);
+            const result = await toolbox.textContent('#scenarioResult');
+            assert.match(result, /Orders delivered/);
+            return result;
+        };
+        // The busiest lane closed for 3 days from day 2, its trucks waiting: the cargo waits at the port, and its
+        // warehouse lives on its stock (three days' cover, so its towns are still served).
+        await runTab('roadClosure', /closed from day 2 for 3 days: \d+ TEU a day it no longer carries, its orders waiting/);
+        const lowest = () => toolbox.evaluate(() => [...document.querySelectorAll('#scenarioResult table')].find((table) => /Lowest stock/.test(table.textContent))
+            .querySelectorAll('td.worse').length);
+        assert.ok(await lowest() >= 1, 'the closed lane\'s warehouse runs down its stock');
+        // On a detour instead, the lane keeps carrying, at a higher cost.
+        await runTab('roadClosure', /on a detour from day 2 for 3 days: 4\.0 h and \d+ km more each way/, async () => {
+            await toolbox.selectOption('#closureModeSelect', 'detour');
+            assert.equal(await toolbox.locator('#closureDetourRow').isVisible(), true);
+            await toolbox.fill('#detourHoursInput', '4');
+        });
+        // The operator's trucks cut by 40%.
+        await runTab('fleetChange', /Trucks on the lanes Quayside Haulage \(an invented operator\) carries changed by -40% from day 2 for 3 days: \d+ to \d+\./, async () => {
+            assert.equal(await toolbox.inputValue('#fleetLanesSelect'), 'operator');
+            await toolbox.fill('#fleetChangeInput', '-40');
+        });
+        // Demand up by half everywhere.
+        const surge = await runTab('demandSurge', /Demand up 50% in every town from day 2 for 3 days: \d+ TEU more ordered\./, () => toolbox.fill('#demandChangeInput', '50'));
+        assert.ok(/Highest backlog/.test(surge));
+        assert.equal(log.filter((line) => line.startsWith('pageerror') || line.startsWith('error')).length, 0, log.join('\n'));
+
         // 6. The session is kept with the project: closing and reopening the window carries on where it was.
         const curated = await counts();
         await toolbox.close();
@@ -230,7 +271,11 @@ try {
         await toolbox.click('#kindTabs [data-group="ports"]');
         assert.equal(await toolbox.locator('#candidateList li', { hasText: 'Port Alder' }).locator('input[type="number"]').inputValue(), '150');
         assert.match(await toolbox.textContent('#buildResult'), /Harbour customers/);
-        assert.match(await toolbox.textContent('#scenarioResult'), /Suez Canal: transits cut by 75%/, 'and the last disruption, with its share and settings');
+        assert.match(await toolbox.textContent('#scenarioResult'), /Demand up 50% in every town/, 'and the last scenario run');
+        assert.equal(await toolbox.evaluate(() => document.querySelector('#scenarioTabs .active').dataset.scenario), 'demandSurge', 'on its tab');
+        assert.equal(await toolbox.inputValue('#demandChangeInput'), '50');
+        assert.equal(await toolbox.inputValue('#closureModeSelect'), 'detour');
+        assert.equal(await toolbox.inputValue('#operatorSelect'), 'synthetic');
         assert.equal(await toolbox.inputValue('#chokepointSelect'), 'chokepoint1');
 
         // 7. Saving the project writes the session into it: the window's state and the map data it was built from.
@@ -250,6 +295,7 @@ try {
         assert.ok(entry.inputs.every((input) => /^https:\/\/(overpass-api\.de|services9\.arcgis\.com)\//.test(input.url ?? '') && input.retrievedAt), 'Every input records where and when it was fetched.');
         assert.equal(entry.window.kept.towns.length, 3, 'the three kept towns');
         assert.deepEqual(entry.window.added.map((site) => site.name), ['Harbour customers'], 'and the customer added on the map');
+        assert.equal(entry.window.operator, 'synthetic', 'and the invented operator');
         assert.equal(saved.nodes.length, nodes + 1, 'the model with the added customer');
         await app.close();
         app = null;
@@ -272,7 +318,7 @@ try {
         } finally {
             await offline.close().catch(() => {});
         }
-        console.log(`✓ logistics region window: the sample region and a searched region discover offline; the model (${nodes} nodes, ${edges} relationships) opens in the canvas; dragging Alder Industrial Park moves its lane from ${before} to ${after} km; a customer added on the map is served; the session is kept with the project, saved with it, and restored from it with no network.`);
+        console.log(`✓ logistics region window: the sample region and a searched region discover offline; the model (${nodes} nodes, ${edges} relationships) opens in the canvas; dragging Alder Industrial Park moves its lane from ${before} to ${after} km; a customer added on the map is served; an invented operator is labelled synthetic; a road closure, a detour, a fleet cut and a demand surge run from their tabs; the session is kept with the project, saved with it, and restored from it with no network.`);
     } finally {
         await app?.close().catch(() => {});
     }

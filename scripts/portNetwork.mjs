@@ -20,12 +20,14 @@ export const portNetworkDefaults = {
     // Lane A's fleet: 70 loaded + 70 returning + 30 idle at the port in steady state. laneAFleetSize
     // is what it hires or releases towards; it defaults to the fleet it starts with.
     laneAFleet: 170, laneAFleetSize: undefined,
+    // Trucks of the second size (1 TEU each) on lane A; none in the example.
+    laneAFleet2: 0,
     // Share of Warehouse A's orders sent by rail; 0 leaves the rail lane out.
     railShare: 0
 };
 
 // The templates' own truck capacity, loading time and order response time.
-const roadLaneState = (rate, leadTime, fleet) => laneSteadyState(rate, leadTime, fleet, { truckCapacity: 2, loadDays: 0.25, responseDays: 0.5 });
+const roadLaneState = (rate, leadTime, fleet, fleet2 = 0) => laneSteadyState(rate, leadTime, fleet, { truckCapacity: 2, loadDays: 0.25, responseDays: 0.5, fleet2, truckCapacity2: 1 });
 
 export async function buildPortNetwork(options = {}) {
     const settings = { ...portNetworkDefaults, ...options };
@@ -66,8 +68,8 @@ export async function buildPortNetworkModel(options = {}) {
     const roadRateA = 70 * (1 - railShare);
     const laneA = model.placeNode('roadLane', {
         name: 'Road lane A', position: [-5, 3, 0],
-        initialValues: roadLaneState(roadRateA, 2, settings.laneAFleet),
-        shared: { leadTime: 2, distance: 120, fleetSize: settings.laneAFleetSize ?? settings.laneAFleet }
+        initialValues: roadLaneState(roadRateA, 2, settings.laneAFleet, settings.laneAFleet2),
+        shared: { leadTime: 2, distance: 120, fleetSize: settings.laneAFleetSize ?? settings.laneAFleet, fleetSize2: settings.laneAFleet2 }
     });
     const laneB = model.placeNode('roadLane', {
         name: 'Road lane B', position: [-5, -3, 0],

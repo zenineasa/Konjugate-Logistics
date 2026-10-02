@@ -16,6 +16,7 @@ import { portwatchAttribution } from '../lib/portwatch.mjs';
 import { mapLayers } from '../lib/mapData.mjs';
 import { ModelBuilder } from '../lib/modelBuilder.mjs';
 import { buildRegionModel, regionModelDefaults } from '../lib/regionModel.mjs';
+import { generateOperator, parseOperator } from '../lib/operator.mjs';
 import { createRouter } from '../lib/roadGraph.mjs';
 import { parseSites } from '../lib/sites.mjs';
 
@@ -65,10 +66,12 @@ async function loadTemplates(helpers) {
 export default async function importRegion({ files, helpers, options = {} }) {
     const answers = {};
     let sitesText = null;
+    let operatorText = null;
     for (const file of files) {
         // A tiled kind arrives as several files, one per tile.
         if (osmRoles.includes(file.role) || portwatchRoles.includes(file.role)) (answers[file.role] ??= []).push(file.text);
         if (file.role === 'sites') sitesText = file.text;
+        if (file.role === 'operator') operatorText = file.text;
     }
     if (!Object.keys(answers).length && !sitesText) return failure('Fetch a region, use the sample region, or choose a file of your own sites first.');
 
@@ -102,7 +105,7 @@ export default async function importRegion({ files, helpers, options = {} }) {
             const known = new Map([...discovered.candidates[group], ...(sites?.sites[group] ?? [])].map((site) => [site.id, site]));
             selection[group] = (options.selection?.[group] ?? []).map((entry) => resolveSite(entry, known, kind));
         }
-        const builder = new ModelBuilder(await loadTemplates(helpers), helpers);
+        const templates = await loadTemplates(helpers);
         const settings = {};
         if (Number(options.settings?.portTeuPerDay) > 0) settings.portTeuPerDay = Number(options.settings.portTeuPerDay);
         if (['average', 'history'].includes(options.settings?.arrivals)) settings.arrivals = options.settings.arrivals;
@@ -111,7 +114,22 @@ export default async function importRegion({ files, helpers, options = {} }) {
         if (tonnes >= 1 && tonnes <= 40) settings.tonnesPerTeu = tonnes;
         const inland = Number(options.settings?.inlandShare);
         if (inland > 0 && inland <= 1) settings.inlandShare = inland;
-        const built = buildRegionModel({ builder, selection, route: createRouter(discovered.roadGraph).route, options: settings });
+        const route = createRouter(discovered.roadGraph).route;
+        const buildWith = (options) => buildRegionModel({ builder: new ModelBuilder(templates, helpers), selection, route, options });
+        // A fleet operator: the user's own, from a file, or an invented one made for this model's lanes.
+        if (options.settings?.operator === 'file') {
+            if (operatorText === null) return failure('Choose a file of your fleet operator first.');
+            try {
+                settings.operator = parseOperator(operatorText);
+            } catch (error) {
+                return failure(`Your fleet operator file: ${error.message}`);
+            }
+            // Yours, unless the file itself says it is invented (as a saved synthetic operator does).
+            settings.operator.synthetic = JSON.parse(operatorText).synthetic === true;
+        } else if (options.settings?.operator === 'synthetic') {
+            settings.operator = generateOperator(buildWith(settings), new Map(selection.ports.map((port) => [port.name, port])));
+        }
+        const built = buildWith(settings);
         const townsServed = new Set(built.served.map((item) => item.town)).size;
         const lanesByBasis = built.lanes.reduce((counts, lane) => ({ ...counts, [lane.basis]: (counts[lane.basis] ?? 0) + 1 }), {});
         return {
@@ -120,6 +138,7 @@ export default async function importRegion({ files, helpers, options = {} }) {
             parameterIndex: built.parameterIndex,
             data: {
                 step: 'build', lanes: built.lanes, served: built.served, provenance: built.provenance, warnings: built.warnings, histories: built.histories, ports: built.ports, days: built.days,
+                operator: built.operator, towns: built.towns,
                 unusedZones: built.unusedZones, nodes: built.document.nodes.length, edges: built.document.edges.length, lanesByBasis
             },
             report: {

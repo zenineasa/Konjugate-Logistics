@@ -174,8 +174,8 @@ try {
                 .catch(async () => { throw new Error(`${bundleId} did not add ${expectedEdges} edges: ${await window.textContent('#componentLibraryHint')}`); });
         };
         // A road shipment has three endpoints; the app matches them by state symbols.
-        await applyBundle('roadShipment', [port, laneA, warehouseA], 6);
-        await applyBundle('roadShipment', [port, laneB, warehouseB], 6);
+        await applyBundle('roadShipment', [port, laneA, warehouseA], 9);
+        await applyBundle('roadShipment', [port, laneB, warehouseB], 9);
         await applyBundle('delivery', [warehouseA, zone1], 3);
         await applyBundle('delivery', [warehouseB, zone2], 3);
 
@@ -222,7 +222,7 @@ try {
     // --- The app built what the templates say. --------------------------------------------------
     const scriptBuilt = await scriptBuiltNetwork();
     assert.equal(appBuilt.nodes.length, 7);
-    assert.equal(appBuilt.edges.length, 2 * 6 + 2 * 3);
+    assert.equal(appBuilt.edges.length, 2 * 9 + 2 * 3);
     const sharedSummary = (document) => Object.fromEntries(document.sharedParameters.map((shared) => [shared.symbol, shared.value]));
     assert.deepEqual(sharedSummary(appBuilt), sharedSummary(scriptBuilt), 'The app and the script should create the same shared parameters with the same values.');
     appBuilt.nodes.forEach((node, index) => {

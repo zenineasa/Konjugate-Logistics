@@ -71,6 +71,8 @@ th { color: var(--muted); font-weight: 500; }
 td.number { text-align: right; font-variant-numeric: tabular-nums; }
 .basis { font-size: 10px; color: var(--muted); }
 .basis.assumed { color: var(--warn); }
+.basis.synthetic { color: var(--accent); font-style: italic; }
+.basis.user { color: var(--bright); }
 details summary { cursor: pointer; color: var(--accent); font-size: 12px; margin: 6px 0; }
 .mapArea { position: relative; display: flex; flex-direction: column; min-width: 0; }
 .mapTools { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
@@ -108,3 +110,5 @@ details summary { cursor: pointer; color: var(--accent); font-size: 12px; margin
 .dependence input[type="number"] { width: 56px; padding: 2px 4px; font-size: 12px; }
 .dependence td.sea { color: var(--muted); }
 .worse { color: var(--warn); }
+td.worse { color: var(--danger); }
+td.better { color: var(--ok); }

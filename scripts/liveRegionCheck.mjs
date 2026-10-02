@@ -15,6 +15,11 @@
 //       day 10 for 30 days, each kept port losing its share through it (from the sea it lies in), against the baseline;
 //       optionally 60% of the cargo kept out arrives later, over the 20 days after
 //   ... [--tonnes-per-teu 12] [--inland-share 0.6]   how PortWatch's tonnes become TEU handed inland (default 10 t, all of it)
+//   ... [--operator synthetic|path/to/operator.json]   a fleet operator: an invented one, or your own
+//   ... [--scenarios]   with --run, a month under each of the window's scenarios against the baseline: the chokepoint the
+//       kept ports depend on most cut by half, the busiest lane closed (its trucks waiting, then on a 3-hour detour), the
+//       operator's trucks (or every lane's) cut by 30%, and demand up 30% everywhere, each from day 3 for 14 days; and
+//       a check that every input is labelled sourced, routed, assumed, synthetic or yours
 //
 // A place search lists what it found, places and areas first; --pick chooses another than the first.
 //
@@ -33,7 +38,9 @@ import { maximumSplitDepth, overpassHost, overpassRequests, overpassStatusUrl, o
 import { nominatimSearchUrl, rankPlaces } from '../packages/toolbox/lib/places.mjs';
 import { chokepointById, chokepointRecentUrl, chokepointYearlyUrl, disruptionPlan, summariseTransits } from '../packages/toolbox/lib/chokepoints.mjs';
 import { portwatchActivityUrl, portwatchPortsUrl } from '../packages/toolbox/lib/portwatch.mjs';
+import { generateOperator, parseOperator } from '../packages/toolbox/lib/operator.mjs';
 import { buildRegionModel } from '../packages/toolbox/lib/regionModel.mjs';
+import { closurePlan, demandPlan, fleetPlan } from '../packages/toolbox/lib/scenarios.mjs';
 import { createRouter } from '../packages/toolbox/lib/roadGraph.mjs';
 import { konjugateModule, logisticsRoot } from './konjugatePaths.mjs';
 import { loadTemplates, ModelBuilder } from './templatePlacement.mjs';
@@ -192,14 +199,29 @@ show('Logistics zones', discovered.candidates.zones, (zone) => `${Math.round(zon
 show('Towns', discovered.candidates.towns, (town) => `${town.population.toLocaleString('en')} (${town.populationBasis})${town.suburbs ? `, ${town.suburbs.length} suburbs` : ''}`);
 
 const routeStarted = Date.now();
-const builder = new ModelBuilder(await loadTemplates());
+const templates = await loadTemplates();
+const builder = new ModelBuilder(templates);
 const arrivalsMode = argument('arrivals') ?? 'average';
 if (!['average', 'history'].includes(arrivalsMode)) throw new Error('--arrivals is average or history.');
-const built = buildRegionModel({ builder, selection: defaultSelection(discovered.candidates), route: createRouter(discovered.roadGraph).route, options: {
+const selection = defaultSelection(discovered.candidates);
+const route = createRouter(discovered.roadGraph).route;
+const buildOptions = {
     arrivals: arrivalsMode, ...(argument('from') ? { historyFrom: argument('from') } : {}),
     ...(argument('tonnes-per-teu') ? { tonnesPerTeu: Number(argument('tonnes-per-teu')) } : {}),
     ...(argument('inland-share') ? { inlandShare: Number(argument('inland-share')) } : {})
-} });
+};
+// A fleet operator: an invented one made for the model's lanes, or your own from a file.
+if (argument('operator') === 'synthetic') {
+    buildOptions.operator = generateOperator(buildRegionModel({ builder: new ModelBuilder(templates), selection, route, options: buildOptions }), new Map(selection.ports.map((port) => [port.name, port])));
+} else if (argument('operator')) {
+    const text = await readFile(argument('operator'), 'utf8');
+    buildOptions.operator = { ...parseOperator(text), synthetic: JSON.parse(text).synthetic === true };
+}
+const built = buildRegionModel({ builder, selection, route, options: buildOptions });
+if (built.operator) {
+    console.log(`\nOperator: ${built.operator.name}${built.operator.synthetic ? ' (synthetic)' : ''}, ${built.operator.trucks.map((truck) => `${truck.label} at ${truck.costPerKm}/km and ${truck.costPerDay}/day`).join('; ')}`);
+    for (const lane of built.operator.lanes) console.log(`  ${lane.name}: ${lane.fleet} + ${lane.fleet2} trucks from ${lane.depot}, ${lane.capacity.toFixed(0)} TEU of capacity for a need of ${lane.need.toFixed(0)}`);
+}
 for (const history of built.histories) console.log(`  ${history.port}: arrivals follow its history from ${history.from} (model day 0) to ${history.to}`);
 console.log(`\nModel: ${built.document.nodes.length} nodes, ${built.document.edges.length} edges, built in ${((Date.now() - routeStarted) / 1000).toFixed(1)} s.`);
 for (const item of built.provenance.filter((entry) => entry.parameter === 'Containers handed inland')) console.log(`  ${item.entity} hands inland ${item.value.toFixed(1)} TEU/day (${item.basis}): ${item.detail}`);
@@ -241,7 +263,7 @@ if (flag('run')) {
         if (code !== 0) throw new Error(`The engine exited with ${code}.`);
         const result = decodeResultFile(await readFile(join(directory, 'result.kjr')));
         const first = new Map(result.samples[0].states.map((state) => [state.stateId, state.value]));
-        const cumulative = new Set(document.nodes.flatMap((node) => node.states.filter((state) => /^(arrived|handled|delivered|ordered|transportCost|holdingCost|backlogCost)$/.test(state.symbol)).map((state) => state.id)));
+        const cumulative = new Set(document.nodes.flatMap((node) => node.states.filter((state) => /^(arrived|handled|delivered|ordered|transportCost|fleetCost|holdingCost|backlogCost)$/.test(state.symbol)).map((state) => state.id)));
         let worst = 0;
         for (const state of result.samples.at(-1).states) {
             if (cumulative.has(state.stateId)) continue;
@@ -263,6 +285,23 @@ if (flag('run')) {
             }
         }
 
+        // Runs a document for `runDays` days and answers a reader of its series by node and state, in days.
+        const runFor = async (name, document, runDays) => {
+            await writeFile(join(directory, `${name}.kjt`), await encodeProjectFile(JSON.stringify(document)));
+            await writeFile(join(directory, `${name}.json`), JSON.stringify({ targetTime: runDays * 86400, globalTimeStep: 900, outputInterval: 3600 }));
+            const exit = await new Promise((resolve, reject) => {
+                const child = spawn(executable, ['run', join(directory, `${name}.kjt`), '--configuration', join(directory, `${name}.json`), '--output', join(directory, `${name}.kjr`)], { stdio: ['ignore', 'ignore', 'inherit'] });
+                child.once('error', reject);
+                child.once('exit', resolve);
+            });
+            if (exit !== 0) throw new Error(`The engine exited with ${exit} for the ${name} run.`);
+            const decoded = decodeResultFile(await readFile(join(directory, `${name}.kjr`)));
+            return (node, symbol) => {
+                const stateId = document.nodes.find((item) => item.name === node).states.find((state) => state.symbol === symbol).id;
+                return decoded.samples.map((sample) => [sample.time / 86400, sample.states.find((state) => state.stateId === stateId).value]);
+            };
+        };
+
         // A disruption, run here as the window's fork would follow it: each dependent port's arrivals from the day it
         // starts are its own arrivals scaled by its share through the chokepoint times the cut.
         if (argument('disrupt')) {
@@ -270,21 +309,6 @@ if (flag('run')) {
             if (!chokepointById.has(id) || ![cutPercent, startDay, days, delayedPercent, catchUpDays].every((value) => Number.isFinite(Number(value)))) throw new Error('--disrupt is chokepointN:cutPercent:startDay:days[:delayedPercent:catchUpDays].');
             const runDays = Math.min(built.days, Number(startDay) + Number(days) + Math.max(30, Number(catchUpDays) + 10));
             const volumes = new Map();
-            const runFor = async (name, document) => {
-                await writeFile(join(directory, `${name}.kjt`), await encodeProjectFile(JSON.stringify(document)));
-                await writeFile(join(directory, `${name}.json`), JSON.stringify({ targetTime: runDays * 86400, globalTimeStep: 900, outputInterval: 3600 }));
-                const exit = await new Promise((resolve, reject) => {
-                    const child = spawn(executable, ['run', join(directory, `${name}.kjt`), '--configuration', join(directory, `${name}.json`), '--output', join(directory, `${name}.kjr`)], { stdio: ['ignore', 'ignore', 'inherit'] });
-                    child.once('error', reject);
-                    child.once('exit', resolve);
-                });
-                if (exit !== 0) throw new Error(`The engine exited with ${exit} for the ${name} run.`);
-                const decoded = decodeResultFile(await readFile(join(directory, `${name}.kjr`)));
-                return (node, symbol) => {
-                    const stateId = document.nodes.find((item) => item.name === node).states.find((state) => state.symbol === symbol).id;
-                    return decoded.samples.map((sample) => [sample.time / 86400, sample.states.find((state) => state.stateId === stateId).value]);
-                };
-            };
             const baselineDocument = builder.document({ days: runDays, stepDays: 15 / 1440, outputDays: 1 / 24 });
             const disrupted = structuredClone(baselineDocument);
             const affected = [];
@@ -307,7 +331,7 @@ if (flag('run')) {
             if (!affected.length) {
                 console.log(`\nDisruption: no kept port depends on ${chokepointById.get(id).name}.`);
             } else {
-                const [before, after] = [await runFor('baseline', baselineDocument), await runFor('disrupted', disrupted)];
+                const [before, after] = [await runFor('baseline', baselineDocument, runDays), await runFor('disrupted', disrupted, runDays)];
                 console.log(`\nDisruption: ${chokepointById.get(id).name} cut by ${cutPercent}% from day ${startDay} for ${days} days, reaching ${affected.join(', ')}${Number(delayedPercent) > 0 ? `; ${delayedPercent}% of the cargo kept out arrives over the ${catchUpDays} days after` : ''}; ${runDays} days run.`);
                 for (const [name, volume] of volumes) console.log(`  ${name}: ${volume.keptOut.toFixed(0)} TEU kept out, ${volume.caughtUp.toFixed(0)} of them arriving later`);
                 const lowest = (series) => series.reduce((best, point) => (point[1] < best[1] ? point : best));
@@ -325,6 +349,65 @@ if (flag('run')) {
                     console.log(`  ${town}: backlog peaked at ${peak.toFixed(0)} TEU on day ${day.toFixed(1)} (baseline highest ${highest(before(town, 'backlog'))[1].toFixed(0)})`);
                 }
             }
+        }
+
+        // A month under each of the window's scenarios, against the baseline, as the window's forks would follow them.
+        if (flag('scenarios')) {
+            const runDays = 30;
+            const window = { start: 3 * 86400, duration: 14 * 86400, forkAt: 0, runTime: runDays * 86400 };
+            const baselineDocument = builder.document({ days: runDays, stepDays: 15 / 1440, outputDays: 1 / 24 });
+            // Each supplied path becomes a schedule on that entity's own parameter, from day 0.
+            const following = (byParameter) => {
+                const document = structuredClone(baselineDocument);
+                for (const [key, { entities, samples }] of Object.entries(byParameter)) {
+                    for (const entity of entities) {
+                        const indexed = built.parameterIndex.findLast((entry) => entry.key === key && entry.entity === entity);
+                        if (!indexed?.live) throw new Error(`${key} of ${entity} is not live: a scenario cannot change it.`);
+                        document.sharedParameters.find((item) => item.id === indexed.sharedParameterId).schedule = { interpolation: 'linear', samples: samples[entity] };
+                    }
+                }
+                return document;
+            };
+            const busiest = [...built.lanes].sort((a, b) => b.rate - a.rate)[0];
+            const shares = keptPorts.map((port) => port.chokepoints?.shares ?? {});
+            const [chokepoint] = [...new Set(shares.flatMap((item) => Object.keys(item)))].sort((a, b) => shares.reduce((sum, item) => sum + (item[b] ?? 0), 0) - shares.reduce((sum, item) => sum + (item[a] ?? 0), 0));
+            const scenarios = [];
+            if (chokepoint) {
+                const samples = {};
+                const entities = [];
+                for (const port of built.ports) {
+                    const share = keptPorts.find((item) => item.name === port.name)?.chokepoints?.shares?.[chokepoint] ?? 0;
+                    if (!(share > 0)) continue;
+                    entities.push(port.name);
+                    samples[port.name] = disruptionPlan({ base: port.schedule ?? port.arrivals, dependence: share, cut: 0.5, ...window }).path;
+                }
+                scenarios.push({ name: `${chokepointById.get(chokepoint).name} cut by half`, supplied: { vesselArrivals: { entities, samples } } });
+            }
+            scenarios.push({ name: `${busiest.name.replace(/^Road /, '')} closed, trucks waiting`, supplied: closurePlan({ lanes: built.lanes, closed: busiest.name, mode: 'wait', ...window }).supplied });
+            scenarios.push({ name: `${busiest.name.replace(/^Road /, '')} on a 3-hour detour`, supplied: closurePlan({ lanes: built.lanes, closed: busiest.name, mode: 'detour', detourHours: 3, ...window }).supplied });
+            const fleetLanes = built.operator ? built.lanes.filter((lane) => lane.operator) : built.lanes;
+            scenarios.push({ name: `${built.operator ? `${built.operator.name}'s` : 'Every lane\'s'} trucks cut by 30%`, supplied: fleetPlan({ lanes: fleetLanes, change: -0.3, ...window }).supplied });
+            scenarios.push({ name: 'Demand up 30% everywhere', supplied: demandPlan({ towns: built.towns, change: 0.3, ...window }).supplied });
+
+            const towns = built.towns.map((town) => town.name);
+            const warehouses = [...new Set(built.lanes.map((lane) => lane.to))];
+            const grew = (series) => series.at(-1)[1] - series[0][1];
+            const kpis = (read) => ({
+                fill: towns.reduce((sum, town) => sum + grew(read(town, 'delivered')), 0) / towns.reduce((sum, town) => sum + grew(read(town, 'ordered')), 0),
+                cost: built.lanes.reduce((sum, lane) => sum + grew(read(lane.name, 'transportCost')) + grew(read(lane.name, 'fleetCost')), 0),
+                stock: Math.min(...warehouses.map((warehouse) => Math.min(...read(warehouse, 'stock').map((point) => point[1])) / read(warehouse, 'stock')[0][1])),
+                backlog: Math.max(...towns.map((town) => Math.max(...read(town, 'backlog').map((point) => point[1])))),
+                wait: Math.max(...built.ports.map((port) => Math.max(...read(port.name, 'waitDays').map((point) => point[1]))))
+            });
+            const row = (name, value) => `  ${name.padEnd(56)} ${(value.fill * 100).toFixed(1).padStart(6)}% ${Math.round(value.cost).toLocaleString('en').padStart(12)} ${(value.stock * 100).toFixed(0).padStart(5)}% ${Math.round(value.backlog).toLocaleString('en').padStart(8)} ${value.wait.toFixed(2).padStart(6)}`;
+            console.log(`\nScenarios: ${runDays} days each, the change from day 3 for 14 days.`);
+            console.log(`  ${''.padEnd(56)} ${'filled'.padStart(7)} ${'road cost'.padStart(12)} ${'stock'.padStart(6)} ${'backlog'.padStart(8)} ${'wait'.padStart(6)}`);
+            console.log(row('Baseline', kpis(await runFor('scenario-baseline', baselineDocument, runDays))));
+            for (const [index, scenario] of scenarios.entries()) console.log(row(scenario.name, kpis(await runFor(`scenario-${index}`, following(scenario.supplied), runDays))));
+            console.log('  (filled: orders delivered over the month; road cost: transport and fleet, in cost units; stock: the lowest any warehouse falls to, against its start; backlog: the highest any town reaches, in TEU; wait: the longest at any anchorage, in days)');
+            const bases = built.provenance.reduce((counts, entry) => ({ ...counts, [entry.basis]: (counts[entry.basis] ?? 0) + 1 }), {});
+            const unlabelled = built.provenance.filter((entry) => !['sourced', 'routed', 'assumed', 'synthetic', 'user'].includes(entry.basis));
+            console.log(`\nInputs: ${built.provenance.length}, ${Object.entries(bases).map(([basis, count]) => `${count} ${basis}`).join(', ')}${unlabelled.length ? `; NOT LABELLED: ${unlabelled.map((entry) => `${entry.entity} ${entry.parameter}`).join(', ')}` : '; every one labelled'}.`);
         }
     } finally {
         await rm(directory, { recursive: true, force: true });

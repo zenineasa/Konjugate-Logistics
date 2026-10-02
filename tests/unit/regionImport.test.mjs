@@ -7,8 +7,10 @@ import { clusterByDistance, distance, ringArea, splitToSpan } from '../../packag
 import { maximumSplitDepth, maximumStatusWaitSeconds, overpassQueries, overpassRequests, overpassStatusUrl, overpassUrl, readOverpass, retryableStatus, retryDelaysSeconds, retryPauseSeconds, splitBbox, splitRequest, statusWaitSeconds } from '../../packages/toolbox/lib/overpass.mjs';
 import { nominatimSearchUrl, rankPlaces } from '../../packages/toolbox/lib/places.mjs';
 import { chokepointById, chokepointDependence, chokepointRecentUrl, chokepoints, chokepointYearlyUrl, disruptionPath, disruptionPlan, summariseTransits } from '../../packages/toolbox/lib/chokepoints.mjs';
+import { allocateFleet, generateOperator, parseOperator } from '../../packages/toolbox/lib/operator.mjs';
 import { findShift, historyWindow, matchPorts, portwatchActivityUrl, portwatchPortsUrl, readPortwatchActivity, readPortwatchPorts, summariseActivity } from '../../packages/toolbox/lib/portwatch.mjs';
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
+import { closureModes, closurePlan, demandPlan, fleetPlan, heldPath } from '../../packages/toolbox/lib/scenarios.mjs';
 import { createRouter } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { parseSites } from '../../packages/toolbox/lib/sites.mjs';
 import { loadTemplates, ModelBuilder } from '../../scripts/templatePlacement.mjs';
@@ -139,7 +141,7 @@ test('a curated region becomes a model in which every port ships what arrives an
     }
     const zones = new Set(served.map((item) => item.zone)).size;
     assert.equal(document.nodes.length, selection.ports.length + zones + lanes.length + selection.towns.length);
-    assert.equal(document.edges.length, 6 * lanes.length + 3 * served.length, 'six edges a lane, three a delivery');
+    assert.equal(document.edges.length, 9 * lanes.length + 3 * served.length, 'nine edges a lane, three a delivery');
     assert.equal(document.runConfigurations[0].globalTimeStep, 900, '15-minute steps');
     assert.equal(document.runConfigurations[0].outputInterval, 3600, 'hourly outputs');
     for (const lane of lanes) {
@@ -731,4 +733,119 @@ test('the weight of a TEU and the share handed inland set a matched port’s vol
     const alder = built.provenance.find((item) => item.entity === 'Port Alder' && item.parameter === 'Containers handed inland');
     close(alder.value, 1200 * 8 / 7 / 12 * 0.6, 1e-9, '1,371 t a day at 12 t a TEU, 60% inland');
     assert.match(alder.detail, /at an assumed 12 t a TEU, 60% of them handed inland \(assumed\)/);
+});
+
+test('a fleet operator is read, its trucks shared among its lanes by need, and a synthetic one generated', () => {
+    const operator = parseOperator({
+        name: 'Test haulage', synthetic: true,
+        trucks: [{ id: 'small', label: '20 ft', teu: 1, costPerKm: 1, costPerDay: 100 }, { id: 'big', label: '40 ft', teu: 2, costPerKm: 1.5, costPerDay: 200 }],
+        depots: [{ name: 'North', lat: 1, lon: 0, trucks: { big: 10, small: 7 } }, { name: 'South', lat: -1, lon: 0, trucks: { big: 5 } }],
+        contracts: [{ from: 'P', to: 'A' }, { from: 'P', to: 'B' }, { from: 'Q', to: 'C' }]
+    });
+    assert.deepEqual(operator.trucks.map((truck) => truck.id), ['big', 'small'], 'the larger size first');
+    const allocation = allocateFleet(operator, [
+        { from: 'P', to: 'A', origin: { lat: 0.9, lon: 0 }, need: 30 }, { from: 'P', to: 'B', origin: { lat: 0.9, lon: 0 }, need: 10 },
+        { from: 'Q', to: 'C', origin: { lat: -0.9, lon: 0 }, need: 5 }, { from: 'P', to: 'D', origin: { lat: 0.9, lon: 0 }, need: 99 }
+    ]);
+    assert.deepEqual(allocation['P|A'], { depot: 'North', counts: [8, 5] }, '10 large and 7 small shared 3:1, largest remainder');
+    assert.deepEqual(allocation['P|B'], { depot: 'North', counts: [2, 2] });
+    assert.deepEqual(allocation['Q|C'], { depot: 'South', counts: [5, 0] });
+    assert.equal(allocation['P|D'], undefined, 'an uncontracted lane is not the operator’s');
+    for (const bad of [{ trucks: [] }, { trucks: [{ teu: 0, costPerKm: 1, costPerDay: 1 }], depots: [{ lat: 0, lon: 0 }] }, { trucks: [{ teu: 1, costPerKm: 1, costPerDay: 1 }], depots: [] },
+        { trucks: [{ id: 'a', teu: 1, costPerKm: 1, costPerDay: 1 }], depots: [{ lat: 0, lon: 0, trucks: { b: 3 } }] }]) {
+        assert.throws(() => parseOperator(bad), /^Error: The operator: /);
+    }
+    const generated = generateOperator(
+        { lanes: [{ from: 'P', to: 'A', rate: 60, leadTime: 0.1 }, { from: 'P', to: 'B', rate: 30, leadTime: 0.1 }, { from: 'P', to: 'C', rate: 10, leadTime: 0.1 }, { from: 'Q', to: 'A', rate: 50, leadTime: 0.1 }] },
+        new Map([['P', { lat: 25, lon: 55 }]]));
+    assert.equal(generated.synthetic, true);
+    assert.deepEqual(generated.contracts, [{ from: 'P', to: 'A' }, { from: 'P', to: 'B' }], 'the busiest port’s largest lanes, half its flow or more');
+    assert.equal(parseOperator(generated).depots[0].name, 'P depot');
+});
+
+test('a contracted lane runs on the operator’s two truck sizes, labelled synthetic, with its costs', async () => {
+    const answers = Object.fromEntries(Object.entries(syntheticRegion()).map(([kind, value]) => [kind, [JSON.stringify(value)]]));
+    const discovered = discoverRegion(answers);
+    const selection = defaultSelection(discovered.candidates);
+    const route = createRouter(discovered.roadGraph).route;
+    const build = async (options) => buildRegionModel({ builder: new ModelBuilder(await loadTemplates()), selection, route, options });
+    const plain = await build({});
+    const sites = new Map(selection.ports.map((port) => [port.name, port]));
+    const operator = generateOperator(plain, sites);
+    const built = await build({ operator });
+    const contracted = built.lanes.filter((lane) => lane.operator);
+    // The operator lists its contracts busiest first; the model lists lanes in the order it builds them.
+    assert.deepEqual(contracted.map((lane) => `${lane.from}|${lane.to}`).sort(), operator.contracts.map((contract) => `${contract.from}|${contract.to}`).sort());
+    assert.ok(contracted.every((lane) => lane.fleet > 0 && lane.fleet2 > 0), 'both sizes on every contracted lane');
+    const fleetNote = built.provenance.find((item) => item.entity === contracted[0].name && item.parameter === 'Fleet');
+    assert.equal(fleetNote.basis, 'synthetic');
+    assert.match(fleetNote.detail, /Quayside Haulage \(an invented operator\)'s 40-foot \(2 TEU\) trucks from its .* depot/);
+    const shared = (symbol) => built.document.sharedParameters.find((item) => item.symbol === symbol).value;
+    assert.deepEqual([shared('truckCapacity'), shared('truckCapacity2'), shared('costPerKm'), shared('costPerKm2'), shared('truckDayCost'), shared('truckDayCost2')], [2, 1, 1.6, 1.2, 240, 170]);
+    assert.ok(built.provenance.some((item) => item.entity === operator.name && item.parameter === 'Cost per truck per day, 20-foot (1 TEU)' && item.basis === 'synthetic'));
+    assert.equal(built.operator.lanes.length, contracted.length);
+    // With one and a half loading periods in reserve, the operator keeps up with every lane it carries: no warning.
+    assert.ok(!built.warnings.some((text) => /will fall behind/.test(text)), built.warnings.join(' '));
+    // With a tenth of the trucks it falls behind, and says so.
+    const short = { ...operator, depots: operator.depots.map((depot) => ({ ...depot, trucks: Object.fromEntries(Object.entries(depot.trucks).map(([id, count]) => [id, Math.floor(count / 10)])) })) };
+    assert.ok((await build({ operator: short })).warnings.some((text) => /will fall behind/.test(text)));
+    // A user's own operator is labelled as theirs.
+    assert.equal((await build({ operator: { ...operator, synthetic: false } })).provenance.find((item) => item.entity === contracted[0].name && item.parameter === 'Fleet').basis, 'user');
+});
+
+test('a scenario’s paths hold their values between steps a second apart, counted from the fork', () => {
+    const day = 86400;
+    const path = heldPath({ outside: 1, inside: 0, start: 15 * day, duration: 10 * day, forkAt: 10 * day, runTime: 90 * day });
+    assert.deepEqual(path, [[0, 1], [5 * day - 1, 1], [5 * day, 0], [15 * day - 1, 0], [15 * day, 1], [80 * day - 1, 1]]);
+    assert.deepEqual(heldPath({ outside: 5, inside: 7, start: 10 * day, forkAt: 10 * day, runTime: 30 * day }), [[0, 7], [20 * day - 1, 7]], 'for the rest of the run');
+    assert.throws(() => heldPath({ outside: 1, inside: 0, start: 5 * day, duration: day, forkAt: 10 * day, runTime: 30 * day }), /at or after the fork/);
+});
+
+test('a road closure holds every path its scenario declares, and its warehouse’s order shares add up to 1', () => {
+    const day = 86400;
+    const lanes = [
+        { name: 'A → W', from: 'A', to: 'W', rate: 60, leadTime: 0.25, kilometres: 80 },
+        { name: 'B → W', from: 'B', to: 'W', rate: 20, leadTime: 0.5, kilometres: 150 },
+        { name: 'C → W', from: 'C', to: 'W', rate: 20, leadTime: 0.5, kilometres: 150 },
+        { name: 'A → V', from: 'A', to: 'V', rate: 10, leadTime: 0.1, kilometres: 20 }
+    ];
+    const window = { start: 10 * day, duration: 5 * day, forkAt: 10 * day, runTime: 30 * day };
+    const during = (samples) => samples[0][1];
+    const after = (samples) => samples.at(-1)[1];
+    const shares = (plan) => Object.values(plan.supplied.orderShare.samples);
+    for (const mode of closureModes) {
+        const plan = closurePlan({ lanes, closed: 'A → W', mode, detourHours: 6, ...window });
+        assert.deepEqual(Object.keys(plan.supplied), ['laneOpen', 'orderShare', 'leadTime', 'distance'], mode);
+        assert.deepEqual(plan.supplied.orderShare.entities, ['A → W', 'B → W', 'C → W'], `${mode}: only the warehouse's own lanes`);
+        for (const pick of [during, after]) close(shares(plan).reduce((sum, samples) => sum + pick(samples), 0), 1, 1e-12, `${mode}: shares add up to 1`);
+        assert.equal(after(plan.supplied.laneOpen.samples['A → W']), 1, `${mode}: reopened`);
+        assert.equal(after(plan.supplied.leadTime.samples['A → W']), 0.25, `${mode}: the usual trip again`);
+    }
+    const wait = closurePlan({ lanes, closed: 'A → W', mode: 'wait', ...window });
+    assert.equal(during(wait.supplied.laneOpen.samples['A → W']), 0);
+    assert.equal(during(wait.supplied.orderShare.samples['A → W']), 0.6, 'its orders stay with it, and wait');
+    assert.equal(wait.teuPerDay, 60);
+    const detour = closurePlan({ lanes, closed: 'A → W', mode: 'detour', detourHours: 6, ...window });
+    assert.equal(during(detour.supplied.laneOpen.samples['A → W']), 1, 'a detour keeps the lane open');
+    assert.equal(during(detour.supplied.leadTime.samples['A → W']), 0.5);
+    assert.equal(during(detour.supplied.distance.samples['A → W']), 160, 'twice the time over twice the distance');
+    const others = closurePlan({ lanes, closed: 'A → W', mode: 'otherPorts', open: 0.5, ...window });
+    close(during(others.supplied.orderShare.samples['A → W']), 0.3, 1e-12, 'half its share stays with it');
+    close(during(others.supplied.orderShare.samples['B → W']), 0.35, 1e-12, 'the rest goes to the others by what they carry');
+    assert.deepEqual(others.reroutedTo, ['B → W', 'C → W']);
+    assert.throws(() => closurePlan({ lanes, closed: 'A → W', mode: 'detour', ...window }), /more than 0 hours/);
+    assert.throws(() => closurePlan({ lanes, closed: 'A → W', open: 1, ...window }), /less than 100%/);
+});
+
+test('a fleet change rounds each size to whole trucks, and a demand surge counts what it adds', () => {
+    const day = 86400;
+    const window = { start: 10 * day, duration: 10 * day, forkAt: 10 * day, runTime: 30 * day };
+    const fleet = fleetPlan({ lanes: [{ name: 'L1', fleet: 33, fleet2: 10 }, { name: 'L2', fleet: 5, fleet2: 0 }], change: -0.3, ...window });
+    assert.deepEqual(fleet.supplied.fleetSize.samples.L1.map((sample) => sample[1]), [23, 23, 33, 33]);
+    assert.ok(fleet.supplied.fleetSize2.samples.L2.every((sample) => sample[1] === 0), 'a size a lane lacks stays at none');
+    assert.deepEqual(fleet.trucks, { before: 48, after: 34 });
+    assert.throws(() => fleetPlan({ lanes: [], change: 0.1, ...window }), /at least one lane/);
+    const demand = demandPlan({ towns: [{ name: 'T', demand: 40 }, { name: 'U', demand: 10 }], change: 0.5, ...window });
+    assert.deepEqual(demand.supplied.baseDemand.samples.T.map((sample) => sample[1]), [60, 60, 40, 40]);
+    close(demand.extraTeu, 250, 1e-9, '25 TEU a day more for 10 days');
 });

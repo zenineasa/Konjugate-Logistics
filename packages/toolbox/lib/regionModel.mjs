@@ -7,6 +7,7 @@
 // from: sourced, routed, assumed or the user's own.
 
 import { toLocal } from './geo.mjs';
+import { allocateFleet, parseOperator } from './operator.mjs';
 import { historyWindow, tonnesPerTeu } from './portwatch.mjs';
 
 export const regionModelDefaults = {
@@ -81,27 +82,42 @@ function balanceFlows(pairs, zoneDemand, portSupply) {
     return null;
 }
 
-// A road lane carrying `rate` TEU/day over `leadTime` days with `fleet` trucks, in steady state:
-// loaded trucks on the road, empty ones returning, the rest idle at the origin.
-export function roadLaneState(rate, leadTime, fleet, { truckCapacity, loadDays, responseDays }) {
+// A road lane carrying `rate` TEU/day over `leadTime` days with `fleet` trucks (and `fleet2` of a second size), in
+// steady state: loaded trucks on the road, empty ones returning, the rest idle at the origin. Loads are shared between
+// the sizes by their idle capacity, which in steady state is each size's share of the fleets' total capacity:
+// s = fleet2 c2 / (fleet c1 + fleet2 c2), whatever the flow.
+export function roadLaneState(rate, leadTime, fleet, { truckCapacity, loadDays, responseDays, fleet2 = 0, truckCapacity2 = 1 }) {
     const loaded = rate * leadTime / 3;
-    const loadedTrucks = rate * leadTime / truckCapacity;
-    const returning = Math.max(0, Math.min(rate / truckCapacity * leadTime, fleet - loadedTrucks));
-    const idle = Math.max(0, fleet - loadedTrucks - returning);
-    const busy = loadedTrucks + returning;
+    const capacity = fleet * truckCapacity + fleet2 * truckCapacity2;
+    const share2 = capacity > 0 ? fleet2 * truckCapacity2 / capacity : 0;
+    const size = (trucks, share, perTruck) => {
+        const loadedTrucks = rate * share * leadTime / perTruck;
+        const returning = Math.max(0, Math.min(rate * share / perTruck * leadTime, trucks - loadedTrucks));
+        return { loadedTrucks, returning, idle: Math.max(0, trucks - loadedTrucks - returning) };
+    };
+    const first = size(fleet, 1 - share2, truckCapacity);
+    const second = fleet2 > 0 ? size(fleet2, share2, truckCapacity2) : { loadedTrucks: 0, returning: 0, idle: 0 };
+    const busy = first.loadedTrucks + first.returning + second.loadedTrucks + second.returning;
+    const idle = first.idle + second.idle;
     return {
-        loaded1: loaded, loaded2: loaded, loaded3: loaded, idleTrucks: idle, returning, requested: rate * responseDays,
-        arriving: rate, canLoad: idle * truckCapacity / loadDays, utilisation: busy + idle > 0 ? busy / (busy + idle) : 0
+        loaded1: loaded, loaded2: loaded, loaded3: loaded,
+        loadedTrucks: first.loadedTrucks, returning: first.returning, idleTrucks: first.idle,
+        loadedTrucks2: second.loadedTrucks, returning2: second.returning, idleTrucks2: second.idle,
+        requested: rate * responseDays, arriving: rate,
+        canLoad: (first.idle * truckCapacity + second.idle * truckCapacity2) / loadDays,
+        utilisation: busy + idle > 0 ? busy / (busy + idle) : 0
     };
 }
 
-// `builder` is a ModelBuilder over the component templates. `selection` holds the curated
-// { ports, zones, towns } (each with lat, lon, name, and optionally teuPerDay for a port or a
-// customer's fixed demand, and population for a town). `route(a, b)` returns { hours, kilometres, basis }.
 export function buildRegionModel({ builder, selection, route, options = {} }) {
     const settings = { ...regionModelDefaults, ...options };
     const templates = builder.templates;
-    const truckCapacity = templateValue(templates, 'roadLane', 'truckCapacity');
+    // A fleet operator, the user's own or a synthetic one: its truck sizes and costs become the region's, and its
+    // contracted lanes run on its trucks.
+    const operator = settings.operator ? parseOperator(settings.operator) : null;
+    const operatorBasis = operator?.synthetic ? 'synthetic' : 'user';
+    const truckCapacity = operator ? operator.trucks[0].teu : templateValue(templates, 'roadLane', 'truckCapacity');
+    const truckCapacity2 = operator?.trucks[1]?.teu ?? templateValue(templates, 'roadLane', 'truckCapacity2');
     const loadDays = templateValue(templates, 'roadLane', 'loadDays');
     const responseDays = templateValue(templates, 'roadShipment', 'responseDays');
     const coverDays = templateValue(templates, 'warehouse', 'coverDays');
@@ -295,12 +311,11 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
     // Shared parameters a placement created, by template key, so scenarios can find them by entity.
     const parameterIndex = [];
     const indexPlacement = (templateId, entity, before) => {
-        const created = builder.sharedParameters.slice(before);
+        const created = new Set(builder.sharedParameters.slice(before));
         for (const declared of templates.get(templateId).sharedParameters ?? []) {
             if (declared.scope === 'project') continue;
-            const shared = created.find((item) => item.symbol === declared.symbol || item.symbol.replace(/\d+$/, '') === declared.symbol);
-            if (shared) {
-                created.splice(created.indexOf(shared), 1);
+            const shared = builder.lastShared?.get(declared.key);
+            if (shared && created.has(shared)) {
                 parameterIndex.push({
                     key: declared.key, entity, name: `${declared.name} (${entity})`, symbol: shared.symbol, sharedParameterId: shared.id,
                     scope: 'instance', value: shared.value, unit: shared.unit, live: shared.mode === 'live'
@@ -318,6 +333,13 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
         const before = builder.sharedParameters.length;
         builder.applyBundle(templateId, endpoints, options);
         indexPlacement(templateId, entity, before);
+    };
+    // Makes an entity's own parameter live, with a slider from 0 to `maximum`, so a scenario fork can change it.
+    const makeLive = (entity, key, maximum, step = maximum / 100) => {
+        const indexed = parameterIndex.findLast((entry) => entry.entity === entity && entry.key === key);
+        if (!indexed) throw new Error(`The parameter "${key}" of ${entity} could not be found.`);
+        builder.setLive(indexed.symbol, { minimum: 0, maximum, step });
+        Object.assign(indexed, { live: true, minimum: 0, maximum });
     };
 
     // ---- ports
@@ -344,9 +366,7 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
         // Live, so a scenario fork can change them (a disrupted chokepoint), with a slider up to four times the
         // busiest day.
         const busiest = Math.max(arrivals, ...(history?.samples.map((sample) => sample[1]) ?? []));
-        const maximum = niceCeiling(4 * busiest);
-        builder.setLive(indexed.symbol, { minimum: 0, maximum, step: maximum / 100 });
-        Object.assign(indexed, { live: true, minimum: 0, maximum });
+        makeLive(port.name, 'vesselArrivals', niceCeiling(4 * busiest));
     }
 
     // ---- zones (warehouses), their lanes from ports, and towns
@@ -358,10 +378,18 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
     }
     const lanes = [];
     const warehouses = new Map();
+    const laneTime = (flow) => Number(((flow.leg.hours + settings.gateHours) / 24).toFixed(4));
+    // The operator's trucks, shared among its contracted lanes by what each needs on the road: loaded and returning
+    // trucks for its flow, plus a reserve of loads, in TEU of capacity.
+    const laneNeed = (rate, leadTime) => 2 * rate * leadTime + settings.idleReserve * rate * loadDays;
+    const allocation = operator ? allocateFleet(operator, usedZones.flatMap((zone) => flowsByZone.get(zone.id).filter((flow) => flow.rate > 1e-9).map((flow) => ({
+        from: flow.port.name, to: zone.name, origin: flow.port, need: laneNeed(flow.rate, laneTime(flow))
+    })))) : {};
+    const operatorLanes = [];
     for (const zone of usedZones) {
         const zoneFlows = flowsByZone.get(zone.id).filter((flow) => flow.rate > 1e-9);
         const total = zoneDemand.get(zone.id);
-        const laneSpecs = zoneFlows.map((flow) => ({ ...flow, leadTime: Number(((flow.leg.hours + settings.gateHours) / 24).toFixed(4)) }));
+        const laneSpecs = zoneFlows.map((flow) => ({ ...flow, leadTime: laneTime(flow) }));
         const onOrder = laneSpecs.reduce((sum, lane) => sum + lane.rate * (responseDays + lane.leadTime), 0);
         const planningLeadTime = onOrder / total;
         const warehouse = place('warehouse', zone.name, {
@@ -371,17 +399,37 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
         });
         note(zone.name, 'Planned replenishment time', planningLeadTime, 'day', 'routed', 'Average order-to-arrival time over its lanes.');
         for (const [laneIndex, lane] of laneSpecs.entries()) {
-            const busyTrucks = 2 * lane.rate * lane.leadTime / truckCapacity;
-            const fleet = Math.ceil(busyTrucks + settings.idleReserve * lane.rate * loadDays / truckCapacity);
             const laneName = `Road ${lane.port.name} → ${zone.name}`;
             const kilometres = Number(lane.leg.kilometres.toFixed(1));
             const leadTime = lane.leadTime;
+            const contract = allocation[`${lane.port.name}|${zone.name}`];
+            const [fleet, fleet2] = contract ? [contract.counts[0] ?? 0, contract.counts[1] ?? 0] : [Math.ceil(laneNeed(lane.rate, leadTime) / truckCapacity), 0];
             const node = place('roadLane', laneName, {
                 name: laneName, position: between(lane.port, zone, laneIndex * 0.8),
-                initialValues: roadLaneState(lane.rate, leadTime, fleet, { truckCapacity, loadDays, responseDays }),
-                shared: { leadTime, distance: kilometres, fleetSize: fleet }
+                initialValues: roadLaneState(lane.rate, leadTime, fleet, { truckCapacity, loadDays, responseDays, fleet2, truckCapacity2 }),
+                shared: { leadTime, distance: kilometres, fleetSize: fleet, fleetSize2: fleet2 }
             });
+            if (contract) {
+                const capacity = fleet * truckCapacity + fleet2 * truckCapacity2;
+                const need = laneNeed(lane.rate, leadTime);
+                operatorLanes.push({ name: laneName, depot: contract.depot, fleet, fleet2, capacity, need });
+                // To keep up, a lane needs its loaded and returning trucks and a loading period's flow idle at the origin.
+                const minimum = 2 * lane.rate * leadTime + lane.rate * loadDays;
+                if (capacity < minimum - 1e-9) {
+                    warnings.push(`${operator.name} has ${capacity.toFixed(0)} TEU of trucks on ${laneName}, but its flow needs ${minimum.toFixed(0)} (on the road and loading): the lane will fall behind from the start.`);
+                }
+            }
             bundle('roadShipment', laneName, { origin: portNodes.get(lane.port.id), lane: node, destination: warehouse }, { shared: { orderShare: lane.rate / total } });
+            // Live, so a scenario can close the road, send trucks on a detour (a longer trip, up to four times this
+            // one), move its orders to the warehouse's other lanes, or change its fleet: up to three times the trucks
+            // it starts with.
+            makeLive(laneName, 'laneOpen', 1);
+            makeLive(laneName, 'orderShare', 1);
+            makeLive(laneName, 'leadTime', niceCeiling(4 * leadTime));
+            makeLive(laneName, 'distance', niceCeiling(4 * Math.max(kilometres, 1)));
+            const fleetMaximum = niceCeiling(Math.max(10, 3 * Math.max(fleet, fleet2)));
+            makeLive(laneName, 'fleetSize', fleetMaximum, 1);
+            makeLive(laneName, 'fleetSize2', fleetMaximum, 1);
             const how = {
                 routed: [`${lane.leg.hours.toFixed(1)} h over major roads`, 'Over major roads.'],
                 local: [`${lane.leg.hours.toFixed(1)} h estimated over local streets (the sites are close)`, 'Straight line lengthened for local streets.'],
@@ -389,8 +437,13 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
             }[lane.leg.basis];
             note(laneName, 'Travel time', leadTime, 'day', lane.leg.basis === 'routed' ? 'routed' : 'assumed', `${how[0]}, plus ${settings.gateHours} h at the gates.`);
             note(laneName, 'Distance', kilometres, 'km', lane.leg.basis === 'routed' ? 'routed' : 'assumed', how[1]);
-            note(laneName, 'Fleet', fleet, 'trucks', 'assumed', `Enough for the baseline flow of ${lane.rate.toFixed(1)} TEU/day, plus a reserve.`);
-            lanes.push({ name: laneName, from: lane.port.name, to: zone.name, rate: lane.rate, leadTime, kilometres, fleet, basis: lane.leg.basis });
+            if (contract) {
+                note(laneName, 'Fleet', fleet, 'trucks', operatorBasis, `${operator.name}'s ${operator.trucks[0].label} trucks from its ${contract.depot}, shared among its contracted lanes by what each needs${operator.synthetic ? ' (invented)' : ''}.`);
+                if (operator.trucks[1]) note(laneName, 'Fleet, second size', fleet2, 'trucks', operatorBasis, `${operator.name}'s ${operator.trucks[1].label} trucks from its ${contract.depot}${operator.synthetic ? ' (invented)' : ''}.`);
+            } else {
+                note(laneName, 'Fleet', fleet, 'trucks', 'assumed', `Enough for the baseline flow of ${lane.rate.toFixed(1)} TEU/day, plus a reserve.`);
+            }
+            lanes.push({ name: laneName, from: lane.port.name, to: zone.name, rate: lane.rate, leadTime, kilometres, fleet, fleet2, operator: Boolean(contract), basis: lane.leg.basis });
         }
         warehouses.set(zone.id, warehouse);
     }
@@ -403,6 +456,8 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
             initialValues: { backlog: townDemand * responseDays, demandRate: townDemand },
             shared: { baseDemand: townDemand }
         });
+        // Live, so a scenario can step demand up: to four times the town's own.
+        makeLive(town.name, 'baseDemand', niceCeiling(4 * townDemand));
         for (const allocation of allocations.filter((item) => item.town === town)) {
             const zoneTotal = zoneDemand.get(allocation.zone.id);
             bundle('delivery', `${town.name} from ${allocation.zone.name}`, { warehouse: warehouses.get(allocation.zone.id), zone: node }, {
@@ -412,6 +467,41 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
                 note(town.name, `Share served from ${allocation.zone.name}`, allocation.share * 100, '%', 'assumed', `By the zone's size and road access, and ${allocation.leg.hours.toFixed(1)} h by road.`);
             }
         }
+    }
+
+    if (operator && lanes.length) {
+        const [first, second] = operator.trucks;
+        const set = (symbol, value, name, unit, detail) => {
+            if (!builder.sharedParameters.some((item) => item.symbol === symbol)) return;
+            builder.setShared(symbol, value);
+            note(operator.name, name, value, unit, operatorBasis, detail);
+        };
+        const invented = operator.synthetic ? ' (invented)' : '';
+        set('truckCapacity', first.teu, `Truck capacity, ${first.label}`, 'TEU/truck', `The operator's first truck size${invented}.`);
+        set('costPerKm', first.costPerKm, `Cost per km, ${first.label}`, `${operator.currency}/km`, `The operator's running cost${invented}; it applies to every lane's trucks of this size.`);
+        set('truckDayCost', first.costPerDay, `Cost per truck per day, ${first.label}`, `${operator.currency}/day`, `The operator's fixed cost per truck${invented}.`);
+        if (second) {
+            set('truckCapacity2', second.teu, `Truck capacity, ${second.label}`, 'TEU/truck', `The operator's second truck size${invented}.`);
+            set('costPerKm2', second.costPerKm, `Cost per km, ${second.label}`, `${operator.currency}/km`, `The operator's running cost${invented}.`);
+            set('truckDayCost2', second.costPerDay, `Cost per truck per day, ${second.label}`, `${operator.currency}/day`, `The operator's fixed cost per truck${invented}.`);
+        }
+        const unmatched = operator.contracts.filter((contract) => !lanes.some((lane) => lane.from === contract.from && lane.to === contract.to));
+        if (unmatched.length) warnings.push(`${operator.name}'s contract${unmatched.length === 1 ? '' : 's'} for ${unmatched.map((contract) => `${contract.from} → ${contract.to}`).join(', ')} match${unmatched.length === 1 ? 'es' : ''} no lane in the model.`);
+    }
+
+    // The model-wide constants every component shares: the component library's defaults unless the operator set them,
+    // so every input the model runs on says where it comes from. Seconds per day is a unit, not an input.
+    const projectScope = new Map([...templates.values()].flatMap((template) => (template.sharedParameters ?? []).filter((declared) => declared.scope === 'project').map((declared) => [declared.symbol, declared])));
+    const setByOperator = new Set(operator ? ['truckCapacity', 'costPerKm', 'truckDayCost', ...(operator.trucks[1] ? ['truckCapacity2', 'costPerKm2', 'truckDayCost2'] : [])] : []);
+    const inert = {
+        outageStart: 'The berth outage window; no port has an outage unless its outage capacity is lowered.',
+        outageEnd: 'The berth outage window; no port has an outage unless its outage capacity is lowered.',
+        stepMultiplier: 'A step in every town’s demand; none while it is 1.',
+        stepDay: 'When the step in demand comes; none while its multiplier is 1.'
+    };
+    for (const shared of builder.sharedParameters) {
+        if (!projectScope.has(shared.symbol) || shared.symbol === 'secondsPerDay' || setByOperator.has(shared.symbol)) continue;
+        note('Every component', shared.name, shared.value, shared.unit, 'assumed', inert[shared.symbol] ?? 'The component library’s default, shared by every component that uses it.');
     }
 
     const document = builder.document({ days: settings.days, stepDays: settings.stepMinutes / 1440, outputDays: settings.outputMinutes / 1440 });
@@ -424,9 +514,12 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
             usual: normals.get(port.id) ?? null, shift: port.activity?.shift ?? null
         })),
         days: settings.days,
+        operator: operator ? { name: operator.name, synthetic: operator.synthetic, trucks: operator.trucks, depots: operator.depots, lanes: operatorLanes } : null,
         // The ports whose arrivals follow their history, and the dates model day 0 and the last day stand for.
         histories: [...histories].map(([id, history]) => ({ port: ports.find((port) => port.id === id).name, from: history.from, to: history.to, days: history.samples.length })),
         unusedZones: unusedZones.map((zone) => zone.name),
+        // Each town's demand as built, what a scenario that steps it up starts from.
+        towns: towns.map((town) => ({ name: town.name, demand: demand.get(town.id) })),
         // One entry per town and zone serving it: the zone's share of the town's demand.
         served: allocations.map((allocation) => ({ town: allocation.town.name, zone: allocation.zone.name, share: allocation.share, demand: allocation.share * demand.get(allocation.town.id), hours: allocation.leg.hours }))
     };

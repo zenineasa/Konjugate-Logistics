@@ -56,6 +56,9 @@ export class ModelBuilder {
             this.sharedParameters.push(created);
             byKey.set(declared.key, created);
         }
+        // What the last placement created or reused, by template key: symbols are numbered as they are taken, so
+        // `fleetSize2` may be one lane's second size or another lane's first, and only the key says which.
+        this.lastShared = byKey;
         return byKey;
     }
 

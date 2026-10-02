@@ -16,7 +16,8 @@
     "requires": [
         "projectSession",
         "parameterSchedules",
-        "scenarioForkTime"
+        "scenarioForkTime",
+        "suppliedPerParameter"
     ],
     "contributes": {
         "toolstrip": [
@@ -42,7 +43,8 @@
                     { "role": "places", "label": "Towns and cities", "accept": ["json"], "description": "OpenStreetMap towns and cities, as Overpass returns them.", "sample": "samples/places.json" },
                     { "role": "portwatchPorts", "label": "IMF PortWatch ports", "accept": ["json"], "description": "The IMF PortWatch ports around the region, as its ArcGIS service returns them." },
                     { "role": "portwatchActivity", "multiple": true, "label": "IMF PortWatch port activity", "accept": ["json"], "description": "A port's daily calls and trade estimates from IMF PortWatch, one file per port." },
-                    { "role": "sites", "label": "Your own sites", "accept": ["csv", "txt"], "description": "One row per site: name, kind (port, warehouse or customer), latitude, longitude, and optionally teuPerDay, floorArea and population." }
+                    { "role": "sites", "label": "Your own sites", "accept": ["csv", "txt"], "description": "One row per site: name, kind (port, warehouse or customer), latitude, longitude, and optionally teuPerDay, floorArea and population." },
+                    { "role": "operator", "label": "Your fleet operator", "accept": ["json"], "description": "A haulier's trucks: one or two truck sizes with their costs, depots with their trucks, and the lanes it carries by origin and destination." }
                 ]
             }
         ],
@@ -55,6 +57,41 @@
                 "runTime": 7776000,
                 "effects": ["Each port's arrivals fall by its share of ships through the chokepoint times the cut, for the chosen days."],
                 "interventions": [{ "parameter": "vesselArrivals", "target": "supplied", "samples": true }]
+            },
+            {
+                "scenarioId": "roadClosure",
+                "name": "Road closure",
+                "description": "A road lane is closed, or restricted, for a while. Its trucks wait for it to reopen, take a detour, or the warehouse orders from its other ports. Watch the warehouse's stock fall, the lane's trucks get busy and the cargo wait at the port.",
+                "forkAt": 864000,
+                "runTime": 7776000,
+                "effects": ["Closed, the lane loads only its open share; trucks already on the road finish their trips.", "On a detour, every trip takes longer over more kilometres.", "Ordering from other ports moves the lane's share of the warehouse's orders to its other lanes, which ship only what their own ports hold."],
+                "interventions": [
+                    { "parameter": "laneOpen", "target": "supplied", "samples": true },
+                    { "parameter": "orderShare", "target": "supplied", "samples": true },
+                    { "parameter": "leadTime", "target": "supplied", "samples": true },
+                    { "parameter": "distance", "target": "supplied", "samples": true }
+                ]
+            },
+            {
+                "scenarioId": "fleetChange",
+                "name": "Fleet change",
+                "description": "The trucks on some lanes change: drivers are short, or the operator adds trucks. Watch what the lanes carry, their utilisation and their costs.",
+                "forkAt": 864000,
+                "runTime": 7776000,
+                "effects": ["Each lane's fleet of each size is hired or released towards the new number over its hiring time; only idle trucks are released."],
+                "interventions": [
+                    { "parameter": "fleetSize", "target": "supplied", "samples": true },
+                    { "parameter": "fleetSize2", "target": "supplied", "samples": true }
+                ]
+            },
+            {
+                "scenarioId": "demandSurge",
+                "name": "Demand surge",
+                "description": "Towns order more for a while, as on peak days. Watch warehouses run down, trucks fill up and orders wait.",
+                "forkAt": 864000,
+                "runTime": 7776000,
+                "effects": ["Each chosen town's demand rises by the share given, for the days given."],
+                "interventions": [{ "parameter": "baseDemand", "target": "supplied", "samples": true }]
             }
         ]
     },

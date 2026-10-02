@@ -10,6 +10,7 @@ import { maximumSplitDepth, overpassRequests, overpassStatusUrl, overpassUrl, re
 import { nominatimSearchUrl, rankPlaces } from './lib/places.mjs';
 import { chokepointById, chokepointDependence, chokepointRecentUrl, chokepoints, chokepointYearlyUrl, disruptionPlan, summariseTransits } from './lib/chokepoints.mjs';
 import { portwatchActivityUrl, portwatchPortsUrl } from './lib/portwatch.mjs';
+import { closurePlan, demandPlan, fleetPlan } from './lib/scenarios.mjs';
 
 const api = window.konjugateLauncher;
 const $ = (selector) => document.querySelector(selector);
@@ -28,7 +29,9 @@ const state = {
     portVolume: null, built: null, busy: false, pendingAdd: null, rebuildTimer: null,
     // The chokepoint disruption: the user's own shares (port name -> { chokepoint id -> share }), the transits
     // fetched per chokepoint, and the last run's summary.
-    dependence: new Map(), transits: new Map(), scenario: null
+    dependence: new Map(), transits: new Map(), scenario: null,
+    // The scenario tab chosen.
+    scenarioTab: 'chokepointDisruption'
 };
 
 const escape = (text) => String(text ?? '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
@@ -415,6 +418,28 @@ function conversion() {
 }
 for (const selector of ['#tonnesPerTeuInput', '#inlandShareInput']) $(selector).addEventListener('change', () => { renderCandidates(); changed(); });
 
+// A fleet operator: none, an invented one made for the model's lanes, or the user's own from a JSON file.
+function showOperatorChoice() {
+    $('#operatorFileButton').hidden = $('#operatorSelect').value !== 'file';
+}
+$('#operatorSelect').addEventListener('change', () => {
+    showOperatorChoice();
+    // Your own needs its file first; the build asks for it if it is missing.
+    if ($('#operatorSelect').value !== 'file' || state.operatorFile) changed();
+    else $('#operatorFileButton').click();
+});
+$('#operatorFileButton').addEventListener('click', async () => {
+    try {
+        const chosen = await call(api.chooseFile(importerId, 'operator'));
+        if (!chosen.chosen) return;
+        state.operatorFile = true;
+        $('#operatorFileButton').textContent = 'Choose another file';
+        changed();
+    } catch (error) {
+        $('#buildStatus').innerHTML = notice('error', error.message);
+    }
+});
+
 document.querySelectorAll('[data-add]').forEach((button) => button.addEventListener('click', () => {
     const kind = map.addKind === button.dataset.add ? null : button.dataset.add;
     map.setAddKind(kind);
@@ -468,7 +493,7 @@ async function build({ focus = false } = {}) {
     setBusy(true);
     $('#buildStatus').innerHTML = notice('', 'Building the model: routing every lane…');
     try {
-        const answer = await call(api.runImport(importerId, { step: 'build', bbox: state.bbox, selection: selection(), settings: { portTeuPerDay: state.portVolume, arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion() } }));
+        const answer = await call(api.runImport(importerId, { step: 'build', bbox: state.bbox, selection: selection(), settings: { portTeuPerDay: state.portVolume, arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(), operator: $('#operatorSelect').value || null } }));
         if (!answer.imported) throw new Error((answer.report?.errors ?? ['The model could not be built.']).join(' '));
         state.built = answer.data;
         await call(api.openInCanvas(null, { focus, silent: true, session: sessionState() }));
@@ -493,25 +518,44 @@ function renderBuilt() {
     map.setFlows({
         lanes: built.lanes.filter((lane) => positions.has(lane.from) && positions.has(lane.to)).map((lane) => ({
             from: positions.get(lane.from), to: positions.get(lane.to), rate: lane.rate,
-            title: `${lane.name}: ${number(lane.rate, 1)} TEU/day, ${number(lane.kilometres, 1)} km, ${number(lane.leadTime * 24, 1)} h, ${lane.fleet} trucks`
+            title: `${lane.name}: ${number(lane.rate, 1)} TEU/day, ${number(lane.kilometres, 1)} km, ${number(lane.leadTime * 24, 1)} h, ${trucksOf(lane)} trucks${lane.operator ? ` (${built.operator.name})` : ''}`
         })),
         serves: built.served.filter((item) => positions.has(item.town) && positions.has(item.zone)).map((item) => ({ from: positions.get(item.zone), to: positions.get(item.town) }))
     });
     const basisLabel = { routed: 'routed', local: 'local streets', 'straight-line': 'straight line' };
-    const assumed = built.provenance.filter((entry) => entry.basis === 'assumed');
+    const count = (basis) => built.provenance.filter((entry) => entry.basis === basis).length;
+    const bases = ['assumed', 'synthetic', 'user'].filter((basis) => count(basis)).map((basis) => `${count(basis)} ${basis === 'user' ? 'yours' : basis}`);
     $('#buildResult').innerHTML = `
         <table>
-            <thead><tr><th>Road lane</th><th class="number">TEU/day</th><th class="number">km</th><th class="number">hours</th><th class="number">trucks</th></tr></thead>
-            <tbody>${built.lanes.map((lane) => `<tr><td>${escape(lane.from)} → ${escape(lane.to)} <span class="basis ${lane.basis === 'routed' ? '' : 'assumed'}">${basisLabel[lane.basis]}</span></td><td class="number">${number(lane.rate, 1)}</td><td class="number">${number(lane.kilometres, 1)}</td><td class="number">${number(lane.leadTime * 24, 1)}</td><td class="number">${lane.fleet}</td></tr>`).join('')}</tbody>
+            <thead><tr><th>Road lane</th><th class="number">TEU/day</th><th class="number">km</th><th class="number">hours</th><th class="number" title="${built.operator ? `${escape(built.operator.trucks.map((truck) => truck.label).join(' + '))}` : 'Trucks of the first size'}">trucks</th></tr></thead>
+            <tbody>${built.lanes.map((lane) => `<tr><td>${escape(lane.from)} → ${escape(lane.to)} <span class="basis ${lane.basis === 'routed' ? '' : 'assumed'}">${basisLabel[lane.basis]}</span>${lane.operator ? ` <span class="basis ${built.operator.synthetic ? 'synthetic' : 'user'}">operator</span>` : ''}</td><td class="number">${number(lane.rate, 1)}</td><td class="number">${number(lane.kilometres, 1)}</td><td class="number">${number(lane.leadTime * 24, 1)}</td><td class="number">${trucksOf(lane)}</td></tr>`).join('')}</tbody>
         </table>
+        ${renderOperator(built.operator)}
         <table>
             <thead><tr><th>Town</th><th>Served from</th><th class="number">TEU/day</th></tr></thead>
             <tbody>${built.served.map((item) => `<tr><td>${escape(item.town)}</td><td>${escape(item.zone)}</td><td class="number">${number(item.demand, 1)}</td></tr>`).join('')}</tbody>
         </table>
-        <details><summary>Where every value comes from (${built.provenance.length}; ${assumed.length} assumed)</summary>
+        <details><summary>Where every value comes from (${built.provenance.length}${bases.length ? `; ${bases.join(', ')}` : ''})</summary>
             <table><thead><tr><th>Site</th><th>Value</th><th>Basis</th></tr></thead>
-            <tbody>${built.provenance.map((entry) => `<tr><td>${escape(entry.entity)}</td><td>${escape(entry.parameter)}: ${number(entry.value, entry.unit === 'day' ? 3 : 1)} ${escape(entry.unit)}<div class="basis">${escape(entry.detail ?? '')}</div></td><td><span class="basis ${entry.basis === 'assumed' ? 'assumed' : ''}">${escape(entry.basis)}</span></td></tr>`).join('')}</tbody></table>
+            <tbody>${built.provenance.map((entry) => `<tr><td>${escape(entry.entity)}</td><td>${escape(entry.parameter)}: ${number(entry.value, entry.unit === 'day' ? 3 : 1)} ${escape(entry.unit)}<div class="basis">${escape(entry.detail ?? '')}</div></td><td><span class="basis ${['assumed', 'synthetic', 'user'].includes(entry.basis) ? entry.basis : ''}">${escape(entry.basis === 'user' ? 'yours' : entry.basis)}</span></td></tr>`).join('')}</tbody></table>
         </details>`;
+}
+
+// A lane's trucks: of the first size, plus the second when it has any.
+const trucksOf = (lane) => (lane.fleet2 ? `${lane.fleet} + ${lane.fleet2}` : `${lane.fleet}`);
+
+// The fleet operator: its trucks and costs, its depots, and each lane it carries with the capacity it has there
+// against what the lane's flow needs on the road.
+function renderOperator(operator) {
+    if (!operator) return '';
+    const label = operator.synthetic ? '<span class="basis synthetic">synthetic: invented and plausible, not a real company</span>' : '<span class="basis user">yours</span>';
+    return `
+        <p class="small"><b>${escape(operator.name)}</b> ${label}</p>
+        <table><thead><tr><th>Truck</th><th class="number">TEU</th><th class="number">per km</th><th class="number">per day</th></tr></thead>
+            <tbody>${operator.trucks.map((truck) => `<tr><td>${escape(truck.label)}</td><td class="number">${number(truck.teu)}</td><td class="number">${number(truck.costPerKm, 2)}</td><td class="number">${number(truck.costPerDay)}</td></tr>`).join('')}</tbody></table>
+        <table><thead><tr><th>Lane it carries</th><th>Depot</th><th class="number">trucks</th><th class="number" title="TEU of trucks on the lane, against what its flow keeps on the road (loaded and returning) plus a reserve of loads">capacity / need</th></tr></thead>
+            <tbody>${operator.lanes.map((lane) => `<tr><td>${escape(lane.name.replace(/^Road /, ''))}</td><td>${escape(lane.depot)}</td><td class="number">${trucksOf(lane)}</td><td class="number${lane.capacity < lane.need ? ' worse' : ''}">${number(lane.capacity)} / ${number(lane.need)}</td></tr>`).join('')}</tbody></table>
+        <p class="muted small">Costs are in ${escape(operator.currency)}. Lanes it does not carry use its truck sizes and costs too, with a fleet sized to their flow.</p>`;
 }
 
 $('#buildButton').addEventListener('click', () => build({ focus: false }));
@@ -529,7 +573,9 @@ function sessionState() {
         kept: Object.fromEntries(groups.map((group) => [group, [...state.kept[group]]])),
         changes: [...state.changes], added: state.added, built: state.built, keepInStep: $('#keepInStep').checked,
         arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(),
-        disruption: { ...disruptionSettings(), dependence: [...state.dependence], transits: [...state.transits].filter(([, value]) => value && !value.error) }, scenario: state.scenario
+        operator: $('#operatorSelect').value || null, operatorFile: Boolean(state.operatorFile),
+        disruption: { ...disruptionSettings(), dependence: [...state.dependence], transits: [...state.transits].filter(([, value]) => value && !value.error) },
+        scenarioTab: state.scenarioTab, scenarioSettings: scenarioSettings(), scenario: state.scenario
     };
 }
 
@@ -562,6 +608,12 @@ async function restoreSession() {
         $('#historyFromInput').value = saved.historyFrom ?? '';
         $('#tonnesPerTeuInput').value = saved.tonnesPerTeu ?? 10;
         $('#inlandShareInput').value = Math.round((saved.inlandShare ?? 1) * 100);
+        $('#operatorSelect').value = saved.operator ?? '';
+        state.operatorFile = Boolean(saved.operatorFile);
+        if (state.operatorFile) $('#operatorFileButton').textContent = 'Choose another file';
+        showOperatorChoice();
+        state.scenarioTab = saved.scenarioTab ?? 'chokepointDisruption';
+        state.savedScenarioSettings = saved.scenarioSettings ?? null;
         if (saved.disruption) {
             state.dependence = new Map(saved.disruption.dependence ?? []);
             state.transits = new Map(saved.disruption.transits ?? []);
@@ -605,7 +657,7 @@ function setBusy(busy) {
 if (!api) $('#regionStatus').innerHTML = notice('error', 'This window must be opened from Konjugate.');
 else restoreSession();
 
-// ---- chokepoint disruption ---------------------------------------------------------------------------------------
+// ---- the scenarios: a chokepoint disruption --------------------------------------------------------------------------
 // Fewer ships through a chokepoint for a while: each kept port's arrivals fall by its share of ships through it times
 // the cut. The shares start from geography (a port in an enclosed sea depends on the strait that closes it) and are
 // the user's to change. The scenario forks the model on the day the disruption starts.
@@ -645,6 +697,7 @@ function renderScenario({ fetchTransits = false } = {}) {
     renderDependence();
     // After a fresh build, fetch the chokepoint's transits; when restoring a session (perhaps offline), show only what was kept.
     renderTransits({ fetch: fetchTransits });
+    renderScenarioChoices();
     renderScenarioResult();
 }
 
@@ -698,53 +751,196 @@ async function renderTransits({ fetch = true } = {}) {
 
 $('#chokepointSelect').addEventListener('change', () => { renderDependence(); renderTransits(); });
 
+// ---- the scenarios: choosing one ----------------------------------------------------------------------------------
+// Four scenarios share the days they run for and the summary of what they changed: a chokepoint disruption (above), a
+// road closed, the fleet changed and demand stepped up.
+const scenarioIds = ['chokepointDisruption', 'roadClosure', 'fleetChange', 'demandSurge'];
+
+function showScenarioTab() {
+    document.querySelectorAll('#scenarioTabs button').forEach((button) => button.classList.toggle('active', button.dataset.scenario === state.scenarioTab));
+    document.querySelectorAll('.scenarioPanel').forEach((panel) => { panel.hidden = panel.dataset.panel !== state.scenarioTab; });
+}
+document.querySelectorAll('#scenarioTabs button').forEach((button) => button.addEventListener('click', () => {
+    state.scenarioTab = button.dataset.scenario;
+    showScenarioTab();
+}));
+
+// The lanes, fleets and towns each scenario can choose from, after a build.
+function renderScenarioChoices() {
+    const built = state.built;
+    const saved = state.savedScenarioSettings;
+    state.savedScenarioSettings = null;
+    const keep = (selector, value) => { if (value !== undefined && value !== null && [...$(selector).options].some((option) => option.value === value)) $(selector).value = value; };
+    // An operator that has just appeared is what a fleet change is first about: its lanes, not every lane.
+    const operatorAppeared = built.operator && ![...$('#fleetLanesSelect').options].some((option) => option.value === 'operator');
+    const previous = {
+        lane: $('#closureLaneSelect').value || saved?.closure?.lane,
+        fleet: saved?.fleet?.lanes ?? (operatorAppeared ? 'operator' : $('#fleetLanesSelect').value),
+        towns: $('#demandTownsSelect').value || saved?.demand?.towns
+    };
+    // Busiest lanes first: closing one of them matters most.
+    $('#closureLaneSelect').innerHTML = [...built.lanes].sort((a, b) => b.rate - a.rate)
+        .map((lane) => `<option value="${escape(lane.name)}">${escape(lane.from)} → ${escape(lane.to)} (${number(lane.rate)} TEU/day)</option>`).join('');
+    keep('#closureLaneSelect', previous.lane);
+    $('#fleetLanesSelect').innerHTML = (built.operator ? `<option value="operator">every lane ${escape(built.operator.name)} carries</option>` : '')
+        + '<option value="all">every lane</option>'
+        + built.lanes.map((lane) => `<option value="lane:${escape(lane.name)}">${escape(lane.from)} → ${escape(lane.to)}</option>`).join('');
+    keep('#fleetLanesSelect', previous.fleet);
+    $('#demandTownsSelect').innerHTML = '<option value="all">every town</option>'
+        + [...(built.towns ?? [])].sort((a, b) => b.demand - a.demand).map((town) => `<option value="town:${escape(town.name)}">${escape(town.name)} (${number(town.demand, 1)} TEU/day)</option>`).join('');
+    keep('#demandTownsSelect', previous.towns);
+    if (saved) {
+        if (saved.closure) {
+            $('#closureOpenInput').value = saved.closure.open ?? 0;
+            $('#closureModeSelect').value = saved.closure.mode ?? 'wait';
+            $('#detourHoursInput').value = saved.closure.detourHours ?? 3;
+        }
+        if (saved.fleet) $('#fleetChangeInput').value = saved.fleet.change ?? -30;
+        if (saved.demand) $('#demandChangeInput').value = saved.demand.change ?? 30;
+    }
+    showScenarioTab();
+    renderScenarioHints();
+}
+
+function scenarioSettings() {
+    return {
+        closure: { lane: $('#closureLaneSelect').value || null, mode: $('#closureModeSelect').value, open: Number($('#closureOpenInput').value) || 0, detourHours: Number($('#detourHoursInput').value) || 0 },
+        fleet: { lanes: $('#fleetLanesSelect').value || null, change: Number($('#fleetChangeInput').value) },
+        demand: { towns: $('#demandTownsSelect').value || null, change: Number($('#demandChangeInput').value) }
+    };
+}
+
+const fleetLanes = (choice) => {
+    const lanes = state.built.lanes;
+    if (choice === 'operator') return lanes.filter((lane) => lane.operator);
+    if (choice === 'all') return lanes;
+    return lanes.filter((lane) => `lane:${lane.name}` === choice);
+};
+// A build saved before demand could be changed has no towns: rebuild to change it.
+const demandTowns = (choice) => (choice === 'all' ? state.built.towns ?? [] : (state.built.towns ?? []).filter((town) => `town:${town.name}` === choice));
+
+// What each choice means, in a line under it.
+function renderScenarioHints() {
+    if (!state.built?.lanes?.length) return;
+    const settings = scenarioSettings();
+    const lane = state.built.lanes.find((item) => item.name === settings.closure.lane);
+    const mode = settings.closure.mode;
+    $('#closureOpenRow').hidden = mode === 'detour';
+    $('#closureDetourRow').hidden = mode !== 'detour';
+    if (lane) {
+        const others = state.built.lanes.filter((item) => item.to === lane.to && item !== lane);
+        $('#closureHint').textContent = {
+            wait: `${number(lane.leadTime * 24, 1)} h a trip today. ${lane.to}'s orders over it queue until it reopens.`,
+            detour: `${number(lane.leadTime * 24, 1)} h a trip today, over ${number(lane.kilometres)} km: the detour adds as many kilometres in proportion.`,
+            otherPorts: others.length
+                ? `${lane.to} also orders over ${others.map((item) => `${item.from} (${number(item.rate)} TEU/day)`).join(', ')}, which ship${others.length === 1 ? 's' : ''} only what ${others.length === 1 ? 'its port holds' : 'their ports hold'}.`
+                : `${lane.to} has no other lane: its orders wait for the road to reopen.`
+        }[mode];
+    }
+    const lanes = fleetLanes(settings.fleet.lanes);
+    const trucks = lanes.reduce((sum, item) => sum + item.fleet + (item.fleet2 ?? 0), 0);
+    $('#fleetHint').textContent = `${lanes.length} lane${lanes.length === 1 ? '' : 's'} with ${number(trucks)} trucks.`;
+    const towns = demandTowns(settings.demand.towns);
+    $('#demandHint').textContent = `${towns.length} town${towns.length === 1 ? '' : 's'} ordering ${number(towns.reduce((sum, town) => sum + town.demand, 0), 1)} TEU/day.`;
+}
+for (const selector of ['#closureLaneSelect', '#closureModeSelect', '#fleetLanesSelect', '#demandTownsSelect']) $(selector).addEventListener('change', renderScenarioHints);
+
+// ---- the scenarios: running one ------------------------------------------------------------------------------------
+
+// The chokepoint disruption's data, or null when the window has asked the user something first.
+function chokepointRun(settings, start, runTime, status) {
+    if (!(settings.cut > 0 && settings.cut <= 100)) throw new Error('Cut the transits by more than 0% and at most 100%.');
+    if (!(settings.delayed >= 0 && settings.delayed <= 100)) throw new Error('The share of the cargo that arrives later is from 0% to 100%.');
+    if (settings.delayed > 0 && !(settings.catchUpDays > 0)) throw new Error('The delayed cargo must arrive over at least a day.');
+    const affected = state.built.ports.map((port) => ({ port, share: sharesOf(port)[settings.chokepoint] ?? 0 })).filter((item) => item.share > 0);
+    if (!affected.length) throw new Error(`None of the ports depends on ${chokepointById.get(settings.chokepoint).name}. Set a port's share through it to run the disruption.`);
+    // A period already far below a port's usual traffic may be the disruption itself: cutting it again counts it twice.
+    const already = affected.filter((item) => item.port.usual > 0 && item.port.arrivals < 0.5 * item.port.usual);
+    const confirmation = JSON.stringify({ ...settings, ports: already.map((item) => item.port.name), from: $('#historyFromInput').value });
+    if (already.length && state.confirmedDisruption !== confirmation) {
+        const transits = state.transits.get(settings.chokepoint);
+        const busy = transits && !transits.error ? ` PortWatch counts ${number(transits.recent.containerShips, 1)} container ships a day through ${escape(chokepointById.get(settings.chokepoint).name)} lately, against ${number(transits.usual.containerShips, 1)} in ${transits.usual.year}.` : '';
+        status.innerHTML = `<div class="notice warning">The period modelled is already far below the usual traffic at ${already.map((item) => `${escape(item.port.name)} (${number(item.port.arrivals)} TEU a day against about ${number(item.port.usual)} before its history ${item.port.shift?.change < 0 ? 'fell' : 'changed'})`).join(', ')}.${busy} Cutting it again would count the disruption twice; choose a period before the break under History from, or <button class="link" type="button" id="runAnyway">run it anyway</button>.</div>`;
+        $('#runAnyway').addEventListener('click', () => {
+            state.confirmedDisruption = confirmation;
+            $('#runScenarioButton').click();
+        });
+        return null;
+    }
+    const supplied = { entities: affected.map((item) => item.port.name), samples: {} };
+    const volumes = {};
+    for (const { port, share } of affected) {
+        const plan = disruptionPlan({
+            base: port.schedule ?? port.arrivals, dependence: share, cut: settings.cut / 100,
+            start, duration: settings.days * day, forkAt: start, runTime,
+            delayedShare: settings.delayed / 100, catchUp: settings.catchUpDays * day
+        });
+        supplied.samples[port.name] = plan.path;
+        // TEU: the paths are TEU a day over seconds.
+        volumes[port.name] = { keptOut: plan.keptOut / day, caughtUp: plan.caughtUp / day };
+    }
+    const name = chokepointById.get(settings.chokepoint).name;
+    return {
+        supplied,
+        lanes: [],
+        describe: `${name}: transits cut by ${settings.cut}% from day ${settings.startDay} for ${settings.days} days, reaching ${affected.map((item) => `${item.port.name} (${Math.round(item.share * 100)}% of its ships)`).join(', ')}${settings.delayed > 0 ? `; ${settings.delayed}% of the cargo kept out arrives over the ${settings.catchUpDays} days after` : '; the cargo kept out is lost'}.`,
+        extra: { chokepoint: name, affected: affected.map((item) => ({ port: item.port.name, share: item.share, ...volumes[item.port.name] })) }
+    };
+}
+
+function scenarioRun(id, start, runTime, status) {
+    const common = { start, duration: Number($('#durationInput').value) * day, forkAt: start, runTime };
+    const days = `from day ${$('#startInput').value} for ${$('#durationInput').value} days`;
+    const settings = scenarioSettings();
+    if (id === 'chokepointDisruption') return chokepointRun(disruptionSettings(), start, runTime, status);
+    if (id === 'roadClosure') {
+        const { mode } = settings.closure;
+        const open = settings.closure.open / 100;
+        const plan = closurePlan({ lanes: state.built.lanes, closed: settings.closure.lane, mode, open, detourHours: settings.closure.detourHours, ...common });
+        const lane = state.built.lanes.find((item) => item.name === settings.closure.lane);
+        const what = mode === 'detour'
+            ? `on a detour ${days}: ${number(plan.detour.hours, 1)} h and ${number(plan.detour.kilometres)} km more each way`
+            : `${open > 0 ? `restricted to ${settings.closure.open}% of its loads` : 'closed'} ${days}: ${number(plan.teuPerDay)} TEU a day it no longer carries${plan.reroutedTo.length ? `, ordered from ${state.built.lanes.filter((item) => plan.reroutedTo.includes(item.name)).map((item) => item.from).join(' and ')} instead` : ', its orders waiting for the road to reopen'}`;
+        return { supplied: { byParameter: plan.supplied }, lanes: plan.supplied.orderShare.entities, describe: `${lane.from} → ${lane.to} ${what}.` };
+    }
+    if (id === 'fleetChange') {
+        const lanes = fleetLanes(settings.fleet.lanes);
+        const plan = fleetPlan({ lanes, change: settings.fleet.change / 100, ...common });
+        const which = settings.fleet.lanes === 'operator' ? `on the lanes ${state.built.operator.name} carries` : settings.fleet.lanes === 'all' ? 'on every lane' : `on ${lanes[0].from} → ${lanes[0].to}`;
+        return {
+            supplied: { byParameter: plan.supplied }, lanes: lanes.map((lane) => lane.name),
+            describe: `Trucks ${which} changed by ${settings.fleet.change > 0 ? '+' : ''}${settings.fleet.change}% ${days}: ${number(plan.trucks.before)} to ${number(plan.trucks.after)}.`
+        };
+    }
+    const towns = demandTowns(settings.demand.towns);
+    const plan = demandPlan({ towns, change: settings.demand.change / 100, ...common });
+    const servedBy = new Set(state.built.served.filter((item) => towns.some((town) => town.name === item.town)).map((item) => item.zone));
+    return {
+        supplied: { byParameter: plan.supplied }, lanes: state.built.lanes.filter((lane) => servedBy.has(lane.to)).map((lane) => lane.name),
+        describe: `Demand ${settings.demand.change > 0 ? 'up' : 'down'} ${Math.abs(settings.demand.change)}% in ${settings.demand.towns === 'all' ? 'every town' : towns[0].name} ${days}: ${number(Math.abs(plan.extraTeu))} TEU ${settings.demand.change > 0 ? 'more' : 'fewer'} ordered.`
+    };
+}
+
 $('#runScenarioButton').addEventListener('click', async () => {
     if (state.busy || !state.built) return;
-    const settings = disruptionSettings();
+    const id = state.scenarioTab;
     const runTime = state.built.days * day;
-    const start = settings.startDay * day;
+    const startDay = Number($('#startInput').value);
+    const start = startDay * day;
     const status = $('#scenarioStatus');
     try {
-        if (!(settings.cut > 0 && settings.cut <= 100)) throw new Error('Cut the transits by more than 0% and at most 100%.');
-        if (!(settings.startDay >= 0 && start < runTime)) throw new Error(`Start the disruption from day 0 to day ${state.built.days - 1}.`);
-        if (!(settings.days > 0)) throw new Error('The disruption must last at least a day.');
-        if (!(settings.delayed >= 0 && settings.delayed <= 100)) throw new Error('The share of the cargo that arrives later is from 0% to 100%.');
-        if (settings.delayed > 0 && !(settings.catchUpDays > 0)) throw new Error('The delayed cargo must arrive over at least a day.');
-        const affected = state.built.ports.map((port) => ({ port, share: sharesOf(port)[settings.chokepoint] ?? 0 })).filter((item) => item.share > 0);
-        if (!affected.length) throw new Error(`None of the ports depends on ${chokepointById.get(settings.chokepoint).name}. Set a port's share through it to run the disruption.`);
-        // A period already far below a port's usual traffic may be the disruption itself: cutting it again counts it twice.
-        const already = affected.filter((item) => item.port.usual > 0 && item.port.arrivals < 0.5 * item.port.usual);
-        const confirmation = JSON.stringify({ ...settings, ports: already.map((item) => item.port.name), from: $('#historyFromInput').value });
-        if (already.length && state.confirmedDisruption !== confirmation) {
-            const transits = state.transits.get(settings.chokepoint);
-            const busy = transits && !transits.error ? ` PortWatch counts ${number(transits.recent.containerShips, 1)} container ships a day through ${escape(chokepointById.get(settings.chokepoint).name)} lately, against ${number(transits.usual.containerShips, 1)} in ${transits.usual.year}.` : '';
-            status.innerHTML = `<div class="notice warning">The period modelled is already far below the usual traffic at ${already.map((item) => `${escape(item.port.name)} (${number(item.port.arrivals)} TEU a day against about ${number(item.port.usual)} before its history ${item.port.shift?.change < 0 ? 'fell' : 'changed'})`).join(', ')}.${busy} Cutting it again would count the disruption twice; choose a period before the break under History from, or <button class="link" type="button" id="runAnyway">run it anyway</button>.</div>`;
-            $('#runAnyway').addEventListener('click', () => {
-                state.confirmedDisruption = confirmation;
-                $('#runScenarioButton').click();
-            });
-            return;
-        }
-        const supplied = { entities: affected.map((item) => item.port.name), samples: {} };
-        const volumes = {};
-        for (const { port, share } of affected) {
-            const plan = disruptionPlan({
-                base: port.schedule ?? port.arrivals, dependence: share, cut: settings.cut / 100,
-                start, duration: settings.days * day, forkAt: start, runTime,
-                delayedShare: settings.delayed / 100, catchUp: settings.catchUpDays * day
-            });
-            supplied.samples[port.name] = plan.path;
-            // TEU: the paths are TEU a day over seconds.
-            volumes[port.name] = { keptOut: plan.keptOut / day, caughtUp: plan.caughtUp / day };
-        }
+        if (!(startDay >= 0 && start < runTime)) throw new Error(`Start the scenario from day 0 to day ${state.built.days - 1}.`);
+        if (!(Number($('#durationInput').value) > 0)) throw new Error('The scenario must last at least a day.');
+        const run = scenarioRun(id, start, runTime, status);
+        if (!run) return;
         setBusy(true);
         $('#runScenarioButton').disabled = true;
-        status.innerHTML = notice('', 'Running the baseline and the disruption…');
-        const answer = await call(api.runScenario('chokepointDisruption', { supplied, forkAt: start, runTime, signals: ['arrived', 'queue', 'stock', 'backlog'] }));
-        state.scenario = summariseDisruption(answer, settings, affected.map((item) => ({ port: item.port.name, share: item.share, ...volumes[item.port.name] })));
+        status.innerHTML = notice('', 'Running the baseline and the scenario…');
+        const answer = await call(api.runScenario(id, { supplied: run.supplied, forkAt: start, runTime, signals: summarySignals }));
+        state.scenario = summariseRun(answer, id, run, start);
         status.innerHTML = '';
         renderScenarioResult();
-        await call(api.openInCanvas('chokepointDisruption', { focus: false, silent: true, session: sessionState() }));
+        await call(api.openInCanvas(id, { focus: false, silent: true, session: sessionState() }));
         $('#showScenarioButton').disabled = false;
     } catch (error) {
         status.innerHTML = notice('error', error.message);
@@ -755,26 +951,61 @@ $('#runScenarioButton').addEventListener('click', async () => {
 });
 
 $('#showScenarioButton').addEventListener('click', async () => {
-    try { await call(api.openInCanvas('chokepointDisruption', { focus: true, silent: true })); } catch (error) { $('#scenarioStatus').innerHTML = notice('error', error.message); }
+    try { await call(api.openInCanvas(state.scenario?.id ?? 'chokepointDisruption', { focus: true, silent: true })); } catch (error) { $('#scenarioStatus').innerHTML = notice('error', error.message); }
 });
 
 api?.onProgress?.((progress) => {
     if (state.busy && progress?.message && !$('#stepScenario').hidden && $('#scenarioStatus').textContent) $('#scenarioStatus').innerHTML = notice('', progress.message);
 });
 
-// What the run showed, kept small enough to save with the session: per port the arrivals lost, per warehouse the
-// lowest stock, per town the highest backlog, each against the baseline.
-function summariseDisruption(answer, settings, affected) {
+// ---- the scenarios: what a run showed --------------------------------------------------------------------------------
+
+const summarySignals = ['arrived', 'queue', 'waitDays', 'stock', 'backlog', 'delivered', 'ordered', 'arriving', 'utilisation', 'transportCost', 'fleetCost', 'holdingCost', 'backlogCost'];
+
+// What the run showed, from the day the scenario starts to the end of the run, kept small enough to save with the
+// session: the share of orders delivered and the costs, per port the longest anchorage wait, per lane what it carried
+// and how busy its trucks were, per warehouse the lowest stock and per town the highest backlog, each against the
+// baseline.
+function summariseRun(answer, id, run, start) {
     const [baseline, scenario] = answer.branches.map((branch) => branch.series);
-    const last = (series) => series?.at(-1)?.[1] ?? 0;
-    const extreme = (series, pick) => (series?.length ? series.reduce((best, point) => (pick(point[1], best[1]) ? point : best)) : [0, 0]);
     const built = state.built;
-    const portNames = built.ports.map((port) => port.name);
-    const warehouseNames = [...new Set(built.lanes.map((lane) => lane.to))];
+    const from = (series) => series?.filter((point) => point[0] >= start - 1) ?? [];
+    const at = (series, time) => (series?.length ? series.reduce((best, point) => (Math.abs(point[0] - time) < Math.abs(best[0] - time) ? point : best))[1] : 0);
+    // How much a running total grew from the start of the scenario to the end of the run.
+    const grew = (series) => (series?.length ? series.at(-1)[1] - at(series, start) : 0);
+    const extreme = (series, pick) => {
+        const points = from(series);
+        return points.length ? points.reduce((best, point) => (pick(point[1], best[1]) ? point : best)) : [0, 0];
+    };
+    const mean = (series) => {
+        const points = from(series);
+        return points.length ? points.reduce((sum, point) => sum + point[1], 0) / points.length : 0;
+    };
+    const both = (pick) => ({ baseline: pick(baseline), scenario: pick(scenario) });
+    const total = (series, names, symbol) => names.reduce((sum, name) => sum + grew(series[name]?.[symbol]), 0);
     const townNames = [...new Set(built.served.map((item) => item.town))];
+    const laneNames = built.lanes.map((lane) => lane.name);
+    const warehouseNames = [...new Set(built.lanes.map((lane) => lane.to))];
+    const days = (built.days * day - start) / day;
     return {
-        settings, affected, chokepoint: chokepointById.get(settings.chokepoint).name,
-        ports: portNames.map((name) => ({ name, lost: last(baseline[name]?.arrived) - last(scenario[name]?.arrived) })),
+        id, describe: run.describe, start: start / day, days, ...run.extra,
+        totals: {
+            // Fill rate: of what was ordered since the scenario began, the share delivered.
+            fill: both((series) => total(series, townNames, 'delivered') / Math.max(1e-9, total(series, townNames, 'ordered'))),
+            transport: both((series) => total(series, laneNames, 'transportCost')),
+            fleet: both((series) => total(series, laneNames, 'fleetCost')),
+            holding: both((series) => total(series, warehouseNames, 'holdingCost')),
+            backlog: both((series) => total(series, townNames, 'backlogCost'))
+        },
+        ports: built.ports.map((port) => ({
+            name: port.name, lost: grew(baseline[port.name]?.arrived) - grew(scenario[port.name]?.arrived),
+            wait: { baseline: extreme(baseline[port.name]?.waitDays, (value, best) => value > best)[1], scenario: extreme(scenario[port.name]?.waitDays, (value, best) => value > best)[1] }
+        })),
+        // The lanes the scenario changed (or whose warehouses it reaches), else the busiest.
+        lanes: (run.lanes.length ? run.lanes : [...laneNames].sort((a, b) => mean(scenario[b]?.utilisation) - mean(scenario[a]?.utilisation)).slice(0, 6)).map((name) => ({
+            name, carried: { baseline: mean(baseline[name]?.arriving), scenario: mean(scenario[name]?.arriving) },
+            busiest: { baseline: extreme(baseline[name]?.utilisation, (value, best) => value > best)[1], scenario: extreme(scenario[name]?.utilisation, (value, best) => value > best)[1] }
+        })),
         warehouses: warehouseNames.map((name) => {
             const low = extreme(scenario[name]?.stock, (value, best) => value < best);
             return { name, baseline: extreme(baseline[name]?.stock, (value, best) => value < best)[1], low: low[1], day: low[0] / day };
@@ -790,21 +1021,43 @@ function renderScenarioResult() {
     const result = state.scenario;
     $('#showScenarioButton').disabled = !result;
     if (!result) { $('#scenarioResult').innerHTML = ''; return; }
-    const { settings } = result;
-    const worse = (now, before) => (now > before * 1.01 + 0.5 ? ' class="number worse"' : ' class="number"');
-    const towns = [...result.towns].sort((a, b) => (b.peak - b.baseline) - (a.peak - a.baseline)).slice(0, 8);
-    $('#scenarioResult').innerHTML = `
-        <p class="small">${escape(result.chokepoint)}: transits cut by ${settings.cut}% from day ${settings.startDay} for ${settings.days} days, reaching ${result.affected.map((item) => `${escape(item.port)} (${Math.round(item.share * 100)}% of its ships)`).join(', ')}${settings.delayed > 0 ? `; ${settings.delayed}% of the cargo kept out arrives over the ${settings.catchUpDays} days after` : '; the cargo kept out is lost'}.</p>
+    // A session saved before the other scenarios kept only the chokepoint disruption's summary.
+    const id = result.id ?? 'chokepointDisruption';
+    const describe = result.describe ?? `${result.chokepoint}: transits cut by ${result.settings.cut}% from day ${result.settings.startDay} for ${result.settings.days} days.`;
+    // Worse when higher (cost, backlog, wait), or when lower (stock, fill rate).
+    // Marked when it is worse by more than 1% of the baseline and more than `noise` (half a TEU, a hundredth of a day).
+    const worse = (now, before, { lowerIsWorse = false, noise = 0.5 } = {}) => {
+        const by = lowerIsWorse ? before - now : now - before;
+        return by > Math.max(0.01 * Math.abs(before), noise) ? ' class="number worse"' : ' class="number"';
+    };
+    const percent = (value) => `${number(value * 100, 1)}%`;
+    const totals = result.totals ? `
+        <table><thead><tr><th>Since day ${number(result.start)}</th><th class="number">Scenario</th><th class="number">baseline</th></tr></thead>
+            <tbody>
+                <tr><td>Orders delivered</td><td${worse(result.totals.fill.scenario, result.totals.fill.baseline, { lowerIsWorse: true, noise: 0.001 })}>${percent(result.totals.fill.scenario)}</td><td class="number">${percent(result.totals.fill.baseline)}</td></tr>
+                ${[['transport', 'Transport cost'], ['fleet', 'Fleet cost'], ['holding', 'Holding cost'], ['backlog', 'Backlog cost']].map(([key, label]) => `<tr><td>${label}</td><td${worse(result.totals[key].scenario, result.totals[key].baseline)}>${number(result.totals[key].scenario)}</td><td class="number">${number(result.totals[key].baseline)}</td></tr>`).join('')}
+            </tbody></table>` : '';
+    const ports = id === 'chokepointDisruption' ? `
         <table><thead><tr><th>Port</th><th class="number">Kept out (TEU)</th><th class="number">arrived later</th><th class="number">never arrived</th></tr></thead>
             <tbody>${result.ports.map((port) => {
                 const affected = result.affected.find((item) => item.port === port.name);
                 return `<tr><td>${escape(port.name)}</td><td class="number">${affected?.keptOut !== undefined ? number(affected.keptOut) : number(port.lost)}</td><td class="number">${number(affected?.caughtUp ?? 0)}</td><td class="number">${number(port.lost)}</td></tr>`;
-            }).join('')}</tbody></table>
+            }).join('')}</tbody></table>` : '';
+    const waits = result.ports.some((port) => port.wait) ? `
+        <table><thead><tr><th>Port</th><th class="number">Longest wait (days)</th><th class="number">baseline</th></tr></thead>
+            <tbody>${result.ports.map((port) => `<tr><td>${escape(port.name)}</td><td${worse(port.wait.scenario, port.wait.baseline, { noise: 0.01 })}>${number(port.wait.scenario, 2)}</td><td class="number">${number(port.wait.baseline, 2)}</td></tr>`).join('')}</tbody></table>` : '';
+    const lanes = result.lanes?.length ? `
+        <table><thead><tr><th>Lane</th><th class="number">TEU/day carried</th><th class="number">baseline</th><th class="number">trucks busy, peak</th></tr></thead>
+            <tbody>${result.lanes.map((lane) => `<tr><td>${escape(lane.name.replace(/^Road /, ''))}</td><td class="number">${number(lane.carried.scenario, 1)}</td><td class="number">${number(lane.carried.baseline, 1)}</td><td${worse(lane.busiest.scenario, lane.busiest.baseline, { noise: 0.01 })}>${percent(lane.busiest.scenario)}</td></tr>`).join('')}</tbody></table>` : '';
+    const towns = [...result.towns].sort((a, b) => (b.peak - b.baseline) - (a.peak - a.baseline)).slice(0, 8);
+    $('#scenarioResult').innerHTML = `
+        <p class="small">${escape(describe)}</p>
+        ${totals}${ports}${waits}${lanes}
         <table><thead><tr><th>Warehouse</th><th class="number">Lowest stock</th><th class="number">baseline</th><th class="number">day</th></tr></thead>
-            <tbody>${result.warehouses.map((item) => `<tr><td>${escape(item.name)}</td><td${worse(item.baseline, item.low)}>${number(item.low)}</td><td class="number">${number(item.baseline)}</td><td class="number">${number(item.day, 1)}</td></tr>`).join('')}</tbody></table>
+            <tbody>${result.warehouses.map((item) => `<tr><td>${escape(item.name)}</td><td${worse(item.low, item.baseline, { lowerIsWorse: true })}>${number(item.low)}</td><td class="number">${number(item.baseline)}</td><td class="number">${number(item.day, 1)}</td></tr>`).join('')}</tbody></table>
         <table><thead><tr><th>Town</th><th class="number">Highest backlog</th><th class="number">baseline</th><th class="number">day</th></tr></thead>
             <tbody>${towns.map((item) => `<tr><td>${escape(item.name)}</td><td${worse(item.peak, item.baseline)}>${number(item.peak)}</td><td class="number">${number(item.baseline)}</td><td class="number">${number(item.day, 1)}</td></tr>`).join('')}</tbody></table>
-        <p class="muted small">The forked run is in the canvas beside the baseline; Show in Konjugate brings it forward.</p>`;
+        <p class="muted small">Costs are in the model's cost units, counted from the day the scenario starts. The forked run is in the canvas beside the baseline; Show in Konjugate brings it forward.</p>`;
 }
 
 // ---- the period of history -----------------------------------------------------------------------------------------

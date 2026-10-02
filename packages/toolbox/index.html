@@ -79,30 +79,81 @@
                 </div>
                 <label class="row small" title="The days of PortWatch history the model uses: the arrivals it replays, or the days it averages over. Empty: the latest days (replayed), or the whole year fetched (averaged).">History from
                     <input type="date" id="historyFromInput"> <span class="muted" id="historyFromHint">empty: the latest days</span></label>
+                <div class="row small" title="A haulier's trucks: its truck sizes and costs become the region's, and the lanes it carries run on its trucks. An invented operator is plausible, and labelled synthetic wherever it is used.">
+                    <label>Fleet operator
+                        <select id="operatorSelect">
+                            <option value="">None: each lane sized to its flow</option>
+                            <option value="synthetic">An invented operator (synthetic)</option>
+                            <option value="file">Your own (JSON)</option>
+                        </select></label>
+                    <button class="link" type="button" id="operatorFileButton" hidden>Choose its file</button>
+                </div>
                 <label class="row small"><input type="checkbox" id="keepInStep" checked> Keep the canvas in step with changes here</label>
                 <div id="buildStatus"></div>
                 <div id="buildResult"></div>
             </section>
 
             <section class="step" id="stepScenario" hidden>
-                <h2><span class="stepNumber">5</span> Chokepoint disruption</h2>
-                <p class="muted small">Fewer ships through a strait or canal for a while: the ports that depend on it receive less, and the model is forked from the day it starts.</p>
-                <label class="row small">Chokepoint <select id="chokepointSelect"></select></label>
-                <div class="transits small" id="transitSummary" hidden></div>
-                <div class="row small">
-                    <label>Cut transits by <input type="number" id="cutInput" min="0" max="100" step="5" value="50"> %</label>
+                <h2><span class="stepNumber">5</span> Scenarios</h2>
+                <p class="muted small">Each scenario forks the model on the day it starts and runs beside the baseline.</p>
+                <div class="tabs" role="tablist" id="scenarioTabs">
+                    <button type="button" role="tab" data-scenario="chokepointDisruption" class="active">Chokepoint</button>
+                    <button type="button" role="tab" data-scenario="roadClosure">Road closure</button>
+                    <button type="button" role="tab" data-scenario="fleetChange">Fleet</button>
+                    <button type="button" role="tab" data-scenario="demandSurge">Demand</button>
+                </div>
+                <div class="scenarioPanel" data-panel="chokepointDisruption">
+                    <p class="muted small">Fewer ships through a strait or canal for a while: the ports that depend on it receive less.</p>
+                    <label class="row small">Chokepoint <select id="chokepointSelect"></select></label>
+                    <div class="transits small" id="transitSummary" hidden></div>
+                    <div class="row small">
+                        <label>Cut transits by <input type="number" id="cutInput" min="0" max="100" step="5" value="50"> %</label>
+                    </div>
+                    <div class="row small" title="Cargo kept out may be lost (diverted elsewhere, cancelled) or only delayed: ships that wait or sail around arrive after the disruption ends. The delayed part arrives evenly over the days given, on top of the usual traffic.">
+                        <label>Of the cargo kept out, <input type="number" id="delayedInput" min="0" max="100" step="10" value="0"> % arrives later,</label>
+                        <label>over <input type="number" id="catchUpInput" min="1" step="1" value="20"> days</label>
+                    </div>
+                    <table class="dependence" id="dependenceTable"></table>
+                </div>
+                <div class="scenarioPanel" data-panel="roadClosure" hidden>
+                    <p class="muted small">A road lane closed, or restricted, for a while. Trucks already on it finish their trips.</p>
+                    <label class="row small">Lane <select id="closureLaneSelect"></select></label>
+                    <label class="row small" title="Wait: orders queue on the lane until it reopens, and the cargo waits at the port. Detour: the lane stays open, but every trip is longer. Other ports: the warehouse orders over its other lanes, which ship only what their own ports hold; the closed lane's cargo still waits at its port.">Its trucks
+                        <select id="closureModeSelect">
+                            <option value="wait">wait for it to reopen</option>
+                            <option value="detour">take a detour</option>
+                            <option value="otherPorts">the warehouse orders from its other ports</option>
+                        </select></label>
+                    <div class="row small" id="closureOpenRow">
+                        <label>Open <input type="number" id="closureOpenInput" min="0" max="95" step="5" value="0"> % of the way</label>
+                    </div>
+                    <div class="row small" id="closureDetourRow" hidden>
+                        <label>The detour adds <input type="number" id="detourHoursInput" min="0.5" max="72" step="0.5" value="3"> hours each way</label>
+                    </div>
+                    <div class="muted small" id="closureHint"></div>
+                </div>
+                <div class="scenarioPanel" data-panel="fleetChange" hidden>
+                    <p class="muted small">Fewer trucks (drivers short, trucks off the road) or more (the operator hires). Trucks are hired or released over a few days; only idle ones are released.</p>
+                    <label class="row small">On <select id="fleetLanesSelect"></select></label>
+                    <div class="row small">
+                        <label>Change the trucks by <input type="number" id="fleetChangeInput" min="-100" max="300" step="5" value="-30"> %</label>
+                    </div>
+                    <div class="muted small" id="fleetHint"></div>
+                </div>
+                <div class="scenarioPanel" data-panel="demandSurge" hidden>
+                    <p class="muted small">Towns order more for a while, as on peak days.</p>
+                    <label class="row small">In <select id="demandTownsSelect"></select></label>
+                    <div class="row small">
+                        <label>Raise demand by <input type="number" id="demandChangeInput" min="-90" max="300" step="5" value="30"> %</label>
+                    </div>
+                    <div class="muted small" id="demandHint"></div>
                 </div>
                 <div class="row small">
                     <label>from day <input type="number" id="startInput" min="0" step="1" value="10"></label>
                     <label>for <input type="number" id="durationInput" min="1" step="1" value="30"> days</label>
                 </div>
-                <div class="row small" title="Cargo kept out may be lost (diverted elsewhere, cancelled) or only delayed: ships that wait or sail around arrive after the disruption ends. The delayed part arrives evenly over the days given, on top of the usual traffic.">
-                    <label>Of the cargo kept out, <input type="number" id="delayedInput" min="0" max="100" step="10" value="0"> % arrives later,</label>
-                    <label>over <input type="number" id="catchUpInput" min="1" step="1" value="20"> days</label>
-                </div>
-                <table class="dependence" id="dependenceTable"></table>
                 <div class="row">
-                    <button class="button primary" type="button" id="runScenarioButton">Run the disruption</button>
+                    <button class="button primary" type="button" id="runScenarioButton">Run the scenario</button>
                     <button class="button" type="button" id="showScenarioButton" disabled>Show in Konjugate</button>
                 </div>
                 <div id="scenarioStatus"></div>

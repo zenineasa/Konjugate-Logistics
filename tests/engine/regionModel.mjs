@@ -6,6 +6,9 @@
 //   - berth outage at the busiest port: ships queue at anchorage, and the queue clears afterwards
 //   - arrivals that follow the port's IMF PortWatch history (a stored parameter schedule): each day's
 //     arrivals are that day's imports, and the busy days queue ships beyond the berths' capacity
+//   - with an invented fleet operator (two truck sizes), a baseline that holds still, and the window's scenarios
+//     followed as stored schedules from day 0: a road closed (its warehouse's other lane takes its orders), the
+//     operator's trucks halved, and demand stepped up
 // Both must conserve containers, conserve every road lane's trucks, and keep each warehouse's on-order
 // count equal to what waits on and travels along its lanes.
 //
@@ -18,6 +21,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { defaultSelection, discoverRegion } from '../../packages/toolbox/lib/discovery.mjs';
+import { generateOperator } from '../../packages/toolbox/lib/operator.mjs';
+import { closurePlan, demandPlan, fleetPlan } from '../../packages/toolbox/lib/scenarios.mjs';
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
 import { createRouter } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { konjugateModule } from '../../scripts/konjugatePaths.mjs';
@@ -75,7 +80,7 @@ const sum = (arrays) => arrays[0].map((_, index) => arrays.reduce((total, values
 const maxDrift = (values) => Math.max(...values.map((value) => Math.abs(value - values[0])));
 const hour = (days) => Math.round(days * 24);
 
-function checkInvariants({ name, document, series }) {
+function checkInvariants({ name, document, series }, { fleetsChange = false } = {}) {
     const ofType = (type) => document.nodes.filter((node) => node.type === type).map((node) => node.name);
     const ports = ofType('Port');
     const lanes = ofType('Road lane');
@@ -88,9 +93,11 @@ function checkInvariants({ name, document, series }) {
         ...lanes.map(loaded), ...warehouses.map((warehouse) => series(`${warehouse}.stock`)), ...towns.map((town) => series(`${town}.delivered`))
     ]);
     assert.ok(maxDrift(containers) < 1e-6, `${name}: containers must be conserved (drift ${maxDrift(containers)} TEU).`);
-    for (const lane of lanes) {
-        const trucks = sum([series(`${lane}.idleTrucks`), series(`${lane}.returning`), loaded(lane).map((value) => value / 2)]);
-        assert.ok(maxDrift(trucks) < 1e-6, `${name}: ${lane} must keep its trucks (drift ${maxDrift(trucks)}).`);
+    for (const lane of fleetsChange ? [] : lanes) {
+        for (const size of ['', '2']) {
+            const trucks = sum([series(`${lane}.idleTrucks${size}`), series(`${lane}.returning${size}`), series(`${lane}.loadedTrucks${size}`)]);
+            assert.ok(maxDrift(trucks) < 1e-6, `${name}: ${lane} must keep its trucks${size ? ' of the second size' : ''} (drift ${maxDrift(trucks)}).`);
+        }
     }
     const nodeName = new Map(document.nodes.map((node) => [node.id, node.name]));
     for (const warehouse of warehouses) {
@@ -152,7 +159,82 @@ try {
     const historyBerths = history.built.parameterIndex.find((entry) => entry.key === 'berthCapacity' && entry.entity === 'Port Alder').value;
     const historyQueue = history.series('Port Alder.queue');
     assert.ok(240 > historyBerths && Math.max(...historyQueue) > historyQueue[0] + 0.5 * (240 - historyBerths), `history: a 240 TEU day beyond ${historyBerths.toFixed(0)} TEU of berths should queue ships (largest queue ${Math.max(...historyQueue)}).`);
-    console.log(`✓ region model from the synthetic region: ${baseline.document.nodes.length} nodes and ${baseline.document.edges.length} edges hold still in the baseline; a berth outage at Port Alder queues ${Math.round(queue[hour(50)]).toLocaleString('en')} TEU; arrivals following PortWatch history match it day by day and queue ships on the busy days; containers, trucks and orders conserved.`);
+
+    // ---- the operator and the window's scenarios, each followed from day 0 as a stored schedule.
+    const plainBuild = buildRegionModel({ builder: new ModelBuilder(templates), selection: defaultSelection(candidates), route });
+    const operator = generateOperator(plainBuild, new Map(defaultSelection(candidates).ports.map((port) => [port.name, port])));
+    // Each supplied path becomes a schedule on that entity's own parameter.
+    const follow = (byParameter) => (builder, built) => {
+        for (const [key, { entities, samples }] of Object.entries(byParameter)) {
+            for (const entity of entities) {
+                const indexed = built.parameterIndex.find((entry) => entry.key === key && entry.entity === entity);
+                assert.ok(indexed?.live, `${key} of ${entity} must be live for a scenario to change it.`);
+                builder.sharedParameters.find((item) => item.id === indexed.sharedParameterId).schedule = { interpolation: 'linear', samples: samples[entity] };
+            }
+        }
+    };
+    const window = { start: 5 * day, duration: 10 * day, forkAt: 0, runTime: 30 * day };
+    const withOperator = await run('operator', { days: 30, options: { operator } });
+    checkInvariants(withOperator);
+    for (const lane of withOperator.built.lanes) {
+        for (const symbol of ['idleTrucks', 'idleTrucks2', 'loaded1', 'requested']) {
+            const values = withOperator.series(`${lane.name}.${symbol}`);
+            assert.ok(maxDrift(values) < 1e-6 * Math.max(1, Math.abs(values[0])), `operator: ${lane.name}.${symbol} should hold still (drift ${maxDrift(values)}).`);
+        }
+    }
+    const contracted = withOperator.built.lanes.filter((lane) => lane.operator);
+    assert.ok(contracted.length >= 2 && contracted.every((lane) => lane.fleet2 > 0), 'operator: it carries lanes in both truck sizes.');
+    assert.ok(withOperator.series(`${contracted[0].name}.fleetCost`).at(-1) > 0, 'operator: fleet cost should accrue.');
+
+    // A road closed for 10 days at a warehouse with another lane, three ways.
+    const closed = withOperator.built.lanes.find((lane) => withOperator.built.lanes.some((other) => other !== lane && other.to === lane.to));
+    assert.ok(closed, 'The synthetic region has a warehouse with two lanes.');
+    const sibling = withOperator.built.lanes.find((lane) => lane !== closed && lane.to === closed.to);
+    const carried = (result, lane, from, to) => result.series(`${lane}.arriving`).slice(hour(from), hour(to)).reduce((total, value) => total + value, 0) / (hour(to) - hour(from));
+    const closure = (mode, extra = {}) => run(`closure-${mode}`, { days: 30, options: { operator }, change: follow(closurePlan({ lanes: withOperator.built.lanes, closed: closed.name, mode, ...extra, ...window }).supplied) });
+    const stockAt = (result, at) => result.series(`${closed.to}.stock`)[hour(at)];
+    // Its trucks wait: the lane carries nothing, the cargo waits in its port's yard, and once it reopens the lane
+    // works through the orders that queued, faster than its usual flow.
+    const waited = await closure('wait');
+    checkInvariants(waited);
+    assert.ok(carried(waited, closed.name, 8, 15) < 0.01 * closed.rate, `closure: ${closed.name} should carry nothing once its trucks are home (got ${carried(waited, closed.name, 8, 15)} TEU/day).`);
+    const yardGrew = waited.series(`${closed.from}.stock`)[hour(15)] - withOperator.series(`${closed.from}.stock`)[hour(15)];
+    assert.ok(yardGrew > 0.64 * closed.rate * 10, `closure: about ${(closed.rate * 10).toFixed(0)} TEU should wait in ${closed.from}'s yard by day 15 (got ${yardGrew.toFixed(0)} more than the baseline).`);
+    assert.ok(carried(waited, closed.name, 15, 20) > 1.05 * closed.rate, `closure: ${closed.name} should catch up after it reopens (got ${carried(waited, closed.name, 15, 20)} against ${closed.rate}).`);
+    // A detour of 6 hours each way: the lane keeps carrying, with more of its trucks on the road, at a higher cost.
+    const detoured = await closure('detour', { detourHours: 6 });
+    checkInvariants(detoured);
+    const cost = (result) => result.series(`${closed.name}.transportCost`)[hour(15)] - result.series(`${closed.name}.transportCost`)[hour(5)];
+    assert.ok(cost(detoured) > 1.2 * cost(withOperator), `detour: ${closed.name} should cost more per day (got ${cost(detoured)} against ${cost(withOperator)}).`);
+    assert.ok(stockAt(detoured, 15) > stockAt(waited, 15), `detour: ${closed.to} should hold more stock than when the trucks wait.`);
+    // The warehouse orders from its other port instead: that lane carries more, but only what its port's yard and
+    // trucks allow, and the orders left there hold the warehouse's own lane back after the road reopens.
+    const otherPorts = await closure('otherPorts');
+    checkInvariants(otherPorts);
+    assert.ok(carried(otherPorts, sibling.name, 8, 15) > 1.2 * sibling.rate, `other ports: ${sibling.name} should carry more than its own flow (got ${carried(otherPorts, sibling.name, 8, 15)} against ${sibling.rate}).`);
+    assert.ok(stockAt(otherPorts, 29) < stockAt(waited, 29), `other ports: ${closed.to} should recover more slowly than when the trucks wait (${stockAt(otherPorts, 29).toFixed(0)} against ${stockAt(waited, 29).toFixed(0)} on day 29).`);
+
+    // The operator's trucks halved for 10 days: idle trucks are released first, so its lanes run short.
+    const fleet = fleetPlan({ lanes: contracted, change: -0.5, ...window });
+    const fleetRun = await run('fleet', { days: 30, options: { operator }, change: follow(fleet.supplied) });
+    checkInvariants(fleetRun, { fleetsChange: true });
+    const trucksOn = (result, lane, at) => ['', '2'].reduce((total, size) => total + ['idleTrucks', 'returning', 'loadedTrucks'].reduce((count, symbol) => count + result.series(`${lane}.${symbol}${size}`)[hour(at)], 0), 0);
+    const lane = contracted[0];
+    assert.ok(trucksOn(fleetRun, lane.name, 15) < 0.75 * (lane.fleet + lane.fleet2), `fleet: ${lane.name} should be down towards half its ${lane.fleet + lane.fleet2} trucks by day 15 (got ${trucksOn(fleetRun, lane.name, 15)}).`);
+    assert.ok(carried(fleetRun, lane.name, 10, 15) < 0.9 * lane.rate, `fleet: ${lane.name} should carry less than its flow (got ${carried(fleetRun, lane.name, 10, 15)} against ${lane.rate}).`);
+    assert.ok(Math.abs(trucksOn(fleetRun, lane.name, 30) - (lane.fleet + lane.fleet2)) < 1, `fleet: ${lane.name} should have hired its trucks back by day 30 (got ${trucksOn(fleetRun, lane.name, 30)}).`);
+
+    // Demand up by half everywhere for 10 days: towns' backlogs grow, and the extra is delivered afterwards.
+    const demand = demandPlan({ towns: withOperator.built.towns, change: 0.5, ...window });
+    const demandRun = await run('demand', { days: 30, options: { operator }, change: follow(demand.supplied) });
+    checkInvariants(demandRun);
+    const towns = withOperator.built.towns;
+    const ordered = towns.reduce((total, town) => total + demandRun.series(`${town.name}.ordered`).at(-1) - withOperator.series(`${town.name}.ordered`).at(-1), 0);
+    assert.ok(Math.abs(ordered - demand.extraTeu) < 0.01 * demand.extraTeu, `demand: ${demand.extraTeu.toFixed(0)} TEU more should be ordered (got ${ordered}).`);
+    const backlog = (result, at) => towns.reduce((total, town) => total + result.series(`${town.name}.backlog`)[hour(at)], 0);
+    assert.ok(backlog(demandRun, 15) > backlog(withOperator, 15) * 1.2, 'demand: orders should wait at the peak.');
+
+    console.log(`✓ region model from the synthetic region: ${baseline.document.nodes.length} nodes and ${baseline.document.edges.length} edges hold still in the baseline; a berth outage at Port Alder queues ${Math.round(queue[hour(50)]).toLocaleString('en')} TEU; arrivals following PortWatch history match it day by day and queue ships on the busy days; an invented operator's two truck sizes hold still; a closed road's trucks wait, detour or order elsewhere (the warehouse holds ${stockAt(waited, 29).toFixed(0)}, ${stockAt(detoured, 29).toFixed(0)} and ${stockAt(otherPorts, 29).toFixed(0)} TEU on day 29); halving the operator's trucks slows ${lane.name.replace(/^Road /, '')} to ${carried(fleetRun, lane.name, 10, 15).toFixed(1)} TEU/day; a demand surge orders ${demand.extraTeu.toFixed(0)} TEU more; containers, trucks and orders conserved.`);
 } finally {
     await rm(directory, { recursive: true, force: true });
 }
