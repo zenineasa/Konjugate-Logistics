@@ -19,6 +19,8 @@ const helpers = {
     reconcileEquationBindings: equationHelpers.reconcileEquationBindings,
     validateEquationLatex: equationHelpers.validateEquationLatex,
     async readPackageJson(relativePath) {
+        // The bundled Natural Earth tiles are files of the toolbox package itself.
+        if (/^geography\/[\w.]+\.json$/.test(relativePath)) return JSON.parse(await readFile(join(logisticsRoot, 'packages', 'toolbox', relativePath), 'utf8'));
         const id = relativePath.match(/^templates\/(\w+)\.json$/)?.[1];
         const contribution = plugin.contributes.find((entry) => entry.kind === 'component' && entry.componentId === id);
         if (!contribution) throw new Error(`No ${relativePath} in the package.`);
@@ -224,4 +226,21 @@ test('every value a scenario supplies, at the window\'s limits, fits its paramet
             }
         }
     }
+});
+
+test('a fetched region gets land, coast and borders around it from the bundled Natural Earth tiles; the sample region none', async () => {
+    // The synthetic answers with the box of Dubai and 25 km around it: the geography depends only on the box.
+    const dubai = { south: 24.3985, west: 54.4675, north: 25.7496, east: 56.4532 };
+    const fetched = await importRegion({ files: regionFiles(), helpers, options: { bbox: dubai } });
+    const { geography, attribution } = fetched.data.map;
+    assert.ok(geography.land.length > 0 && geography.coast.length > 0, 'land and coast');
+    assert.ok(geography.borders.some((border) => border.settled), 'the UAE and Oman border, settled');
+    assert.match(attribution, /Coast and borders: Natural Earth$/);
+    // Land is cut to the region and a margin of half its span; lines keep one point beyond that, so they meet across tiles.
+    const within = (margin) => (point) => point[0] > dubai.south - margin && point[0] < dubai.north + margin && point[1] > dubai.west - margin && point[1] < dubai.east + margin;
+    assert.ok(geography.land.flat().every(within(1.01)), 'land cut to the region and its margin');
+    assert.ok([...geography.coast.flat(), ...geography.borders.flatMap((border) => border.points)].every(within(2)), 'lines near it');
+    const sample = await importRegion({ files: regionFiles(), helpers, options: {} });
+    assert.equal(sample.data.map.geography, undefined, 'the made-up sample region has no place on Earth');
+    assert.doesNotMatch(sample.data.map.attribution, /Natural Earth/);
 });

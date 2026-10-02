@@ -63,7 +63,11 @@ export class MapView {
         this.svg.setAttribute('viewBox', `${cx - width * unit / 2} ${cy - height * unit / 2} ${width * unit} ${height * unit}`);
         this.drawSites();
         this.drawFlows();
-        this.base.querySelectorAll('.scaled').forEach((node) => node.setAttribute('stroke-width', Number(node.dataset.width) * unit));
+        this.base.querySelectorAll('.scaled').forEach((node) => {
+            node.setAttribute('stroke-width', Number(node.dataset.width) * unit);
+            // A dash pattern in screen pixels, like the width.
+            if (node.dataset.dash) node.setAttribute('stroke-dasharray', node.dataset.dash.split(' ').map((length) => Number(length) * unit).join(' '));
+        });
     }
 
     fit() {
@@ -98,7 +102,17 @@ export class MapView {
             const { x, y } = this.project(lat, lon);
             return `${index ? 'L' : 'M'}${x.toFixed(3)} ${y.toFixed(3)}`;
         }).join('') + (close ? 'Z' : '');
-        const scaled = (node, width) => { node.classList.add('scaled'); node.dataset.width = width; return node; };
+        const scaled = (node, width, dash = null) => { node.classList.add('scaled'); node.dataset.width = width; if (dash) node.dataset.dash = dash; return node; };
+        // Under everything: land (Natural Earth), its coastline and country borders, faint, so the region's own data reads
+        // first. A border Natural Earth does not class as an international boundary (disputed, indefinite, a line of
+        // control or a claim) is dashed; every other border is solid.
+        if (map.geography) {
+            element('path', { d: map.geography.land.map((ring) => path(ring, true)).join(''), class: 'land', 'fill-rule': 'evenodd' }, this.base);
+            for (const line of map.geography.coast) scaled(element('path', { d: path(line), class: 'coast' }, this.base), 1);
+            for (const border of map.geography.borders) {
+                scaled(element('path', { d: path(border.points), class: `border${border.settled ? '' : ' unsettled'}` }, this.base), 1.2, border.settled ? null : '5 4');
+            }
+        }
         for (const ring of map.industrial) scaled(element('path', { d: path(ring, true), class: 'industrial' }, this.base), 1);
         for (const ring of map.ports) scaled(element('path', { d: path(ring, true), class: 'portArea' }, this.base), 1);
         const widths = { motorway: 2.6, trunk: 2.2, primary: 1.6 };

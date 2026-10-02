@@ -113,6 +113,9 @@ details summary:hover { text-decoration: underline; }
 
 #map { flex: 1; width: 100%; min-height: 0; background: #08121a; cursor: grab; user-select: none; touch-action: none; }
 #map.adding { cursor: crosshair; }
+#map .land { fill: #10212f; stroke: none; }
+#map .coast { fill: none; stroke: rgba(140, 174, 196, 0.5); stroke-linejoin: round; }
+#map .border { fill: none; stroke: rgba(222, 205, 180, 0.55); stroke-linejoin: round; }
 #map .road { fill: none; stroke: var(--road); stroke-linecap: round; stroke-linejoin: round; }
 #map .road.motorway, #map .road.trunk { stroke: #6295b3; }
 #map .rail { fill: none; stroke: var(--rail); stroke-dasharray: 4 3; }
@@ -130,12 +133,15 @@ details summary:hover { text-decoration: underline; }
 #map .serve { stroke: var(--town); stroke-opacity: 0.65; stroke-dasharray: 3 3; fill: none; }
 
 .legend { display: flex; gap: 14px; align-items: center; padding: 6px 12px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); background: var(--surface); }
-.legend .attribution { margin-left: auto; }
+.legend > span { white-space: nowrap; }
+.legend .attribution { margin-left: auto; white-space: normal; flex: 1 1 auto; min-width: 0; text-align: right; }
 .swatch { display: inline-block; width: 9px; height: 9px; margin-right: 5px; vertical-align: -1px; }
 .swatch.port { background: var(--port); }
 .swatch.zone { background: var(--zone); transform: rotate(45deg); }
 .swatch.town { background: var(--town); border-radius: 50%; }
 .swatch.lane { background: var(--lane); height: 3px; vertical-align: 2px; }
+.swatch.border { background: none; height: 0; width: 14px; border-top: 1.5px solid rgba(222, 205, 180, 0.75); vertical-align: 3px; }
+.swatch.border.unsettled { border-top-style: dashed; }
 .mapEmpty { position: absolute; inset: 45px 0 30px; display: grid; place-items: center; color: var(--muted); pointer-events: none; padding: 40px; text-align: center; }
 .addSite { position: absolute; top: 50px; left: 50%; transform: translateX(-50%); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px; display: flex; gap: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
 .transits { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }

@@ -13,7 +13,8 @@
 
 import { discoverRegion } from '../lib/discovery.mjs';
 import { portwatchAttribution } from '../lib/portwatch.mjs';
-import { mapLayers } from '../lib/mapData.mjs';
+import { tilesFor } from '../lib/geography.mjs';
+import { geographyAttribution, geographyLayers, mapLayers } from '../lib/mapData.mjs';
 import { ModelBuilder } from '../lib/modelBuilder.mjs';
 import { buildRegionModel, regionModelDefaults } from '../lib/regionModel.mjs';
 import { generateOperator, parseOperator } from '../lib/operator.mjs';
@@ -57,6 +58,20 @@ function resolveSite(entry, known, kind) {
     return site;
 }
 
+// The bundled Natural Earth tiles the region touches; none where it is all sea, and nothing if the package has none.
+async function loadGeography(helpers, bbox) {
+    let index;
+    try {
+        index = await helpers.readPackageJson('geography/index.json');
+    } catch {
+        return null;
+    }
+    const present = new Set(index.tiles);
+    const tiles = [];
+    for (const name of tilesFor(bbox)) if (present.has(name)) tiles.push(await helpers.readPackageJson(`geography/${name}.json`));
+    return geographyLayers(tiles, bbox);
+}
+
 async function loadTemplates(helpers) {
     const templates = new Map();
     for (const id of templateIds) templates.set(id, await helpers.readPackageJson(`templates/${id}.json`));
@@ -88,6 +103,15 @@ export default async function importRegion({ files, helpers, options = {} }) {
         const bbox = regionBounds(options, discovered);
         const map = mapLayers(discovered.layers, bbox);
         if (answers.portwatchPorts) map.attribution = `${map.attribution} · ${portwatchAttribution}`;
+        // Land, coast and borders under a real region (one the window fetched, with its box): the sample region and a
+        // file of sites alone have no place on Earth to draw them around.
+        if (options.bbox) {
+            const geography = await loadGeography(helpers, bbox);
+            if (geography) {
+                map.geography = geography;
+                map.attribution = `${map.attribution} · ${geographyAttribution}`;
+            }
+        }
         return {
             ok: true,
             data: {

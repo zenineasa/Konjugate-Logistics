@@ -11,6 +11,8 @@ import { allocateFleet, generateOperator, parseOperator } from '../../packages/t
 import { findShift, historyWindow, matchPorts, portwatchActivityUrl, portwatchPortsUrl, readPortwatchActivity, readPortwatchPorts, summariseActivity } from '../../packages/toolbox/lib/portwatch.mjs';
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
 import { closureModes, closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath } from '../../packages/toolbox/lib/scenarios.mjs';
+import { clipLine, clipRing, decode, tileName, tilesFor } from '../../packages/toolbox/lib/geography.mjs';
+import { geographyLayers } from '../../packages/toolbox/lib/mapData.mjs';
 import { createRouter } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { parseSites } from '../../packages/toolbox/lib/sites.mjs';
 import { loadTemplates, ModelBuilder } from '../../scripts/templatePlacement.mjs';
@@ -910,4 +912,23 @@ test('a slider takes a value a rounding error past its end, as its end', async (
     assert.equal(builder.sharedParameters.find((item) => item.symbol === symbol).value, 1);
     builder.setShared(symbol, 1.5);
     assert.throws(() => builder.setLive(symbol, { minimum: 0, maximum: 1, step: 0.01 }), /lies outside its slider/);
+});
+
+test('geography tiles are named by their corner, and rings and lines are cut to a box', () => {
+    assert.equal(tileName(25.2, 55.3), 'N20E050');
+    assert.equal(tileName(-29.9, -19.9), 'S30W020');
+    assert.deepEqual(tilesFor({ south: 24.4, west: 54.5, north: 25.7, east: 56.5 }), ['N20E050']);
+    assert.deepEqual(tilesFor({ south: -1, west: 9, north: 1, east: 11 }), ['S10E000', 'S10E010', 'N00E000', 'N00E010']);
+    const square = [{ lat: 0, lon: 0 }, { lat: 0, lon: 4 }, { lat: 4, lon: 4 }, { lat: 4, lon: 0 }];
+    const cut = clipRing(square, { south: 1, north: 3, west: -5, east: 2 });
+    assert.deepEqual(cut.map((p) => [p.lat, p.lon]).sort(), [[1, 0], [1, 2], [3, 0], [3, 2]].sort(), 'the part inside, closed along the box');
+    assert.deepEqual(clipRing(square, { south: 10, north: 11, west: 10, east: 11 }), [], 'nothing outside');
+    const line = [0, 1, 2, 3, 10, 11, 12, 2, 3].map((lon) => ({ lat: 0, lon }));
+    assert.deepEqual(clipLine(line, { south: -1, north: 1, west: 0, east: 3 }).map((run) => run.map((p) => p.lon)), [[0, 1, 2, 3, 10], [12, 2, 3]], 'runs that touch the box, one point beyond');
+    assert.deepEqual(decode([25000, 55000, 100, -200, 0, 50]), [{ lat: 25, lon: 55 }, { lat: 25.1, lon: 54.8 }, { lat: 25.1, lon: 54.85 }]);
+    // A tile made by hand: land cut to the region with its margin, a settled border and an unsettled one kept apart.
+    const tile = { land: [[24000, 54000, 2000, 0, 0, 2000, -2000, 0]], coast: [[24000, 54000, 0, 2000]], borders: [{ settled: true, points: [25000, 55000, 100, 100] }, { settled: false, points: [25000, 55050, 100, 0] }] };
+    const layers = geographyLayers([tile], { south: 24.9, north: 25.1, west: 54.9, east: 55.1 });
+    assert.equal(layers.land.length, 1);
+    assert.deepEqual(layers.borders.map((border) => border.settled), [true, false]);
 });

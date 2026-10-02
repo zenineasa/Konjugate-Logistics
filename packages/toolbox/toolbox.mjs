@@ -373,6 +373,9 @@ async function discover({ keepSites = false, keepCuration = false } = {}) {
     $('#mapEmpty').hidden = true;
     $('#attribution').textContent = state.discovered.map.attribution;
     map.setMap(state.discovered.map);
+    const borders = state.discovered.map.geography?.borders ?? [];
+    $('#legendBorder').hidden = !borders.some((border) => border.settled);
+    $('#legendUnsettled').hidden = !borders.some((border) => !border.settled);
     for (const section of ['#stepCoverage', '#stepCurate', '#stepBuild']) $(section).hidden = false;
     renderCoverage();
     renderHistoryHint();

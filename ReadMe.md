@@ -55,7 +55,7 @@ Open it from the **Logistics** button on Konjugate's toolstrip. Nothing in it is
 
 **Sessions are kept with the project.** Each build stores the window's session in the project it opens in the canvas: the place, everything kept, moved or added, port volumes, the last build's tables, and the map data it was fetched from, with each file's address and date. Saving the project saves the session. Opening the project and then the toolbox carries on where it was, with no network needed. Fetch the region again for newer data. This needs a Konjugate that supports `projectSession`, `parameterSchedules` (stored parameter schedules), `scenarioForkTime` (a fork the window times) and `suppliedPerParameter` (one scenario changing several parameters along their own paths).
 
-The map is drawn from the fetched data itself (an add-on window shows no map tiles). Map data © OpenStreetMap contributors, ODbL.
+The map is drawn from the fetched data itself (an add-on window shows no map tiles). Under it, faintly, are land, coastlines and country borders from [Natural Earth](https://www.naturalearthdata.com) (1:10m, public domain), bundled with the add-on so they need no fetch: a border Natural Earth classes as an international boundary is solid, and one it classes otherwise (disputed, indefinite, a line of control, a claim or breakaway line) is dashed, as Natural Earth's default view draws them. At 1:10m they are good to about a kilometre, so a coast may sit a little off the OpenStreetMap ports on it. The sample region, and a file of sites alone, are drawn without them. Map data © OpenStreetMap contributors, ODbL.
 
 How it works: `packages/toolbox/lib/` holds the pipeline:
 
@@ -66,7 +66,8 @@ How it works: `packages/toolbox/lib/` holds the pipeline:
 - `operator.mjs`: a fleet operator, read, allocated to lanes or invented;
 - `scenarios.mjs`: the paths a road closure, a fleet change and a demand surge follow (a chokepoint's are in `chokepoints.mjs`);
 - `sites.mjs`: the CSV;
-- `mapData.mjs`: what the map draws.
+- `mapData.mjs`: what the map draws;
+- `geography.mjs`: the bundled Natural Earth tiles, cut to a region.
 
 `importers/region.mjs` runs the pipeline for the window in two steps, discover and build.
 
@@ -90,6 +91,8 @@ This repository sits next to a Konjugate checkout (`../konjugate`, or set `KONJU
     - **`tests/interaction/regionWindow.mjs`** drives the toolbox window offline, with the network answered from the synthetic region: the sample region, a place search and fetch, discovery, a port's volume, Build (checked against the canvas), dragging a site (its lanes are rerouted), adding a customer on the map (it is served), a chokepoint disruption, an invented operator, a road closure and a detour, a fleet cut and a demand surge, and the session restored from the saved project with no network.
 
   On Linux without a GPU, pass Electron flags through `KONJUGATE_ELECTRON_ARGS`, for example `--no-sandbox --use-gl=angle --use-angle=swiftshader`.
+
+`node scripts/buildGeography.mjs` cuts Natural Earth's 1:10m land, coastline and country borders (at a pinned release, downloaded once into `out/naturalEarth/`) into 10-degree tiles in `packages/toolbox/geography/`, which are committed; they add about 2 MB to the add-on. Run it when the Natural Earth release changes.
 
 `scripts/templatePlacement.mjs` places templates the way the app does, so tests and models built by script run exactly what the templates say.
 
