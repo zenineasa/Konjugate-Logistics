@@ -145,7 +145,7 @@ const valueOf = (base) => {
 // cut keeps out of each affected port arrives at port `to` instead, for the days of the disruption. Each warehouse
 // that ordered from an affected port moves the matching share of its orders to its lane from `to` (a standby lane,
 // or one it already has), and that lane hires trucks towards what its new flow needs (`trucksFound` of them: 1 for
-// all, less when trucks are short), over the lane's hiring time. Only cargo bound for a warehouse with a lane from
+// all, less when trucks are short), over the lane's hiring time, and keeps them to the end of the run. Only cargo bound for a warehouse with a lane from
 // `to` can be diverted; the rest of the share stays kept out, and the warehouses without a lane are listed.
 // `lanes` are the build's lanes ({ name, from, to, rate, leadTime, fleet }), `ports` its ports ({ name, arrivals,
 // berths, schedule }), `affected` the ports the cut reaches ([{ port, share }]). The berths at `to` keep their own
@@ -184,7 +184,9 @@ export function diversionPlan({ lanes, ports, affected, to, cut, diverted, truck
     // TEU diverted in all: the extra arrivals, held between breaks.
     const times = [...new Set(breaks)].sort((a, b) => a - b);
     const divertedTeu = times.slice(0, -1).reduce((sum, time, index) => sum + extra(time) * (times[index + 1] - time), 0) / 86400;
-    // Orders: each warehouse's lanes keep their shares, less what moves from the affected ports' lanes to `to`'s.
+    // Orders: a lane from an affected port keeps only the share its port can still supply, the lane from `to` takes the
+    // diverted cargo, and the cargo lost is not ordered at all (the shares then add up to less than 1): an order for cargo
+    // that will not come would sit on the lane as on order, and hold back the warehouse's orders from everywhere else.
     const orderShare = { entities: [], samples: {} };
     const fleetSize = { entities: [], samples: {} };
     let trucks = 0;
@@ -195,7 +197,7 @@ export function diversionPlan({ lanes, ports, affected, to, cut, diverted, truck
         for (const lane of own) {
             const share = lane.rate / total;
             const dependence = affected.find((item) => item.port === lane.from)?.share ?? 0;
-            const during = lane.from === to ? share + teuPerDay / total : share * (1 - dependence * cut * diverted);
+            const during = lane.from === to ? share + teuPerDay / total : share * (1 - dependence * cut);
             orderShare.entities.push(lane.name);
             orderShare.samples[lane.name] = hold(share, during);
             if (lane.from !== to) continue;
@@ -204,7 +206,9 @@ export function diversionPlan({ lanes, ports, affected, to, cut, diverted, truck
             const needed = Math.ceil((2 * rate * lane.leadTime + idleReserve * rate * loadDays) / truckCapacity);
             const fleet = lane.fleet + Math.max(0, Math.round((needed - lane.fleet) * trucksFound));
             fleetSize.entities.push(lane.name);
-            fleetSize.samples[lane.name] = hold(lane.fleet, fleet);
+            // Hired from the disruption's first day to the end of the run: the trucks stay while the cargo diverted to
+            // the port still waits in its yard, as the berths opened for it do.
+            fleetSize.samples[lane.name] = heldPath({ outside: lane.fleet, inside: fleet, start, forkAt, runTime });
             trucks += fleet;
         }
     }

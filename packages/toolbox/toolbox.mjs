@@ -562,7 +562,8 @@ function renderOperator(operator) {
 
 $('#buildButton').addEventListener('click', () => build({ focus: false }));
 $('#showButton').addEventListener('click', async () => {
-    try { await call(api.openInCanvas(null, { focus: true, silent: true })); } catch (error) { $('#buildStatus').innerHTML = notice('error', error.message); }
+    // The session goes with it, so settings changed since the last build are kept when the project is saved.
+    try { await call(api.openInCanvas(null, { focus: true, silent: true, session: sessionState() })); } catch (error) { $('#buildStatus').innerHTML = notice('error', error.message); }
 });
 
 // ---- the session kept with the project ------------------------------------------------------------------
@@ -988,6 +989,9 @@ $('#runScenarioButton').addEventListener('click', async () => {
         status.innerHTML = notice('', 'Running the baseline and the scenario…');
         const answer = await call(api.runScenario(scenarioId, { supplied: run.supplied, forkAt: start, runTime, signals: summarySignals }));
         state.scenario = summariseRun(answer, scenarioId, run, start);
+        // The host holds a value outside a parameter's range to it: say so, since the run is then not what was asked for.
+        const clamped = (answer.interventions ?? []).filter((change) => change.clamped);
+        state.scenario.clamped = clamped.map((change) => `${change.name}: ${change.clamped.count} of ${change.clamped.of} values held to ${number(change.clamped.minimum, 2)} to ${number(change.clamped.maximum, 2)}`);
         status.innerHTML = '';
         renderScenarioResult();
         await call(api.openInCanvas(scenarioId, { focus: false, silent: true, session: sessionState() }));
@@ -1001,7 +1005,7 @@ $('#runScenarioButton').addEventListener('click', async () => {
 });
 
 $('#showScenarioButton').addEventListener('click', async () => {
-    try { await call(api.openInCanvas(state.scenario?.id ?? 'chokepointDisruption', { focus: true, silent: true })); } catch (error) { $('#scenarioStatus').innerHTML = notice('error', error.message); }
+    try { await call(api.openInCanvas(state.scenario?.id ?? 'chokepointDisruption', { focus: true, silent: true, session: sessionState() })); } catch (error) { $('#scenarioStatus').innerHTML = notice('error', error.message); }
 });
 
 api?.onProgress?.((progress) => {
@@ -1102,6 +1106,7 @@ function renderScenarioResult() {
     const towns = [...result.towns].sort((a, b) => (b.peak - b.baseline) - (a.peak - a.baseline)).slice(0, 8);
     $('#scenarioResult').innerHTML = `
         <p class="small">${escape(describe)}</p>
+        ${result.clamped?.length ? notice('warning', `Some of the values this scenario supplied lie outside what the model allows, and were held to its limits, so the run differs from what was asked: ${result.clamped.join('; ')}.`) : ''}
         ${totals}${ports}${waits}${lanes}
         <table><thead><tr><th>Warehouse</th><th class="number">Lowest stock</th><th class="number">baseline</th><th class="number">day</th></tr></thead>
             <tbody>${result.warehouses.map((item) => `<tr><td>${escape(item.name)}</td><td${worse(item.low, item.baseline, { lowerIsWorse: true })}>${number(item.low)}</td><td class="number">${number(item.baseline)}</td><td class="number">${number(item.day, 1)}</td></tr>`).join('')}</tbody></table>

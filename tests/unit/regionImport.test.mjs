@@ -141,7 +141,7 @@ test('a curated region becomes a model in which every port ships what arrives an
     }
     const zones = new Set(served.map((item) => item.zone)).size;
     assert.equal(document.nodes.length, selection.ports.length + zones + lanes.length + selection.towns.length);
-    assert.equal(document.edges.length, 9 * lanes.length + 3 * served.length, 'nine edges a lane, three a delivery');
+    assert.equal(document.edges.length, 10 * lanes.length + 3 * served.length, 'ten edges a lane, three a delivery');
     assert.equal(document.runConfigurations[0].globalTimeStep, 900, '15-minute steps');
     assert.equal(document.runConfigurations[0].outputInterval, 3600, 'hourly outputs');
     for (const lane of lanes) {
@@ -868,8 +868,9 @@ test('cargo diverted to a port outside the chokepoint is ordered from it, and it
     const arrivalsAt = (seconds) => plan.supplied.vesselArrivals.samples.K.findLast(([time]) => time <= seconds)[1];
     assert.deepEqual([arrivalsAt(0), arrivalsAt(2 * day + 10), arrivalsAt(4 * day + 10), arrivalsAt(9 * day + 10)], [30, 40, 20, 10]);
     const during = (name) => plan.supplied.orderShare.samples[name][0][1];
-    close(during('J → W1') + during('K → W1'), 1, 1e-12, 'W1\'s shares still add up to 1');
+    close(during('J → W1'), 0.5, 1e-12, 'J\'s lane keeps what J can still supply: half');
     close(during('K → W1'), 0.25, 1e-12, 'a quarter of W1\'s orders move to K');
+    close(during('J → W1') + during('K → W1'), 0.75, 1e-12, 'the quarter lost is not ordered');
     assert.deepEqual(plan.supplied.fleetSize.entities, ['K → W1']);
     assert.equal(plan.supplied.fleetSize.samples['K → W1'][0][1], Math.ceil((2 * 20 * 0.2 + 2 * 20 * 0.25) / 2), 'trucks for 20 TEU a day, as the toolbox sizes a lane');
     assert.equal(plan.supplied.berthCapacity.samples.K[0][1], 60);
@@ -897,4 +898,14 @@ test('a port with no container imports over the period has no lanes, and can sti
     assert.ok(fromBirch.length >= 1 && fromBirch.every((lane) => lane.standby && lane.rate === 0), 'only standby lanes from it');
     const birch = built.document.nodes.find((node) => node.name === 'Birch Harbour');
     assert.ok(birch.states.every((state) => Number.isFinite(state.initialValue)), 'no 0/0 in its starting values');
+});
+
+test('a slider takes a value a rounding error past its end, as its end', async () => {
+    const builder = new ModelBuilder(await loadTemplates());
+    builder.placeNode('demandZone', { name: 'Town', shared: { baseDemand: 1.0000000000000002 } });
+    const symbol = builder.sharedParameters.find((item) => item.name === 'Base demand' || item.symbol === 'baseDemand').symbol;
+    builder.setLive(symbol, { minimum: 0, maximum: 1, step: 0.01 });
+    assert.equal(builder.sharedParameters.find((item) => item.symbol === symbol).value, 1);
+    builder.setShared(symbol, 1.5);
+    assert.throws(() => builder.setLive(symbol, { minimum: 0, maximum: 1, step: 0.01 }), /lies outside its slider/);
 });

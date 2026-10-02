@@ -376,10 +376,11 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
             shared.schedule = { interpolation: 'hold', samples: history.samples };
             indexed.schedule = { from: history.from, to: history.to, days: history.samples.length };
         }
-        // Live, so a scenario fork can change them (a disrupted chokepoint), with a slider up to four times the
-        // busiest day.
+        // Live, so a scenario fork can change them (a disrupted chokepoint, or cargo diverted to this port), with a
+        // slider up to four times the busiest day or the whole region's arrivals, whichever is more: any port may be
+        // the one cargo is diverted to.
         const busiest = Math.max(arrivals, ...(history?.samples.map((sample) => sample[1]) ?? []));
-        makeLive(port.name, 'vesselArrivals', niceCeiling(4 * busiest));
+        makeLive(port.name, 'vesselArrivals', niceCeiling(4 * Math.max(busiest, totalSupply)));
         // And its berths, so a scenario can let a port take cargo diverted to it: up to four times the region's arrivals.
         const berthMaximum = niceCeiling(4 * Math.max(berthCapacity, totalSupply));
         makeLive(port.name, 'berthCapacity', berthMaximum);
@@ -441,16 +442,17 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
                     warnings.push(`${operator.name} has ${capacity.toFixed(0)} TEU of trucks on ${laneName}, but its flow needs ${minimum.toFixed(0)} (on the road and loading): the lane will fall behind from the start.`);
                 }
             }
-            bundle('roadShipment', laneName, { origin: portNodes.get(lane.port.id), lane: node, destination: warehouse }, { shared: { orderShare: lane.rate / total } });
-            // Live, so a scenario can close the road, send trucks on a detour (a longer trip, up to four times this
-            // one), move its orders to the warehouse's other lanes, or change its fleet: up to three times the trucks
+            bundle('roadShipment', laneName, { origin: portNodes.get(lane.port.id), lane: node, destination: warehouse }, { shared: { orderShare: Math.min(1, lane.rate / total) } });
+            // Live, so a scenario can close the road, send trucks on a detour, move its orders to the warehouse's other lanes, or change its fleet: up to three times the trucks
             // it starts with.
             makeLive(laneName, 'laneOpen', 1);
             makeLive(laneName, 'orderShare', 1);
-            makeLive(laneName, 'leadTime', niceCeiling(4 * leadTime));
-            makeLive(laneName, 'distance', niceCeiling(4 * Math.max(kilometres, 1)));
-            // A standby lane may come to carry all its zone's orders.
-            const fleetMaximum = niceCeiling(Math.max(10, 3 * Math.max(fleet, fleet2), lane.standby ? 3 * Math.ceil(laneNeed(total, leadTime) / truckCapacity) : 0));
+            // A detour may add up to the window's 72 hours each way, over proportionally more kilometres.
+            const detourFactor = Math.max(4, (leadTime + 3) / leadTime);
+            makeLive(laneName, 'leadTime', niceCeiling(Math.max(4 * leadTime, leadTime + 3)));
+            makeLive(laneName, 'distance', niceCeiling(detourFactor * Math.max(kilometres, 1)));
+            // Any lane may come to carry all its zone's orders (a diversion to its port, a closure of the others).
+            const fleetMaximum = niceCeiling(Math.max(10, 3 * Math.max(fleet, fleet2), 3 * Math.ceil(laneNeed(total, leadTime) / truckCapacity)));
             makeLive(laneName, 'fleetSize', fleetMaximum, 1);
             makeLive(laneName, 'fleetSize2', fleetMaximum, 1);
             const how = {

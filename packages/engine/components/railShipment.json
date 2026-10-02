@@ -84,6 +84,35 @@
             ]
         },
         {
+            "name": "Place order",
+            "from": "lane",
+            "to": "destination",
+            "ports": {
+                "source": "requested",
+                "target": [
+                    "onOrder",
+                    "orderRate"
+                ]
+            },
+            "output": {
+                "role": "target",
+                "state": "onOrder"
+            },
+            "latex": "\\frac{\\mathrm{orderShare} \\cdot \\mathrm{targetOrderRate}}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Order share",
+                    "symbol": "orderShare",
+                    "shared": "orderShare"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
             "name": "Dispatch",
             "from": "origin",
             "to": "lane",

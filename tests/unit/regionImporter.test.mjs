@@ -198,3 +198,30 @@ test('the window can ask for an invented operator, or read the user\'s own from 
     assert.equal((await build({ operator: 'file' }, file({ ...own, synthetic: true }))).data.operator.synthetic, true);
     assert.match((await build({ operator: 'file' }, file({ ...own, depots: [] }))).report.errors[0], /^Your fleet operator file: The operator: it needs at least one depot/);
 });
+
+test('every value a scenario supplies, at the window\'s limits, fits its parameter\'s range, so the host never holds it back', async () => {
+    const { diversionPlan } = await import('../../packages/toolbox/lib/scenarios.mjs');
+    const discovered = (await importRegion({ files: regionFiles(), helpers })).data.candidates;
+    const selection = { ports: discovered.ports.map((port) => ({ id: port.id })), zones: discovered.zones.map((zone) => ({ id: zone.id })), towns: discovered.towns.map((town) => ({ id: town.id })) };
+    const result = await importRegion({ files: regionFiles(), helpers, options: { step: 'build', selection } });
+    const [big, small] = [...result.data.ports].sort((a, b) => b.arrivals - a.arrivals);
+    // The busiest port's ships all cut, and all of its cargo diverted to the smallest: the most a diversion can supply.
+    const plan = diversionPlan({ lanes: result.data.lanes, ports: result.data.ports, affected: [{ port: big.name, share: 1 }], to: small.name, cut: 1, diverted: 1, berths: big.arrivals + small.arrivals,
+        start: 0, duration: 10 * 86400, forkAt: 0, runTime: 30 * 86400, ...result.data.trucking });
+    const { closurePlan, fleetPlan, demandPlan } = await import('../../packages/toolbox/lib/scenarios.mjs');
+    const window = { start: 0, duration: 10 * 86400, forkAt: 0, runTime: 30 * 86400 };
+    // And the other scenarios at the window's own limits: the longest detour, the most trucks, the biggest surge.
+    const plans = [plan,
+        ...result.data.lanes.map((lane) => closurePlan({ lanes: result.data.lanes, closed: lane.name, mode: 'detour', detourHours: 72, ...window })),
+        ...result.data.lanes.map((lane) => closurePlan({ lanes: result.data.lanes, closed: lane.name, mode: 'otherPorts', ...window })),
+        fleetPlan({ lanes: result.data.lanes, change: 2, ...window }),
+        demandPlan({ towns: result.data.towns, change: 3, ...window })];
+    for (const { supplied } of plans) {
+        for (const [key, { entities, samples }] of Object.entries(supplied)) {
+            for (const entity of entities) {
+                const entry = result.parameterIndex.find((item) => item.key === key && item.entity === entity);
+                for (const [, value] of samples[entity]) assert.ok(value >= entry.minimum && value <= entry.maximum, `${key} of ${entity}: ${value} lies outside ${entry.minimum} to ${entry.maximum}`);
+            }
+        }
+    }
+});

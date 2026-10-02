@@ -84,7 +84,11 @@ export class ModelBuilder {
     setLive(symbol, control) {
         const shared = this.sharedParameters.find((candidate) => candidate.symbol === symbol);
         if (!shared) throw new Error(`No shared parameter "${symbol}".`);
-        if (!(control.minimum <= shared.value && shared.value <= control.maximum)) throw new Error(`${symbol} = ${shared.value} lies outside its slider.`);
+        // A value a rounding error past the slider's end (a share of 1.0000000000000002) is the end itself.
+        const slack = 1e-9 * Math.max(1, Math.abs(control.maximum), Math.abs(control.minimum));
+        if (!(control.minimum - slack <= shared.value && shared.value <= control.maximum + slack)) throw new Error(`${symbol} = ${shared.value} lies outside its slider.`);
+        shared.value = Math.min(Math.max(shared.value, control.minimum), control.maximum);
+        for (const parameter of this.allParameters()) if (parameter.sharedParameterId === shared.id) parameter.value = shared.value;
         for (const parameter of [shared, ...this.allParameters().filter((candidate) => candidate.sharedParameterId === shared.id)]) {
             parameter.mode = 'live';
             parameter.control = { ...control };

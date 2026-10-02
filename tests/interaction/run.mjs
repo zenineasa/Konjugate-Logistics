@@ -174,8 +174,8 @@ try {
                 .catch(async () => { throw new Error(`${bundleId} did not add ${expectedEdges} edges: ${await window.textContent('#componentLibraryHint')}`); });
         };
         // A road shipment has three endpoints; the app matches them by state symbols.
-        await applyBundle('roadShipment', [port, laneA, warehouseA], 9);
-        await applyBundle('roadShipment', [port, laneB, warehouseB], 9);
+        await applyBundle('roadShipment', [port, laneA, warehouseA], 10);
+        await applyBundle('roadShipment', [port, laneB, warehouseB], 10);
         await applyBundle('delivery', [warehouseA, zone1], 3);
         await applyBundle('delivery', [warehouseB, zone2], 3);
 
@@ -222,7 +222,7 @@ try {
     // --- The app built what the templates say. --------------------------------------------------
     const scriptBuilt = await scriptBuiltNetwork();
     assert.equal(appBuilt.nodes.length, 7);
-    assert.equal(appBuilt.edges.length, 2 * 9 + 2 * 3);
+    assert.equal(appBuilt.edges.length, 2 * 10 + 2 * 3);
     const sharedSummary = (document) => Object.fromEntries(document.sharedParameters.map((shared) => [shared.symbol, shared.value]));
     assert.deepEqual(sharedSummary(appBuilt), sharedSummary(scriptBuilt), 'The app and the script should create the same shared parameters with the same values.');
     appBuilt.nodes.forEach((node, index) => {
@@ -244,7 +244,7 @@ try {
     for (const [key, value] of cliValues) {
         assert.ok(Math.abs(appValues.get(key) - value) <= 1e-9 * Math.max(1, Math.abs(value)), `${key}: app ${appValues.get(key)} vs script-built ${value}.`);
     }
-    console.log(`✓ logistics interaction: the app placed and wired 7 nodes and 18 edges from the templates, matching the script-built network; its ${days}-day run conserved containers and matched the engine CLI on all ${cliValues.size} states.`);
+    console.log(`✓ logistics interaction: the app placed and wired ${appBuilt.nodes.length} nodes and ${appBuilt.edges.length} edges from the templates, matching the script-built network; its ${days}-day run conserved containers and matched the engine CLI on all ${cliValues.size} states.`);
 
     // --- The example does what its guide says. ------------------------------------------------------
     const example = (await buildModels(join(scratch, 'models'))).find((model) => model.name === 'portWarehouseNetwork');

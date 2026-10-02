@@ -6,7 +6,7 @@
     "domains": [
         "logistics"
     ],
-    "description": "A warehouse that replenishes from road and rail lanes. On order counts everything it has ordered and not yet received, across all its inbound lanes, so its order rule is local however many lanes feed it. It forecasts demand by exponential smoothing and orders by an order-up-to rule: the forecast plus a correction towards forecast x (planned replenishment time + stock cover), but only while stock plus on order is below target. The planned replenishment time is the planner's assumption, which may differ from the lanes' real travel times. Holding cost accrues per TEU per day in stock.",
+    "description": "A warehouse that replenishes from road and rail lanes. On order counts everything it has placed with its inbound lanes and not yet received, so its order rule is local however many lanes feed it. Each lane places its order share of the order rate; while the shares add up to less than 1 (cargo that no port can supply), the rest is not ordered, and its customers wait. It forecasts demand by exponential smoothing and orders by an order-up-to rule: the forecast plus a correction towards forecast x (planned replenishment time + stock cover), but only while stock plus on order is below target. The planned replenishment time is the planner's assumption, which may differ from the lanes' real travel times. Holding cost accrues per TEU per day in stock.",
     "shape": "box",
     "color": "#c16f55",
     "states": [
@@ -113,17 +113,6 @@
                 }
             ],
             "setsValue": true
-        },
-        {
-            "state": "onOrder",
-            "expression": "\\frac{\\mathrm{orderRate}}{\\mathrm{secondsPerDay}}",
-            "parameters": [
-                {
-                    "name": "Seconds per day",
-                    "symbol": "secondsPerDay",
-                    "shared": "secondsPerDay"
-                }
-            ]
         },
         {
             "state": "forecast",
