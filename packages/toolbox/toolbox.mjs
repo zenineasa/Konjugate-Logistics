@@ -483,6 +483,8 @@ function changed({ rebuild = true } = {}) {
     $('#buildStatus').innerHTML = missing.length ? notice('warning', `Keep at least ${missing.join(', ')} to build a model.`) : '';
     if (state.built) {
         $('#buildStatus').innerHTML += notice('warning', 'The model no longer matches the sites above.');
+        // Counted, so a rebuild queued behind other work runs only if something changed after the last build began.
+        state.edits = (state.edits ?? 0) + 1;
         if (rebuild && $('#keepInStep').checked && !missing.length) {
             clearTimeout(state.rebuildTimer);
             state.rebuildTimer = setTimeout(() => build({ focus: false }), 600);
@@ -491,13 +493,19 @@ function changed({ rebuild = true } = {}) {
 }
 
 async function build({ focus = false } = {}) {
-    if (state.busy) return;
+    // Asked while something else runs (another build, a fetch, a scenario): build once that ends, if anything changed
+    // after the last build began, so no change is lost and nothing is rebuilt for nothing.
+    if (state.busy) { state.buildAgain = true; return; }
+    const editsAtStart = state.edits ?? 0;
     setBusy(true);
     $('#buildStatus').innerHTML = notice('', 'Building the model: routing every lane…');
     try {
         const answer = await call(api.runImport(importerId, { step: 'build', bbox: state.bbox, selection: selection(), settings: { portTeuPerDay: state.portVolume, arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(), operator: $('#operatorSelect').value || null, standbyPorts: [...state.standby] } }));
         if (!answer.imported) throw new Error((answer.report?.errors ?? ['The model could not be built.']).join(' '));
         state.built = answer.data;
+        // The host now holds this model, so a scenario can run on it.
+        state.imported = true;
+        state.builtEdits = editsAtStart;
         await call(api.openInCanvas(null, { focus, silent: true, session: sessionState() }));
         $('#showButton').disabled = false;
         const histories = state.built.histories ?? [];
@@ -555,12 +563,13 @@ function renderOperator(operator) {
         <p class="small"><b>${escape(operator.name)}</b> ${label}</p>
         <table><thead><tr><th>Truck</th><th class="number">TEU</th><th class="number">per km</th><th class="number">per day</th></tr></thead>
             <tbody>${operator.trucks.map((truck) => `<tr><td>${escape(truck.label)}</td><td class="number">${number(truck.teu)}</td><td class="number">${number(truck.costPerKm, 2)}</td><td class="number">${number(truck.costPerDay)}</td></tr>`).join('')}</tbody></table>
-        <table><thead><tr><th>Lane it carries</th><th>Depot</th><th class="number">trucks</th><th class="number" title="TEU of trucks on the lane, against what its flow keeps on the road (loaded and returning) plus a reserve of loads">capacity / need</th></tr></thead>
+        <table><thead><tr><th>Lane it carries</th><th>Depot</th><th class="number">trucks</th><th class="number" title="TEU of trucks on the lane, against what its flow needs to keep up: the trucks on the road, loaded and returning, and a loading period's flow idle at the port">capacity / need</th></tr></thead>
             <tbody>${operator.lanes.map((lane) => `<tr><td>${escape(lane.name.replace(/^Road /, ''))}</td><td>${escape(lane.depot)}</td><td class="number">${trucksOf(lane)}</td><td class="number${lane.capacity < lane.need ? ' worse' : ''}">${number(lane.capacity)} / ${number(lane.need)}</td></tr>`).join('')}</tbody></table>
-        <p class="muted small">Costs are in ${escape(operator.currency)}. Lanes it does not carry use its truck sizes and costs too, with a fleet sized to their flow.</p>`;
+        <p class="muted small">Costs are in ${escape(operator.currency ?? 'cost units')}. Lanes it does not carry use its truck sizes and costs too, with a fleet sized to their flow.</p>`;
 }
 
-$('#buildButton').addEventListener('click', () => build({ focus: false }));
+// A click is a change of its own: if a build is running, the model is built again once it ends.
+$('#buildButton').addEventListener('click', () => { state.edits = (state.edits ?? 0) + 1; build({ focus: false }); });
 $('#showButton').addEventListener('click', async () => {
     // The session goes with it, so settings changed since the last build are kept when the project is saved.
     try { await call(api.openInCanvas(null, { focus: true, silent: true, session: sessionState() })); } catch (error) { $('#buildStatus').innerHTML = notice('error', error.message); }
@@ -654,7 +663,12 @@ async function restoreSession() {
 
 function setBusy(busy) {
     state.busy = busy;
-    for (const selector of ['#fetchButton', '#sampleButton', '#sitesButton', '#searchButton']) $(selector).disabled = busy;
+    if (!busy && state.buildAgain) {
+        state.buildAgain = false;
+        if ((state.edits ?? 0) !== state.builtEdits) setTimeout(() => build({ focus: false }), 0);
+    }
+    // Run waits too: a scenario asked for while the model is being built would otherwise be silently ignored.
+    for (const selector of ['#fetchButton', '#sampleButton', '#sitesButton', '#searchButton', '#runScenarioButton']) $(selector).disabled = busy;
     if (!busy) showArea();
     if (state.discovered) {
         const missing = groups.some((group) => !allSites(group).some((site) => site.kept));
@@ -973,13 +987,15 @@ $('#runScenarioButton').addEventListener('click', async () => {
     try {
         if (!(startDay >= 0 && start < runTime)) throw new Error(`Start the scenario from day 0 to day ${state.built.days - 1}.`);
         if (!(Number($('#durationInput').value) > 0)) throw new Error('The scenario must last at least a day.');
-        // Cargo diverted to a port needs lanes from it to the warehouses that lose it: build them first, on standby.
+        // Cargo diverted to a port needs lanes from it to the warehouses that lose it: build them first, on standby. And a
+        // session restored from a saved project has its tables but not yet a model in the host: build it again first.
         const divertTo = id === 'chokepointDisruption' && Number($('#divertedInput').value) > 0 ? $('#divertToSelect').value : null;
-        if (divertTo && !state.built.standbyPorts?.includes(divertTo)) {
-            state.standby.add(divertTo);
-            status.innerHTML = notice('', `Adding standby lanes from ${divertTo} to the model…`);
+        const needsStandby = divertTo && !state.built.standbyPorts?.includes(divertTo);
+        if (needsStandby || !state.imported) {
+            if (needsStandby) state.standby.add(divertTo);
+            status.innerHTML = notice('', needsStandby ? `Adding standby lanes from ${divertTo} to the model…` : 'Building the model from the session kept with this project…');
             await build();
-            if (!state.built?.standbyPorts?.includes(divertTo)) throw new Error(`The model could not be built with standby lanes from ${divertTo}.`);
+            if (!state.imported || (needsStandby && !state.built?.standbyPorts?.includes(divertTo))) throw new Error('The model could not be built; see Model above.');
         }
         const run = scenarioRun(id, start, runTime, status);
         if (!run) return;
@@ -992,9 +1008,11 @@ $('#runScenarioButton').addEventListener('click', async () => {
         // The host holds a value outside a parameter's range to it: say so, since the run is then not what was asked for.
         const clamped = (answer.interventions ?? []).filter((change) => change.clamped);
         state.scenario.clamped = clamped.map((change) => `${change.name}: ${change.clamped.count} of ${change.clamped.of} values held to ${number(change.clamped.minimum, 2)} to ${number(change.clamped.maximum, 2)}`);
+        // Keep the session (with this result) with the project before showing it, so closing the window as soon as
+        // the result appears loses nothing.
+        await call(api.openInCanvas(scenarioId, { focus: false, silent: true, session: sessionState() }));
         status.innerHTML = '';
         renderScenarioResult();
-        await call(api.openInCanvas(scenarioId, { focus: false, silent: true, session: sessionState() }));
         $('#showScenarioButton').disabled = false;
     } catch (error) {
         status.innerHTML = notice('error', error.message);
@@ -1092,10 +1110,14 @@ function renderScenarioResult() {
                 ${[['transport', 'Transport cost'], ['fleet', 'Fleet cost'], ['holding', 'Holding cost'], ['backlog', 'Backlog cost']].map(([key, label]) => `<tr><td>${label}</td><td${worse(result.totals[key].scenario, result.totals[key].baseline)}>${number(result.totals[key].scenario)}</td><td class="number">${number(result.totals[key].baseline)}</td></tr>`).join('')}
             </tbody></table>` : '';
     const ports = id.startsWith('chokepoint') ? `
-        <table><thead><tr><th>Port</th><th class="number">Kept out (TEU)</th><th class="number">arrived later</th><th class="number">never arrived</th></tr></thead>
+        <table><thead><tr><th>Port</th><th class="number">Kept out (TEU)</th><th class="number">arrived later</th><th class="number">never arrived</th>${result.diversion ? '<th class="number">diverted here</th>' : ''}</tr></thead>
             <tbody>${result.ports.map((port) => {
                 const affected = result.affected.find((item) => item.port === port.name);
-                return `<tr><td>${escape(port.name)}</td><td class="number">${affected?.keptOut !== undefined ? number(affected.keptOut) : number(port.lost)}</td><td class="number">${number(affected?.caughtUp ?? 0)}</td><td class="number">${number(port.lost)}</td></tr>`;
+                // A port the cut does not reach keeps nothing out; one that gains (the port cargo is diverted to) shows it received.
+                const keptOut = affected?.keptOut ?? Math.max(0, port.lost);
+                const never = affected ? port.lost : Math.max(0, port.lost);
+                const diverted = !affected && port.lost < -0.5 ? -port.lost : 0;
+                return `<tr><td>${escape(port.name)}</td><td class="number">${number(keptOut)}</td><td class="number">${number(affected?.caughtUp ?? 0)}</td><td class="number">${number(never)}</td>${result.diversion ? `<td class="number">${number(diverted)}</td>` : ''}</tr>`;
             }).join('')}</tbody></table>` : '';
     const waits = result.ports.some((port) => port.wait) ? `
         <table><thead><tr><th>Port</th><th class="number">Longest wait (days)</th><th class="number">baseline</th></tr></thead>

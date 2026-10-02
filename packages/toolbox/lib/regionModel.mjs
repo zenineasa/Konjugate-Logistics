@@ -434,10 +434,10 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
             });
             if (contract) {
                 const capacity = fleet * truckCapacity + fleet2 * truckCapacity2;
-                const need = laneNeed(lane.rate, leadTime);
-                operatorLanes.push({ name: laneName, depot: contract.depot, fleet, fleet2, capacity, need });
-                // To keep up, a lane needs its loaded and returning trucks and a loading period's flow idle at the origin.
+                // To keep up, a lane needs its loaded and returning trucks and a loading period's flow idle at the origin:
+                // that is its need. (A lane the toolbox sizes itself gets two loading periods, to spare.)
                 const minimum = 2 * lane.rate * leadTime + lane.rate * loadDays;
+                operatorLanes.push({ name: laneName, depot: contract.depot, fleet, fleet2, capacity, need: minimum });
                 if (capacity < minimum - 1e-9) {
                     warnings.push(`${operator.name} has ${capacity.toFixed(0)} TEU of trucks on ${laneName}, but its flow needs ${minimum.toFixed(0)} (on the road and loading): the lane will fall behind from the start.`);
                 }
@@ -544,7 +544,7 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
         // How the toolbox sizes a lane's fleet, for a scenario that hires trucks.
         trucking: { truckCapacity, loadDays, idleReserve: settings.idleReserve },
         standbyPorts: standbyPorts.map((port) => port.name),
-        operator: operator ? { name: operator.name, synthetic: operator.synthetic, trucks: operator.trucks, depots: operator.depots, lanes: operatorLanes } : null,
+        operator: operator ? { name: operator.name, synthetic: operator.synthetic, currency: operator.currency, trucks: operator.trucks, depots: operator.depots, lanes: operatorLanes } : null,
         // The ports whose arrivals follow their history, and the dates model day 0 and the last day stand for.
         histories: [...histories].map(([id, history]) => ({ port: ports.find((port) => port.id === id).name, from: history.from, to: history.to, days: history.samples.length })),
         unusedZones: unusedZones.map((zone) => zone.name),

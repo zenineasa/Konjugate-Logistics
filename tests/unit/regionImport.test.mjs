@@ -784,6 +784,8 @@ test('a contracted lane runs on the operator’s two truck sizes, labelled synth
     assert.deepEqual([shared('truckCapacity'), shared('truckCapacity2'), shared('costPerKm'), shared('costPerKm2'), shared('truckDayCost'), shared('truckDayCost2')], [2, 1, 1.6, 1.2, 240, 170]);
     assert.ok(built.provenance.some((item) => item.entity === operator.name && item.parameter === 'Cost per truck per day, 20-foot (1 TEU)' && item.basis === 'synthetic'));
     assert.equal(built.operator.lanes.length, contracted.length);
+    assert.ok(built.operator.lanes.every((lane) => lane.capacity >= lane.need), 'its trucks cover what each lane needs to keep up');
+    assert.equal(built.operator.currency, 'cost units', 'the summary names the currency its costs are in');
     // With one and a half loading periods in reserve, the operator keeps up with every lane it carries: no warning.
     assert.ok(!built.warnings.some((text) => /will fall behind/.test(text)), built.warnings.join(' '));
     // With a tenth of the trucks it falls behind, and says so.

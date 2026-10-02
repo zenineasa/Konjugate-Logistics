@@ -71,7 +71,9 @@ export class MapView {
         const a = this.project(this.bbox.north, this.bbox.west);
         const b = this.project(this.bbox.south, this.bbox.east);
         const pad = 0.04 * Math.max(b.x - a.x, b.y - a.y);
-        this.view = { x: a.x - pad, y: a.y - pad, width: b.x - a.x + 2 * pad, height: b.y - a.y + 2 * pad };
+        // More room on the right, where a site at the edge of the region writes its name.
+        const labels = 0.12 * (b.x - a.x);
+        this.view = { x: a.x - pad, y: a.y - pad, width: b.x - a.x + 2 * pad + labels, height: b.y - a.y + 2 * pad };
         this.applyView();
     }
 
@@ -109,9 +111,16 @@ export class MapView {
         this.drawFlows();
     }
 
+    // Toggles the highlight on the sites it changes, without redrawing every site: hovering down a long list stays quick.
     setHighlight(id) {
         this.highlight = id;
-        this.drawSites();
+        const unit = this.unit();
+        for (const node of this.siteLayer.querySelectorAll('.site')) {
+            const on = node.dataset.id === id;
+            if (on === node.classList.contains('highlight')) continue;
+            node.classList.toggle('highlight', on);
+            node.setAttribute('stroke-width', (on ? 2.5 : 1.5) * unit);
+        }
     }
 
     shape(kind, x, y, r) {

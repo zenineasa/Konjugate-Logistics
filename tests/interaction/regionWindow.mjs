@@ -108,7 +108,14 @@ try {
         const log = [];
         toolbox.on('console', (message) => log.push(`${message.type()}: ${message.text().slice(0, 300)}`));
         toolbox.on('pageerror', (error) => log.push(`pageerror: ${error.message}`));
-        const fail = (error) => { throw new Error(`${error.message}\nToolbox window log:\n${log.join('\n')}`); };
+        // On a failure, what the window shows: its build and scenario status, the last result's summary and the tab.
+        const fail = async (error) => {
+            const shown = await toolbox.evaluate(() => ({
+                build: document.querySelector('#buildStatus')?.innerText, scenario: document.querySelector('#scenarioStatus')?.innerText,
+                result: document.querySelector('#scenarioResult p')?.textContent, tab: document.querySelector('#scenarioTabs .active')?.dataset.scenario
+            })).catch((problem) => problem.message);
+            throw new Error(`${error.message}\nThe window shows: ${JSON.stringify(shown)}\nToolbox window log:\n${log.join('\n')}`);
+        };
         await toolbox.waitForLoadState('domcontentloaded');
         const counts = (page = toolbox) => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('[data-count]')].map((node) => [node.dataset.count, node.textContent])));
 
@@ -230,7 +237,28 @@ try {
         await toolbox.fill('#divertBerthsInput', '400');
         await toolbox.click('#runScenarioButton');
         await toolbox.waitForFunction(() => /50% of it is diverted to Birch Harbour \(169 TEU\), whose berths take 400 TEU\/day, and trucked inland over \d lanes? with \d+ trucks/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
+        // Birch Harbour shows the cargo it received as diverted here, not as a negative loss.
+        const birchRow = await toolbox.evaluate(() => {
+            const table = [...document.querySelectorAll('#scenarioResult table')].find((item) => /Kept out/.test(item.textContent));
+            const row = [...table.querySelectorAll('tr')].find((item) => item.cells[0]?.textContent === 'Birch Harbour');
+            return [...row.cells].map((cell) => Number(cell.textContent.replace(/,/g, '')));
+        });
+        assert.deepEqual(birchRow.slice(1, 4), [0, 0, 0], 'it kept nothing out');
+        assert.ok(Math.abs(birchRow[4] - 168.75) <= 1, `about 169 TEU diverted here (shown ${birchRow[4]})`);
         assert.equal(log.filter((line) => line.startsWith('pageerror') || line.startsWith('error')).length, 0, log.join('\n'));
+
+        // 5b'. Two settings changed in quick succession, the second while the first is still building: both reach the model.
+        // The weight of a TEU starts a build; the assumed volume a port (Birch Harbour, the one not matched) is changed
+        // during it, and must still reach the model.
+        await toolbox.fill('#tonnesPerTeuInput', '12'); await toolbox.dispatchEvent('#tonnesPerTeuInput', 'change');
+        await toolbox.waitForFunction(() => /Building the model/.test(document.querySelector('#buildStatus').textContent), null, { timeout: 10000 }).catch(() => {});
+        await toolbox.click('#kindTabs [data-group="ports"]');
+        await toolbox.fill('#portVolume', '80'); await toolbox.dispatchEvent('#portVolume', 'change');
+        await toolbox.waitForFunction((volume) => [...document.querySelectorAll('#buildResult details tr')].some((row) => row.cells[0]?.textContent === 'Birch Harbour' && row.cells[1]?.textContent.startsWith(`Containers handed inland: ${volume}`)) && document.querySelector('#buildStatus .notice.ok'), '80', { timeout: 120000 }).catch(fail);
+        await toolbox.fill('#tonnesPerTeuInput', '10'); await toolbox.dispatchEvent('#tonnesPerTeuInput', 'change');
+        await toolbox.fill('#portVolume', '100'); await toolbox.dispatchEvent('#portVolume', 'change');
+        await toolbox.waitForFunction((volume) => [...document.querySelectorAll('#buildResult details tr')].some((row) => row.cells[0]?.textContent === 'Birch Harbour' && row.cells[1]?.textContent.startsWith(`Containers handed inland: ${volume}`)) && document.querySelector('#buildStatus .notice.ok'), '100', { timeout: 120000 }).catch(fail);
+        await toolbox.click('#kindTabs [data-group="towns"]');
 
         // 5c. An invented fleet operator: the model is rebuilt with its trucks, labelled synthetic.
         await toolbox.selectOption('#operatorSelect', 'synthetic');
@@ -287,6 +315,11 @@ try {
         assert.equal(await toolbox.inputValue('#closureModeSelect'), 'detour');
         assert.equal(await toolbox.inputValue('#operatorSelect'), 'synthetic');
         assert.equal(await toolbox.inputValue('#chokepointSelect'), 'chokepoint1');
+        // A scenario run straight after the session is restored builds the model again first, then runs.
+        await toolbox.fill('#demandChangeInput', '40');
+        await toolbox.click('#runScenarioButton');
+        await toolbox.waitForFunction(() => /Demand up 40%/.test(document.querySelector('#scenarioResult').textContent) || /notice error/.test(document.querySelector('#scenarioStatus').innerHTML), null, { timeout: 180000 });
+        assert.equal((await toolbox.textContent('#scenarioStatus')).trim(), '', 'no "Import your data first" after a restore');
 
         // 7. Saving the project writes the session into it: the window's state and the map data it was built from.
         const savedPath = join(scratch, 'region.kjt');
@@ -328,7 +361,7 @@ try {
         } finally {
             await offline.close().catch(() => {});
         }
-        console.log(`✓ logistics region window: the sample region and a searched region discover offline; the model (${nodes} nodes, ${edges} relationships) opens in the canvas; dragging Alder Industrial Park moves its lane from ${before} to ${after} km; a customer added on the map is served; a chokepoint's cargo is diverted to Birch Harbour; an invented operator is labelled synthetic; a road closure, a detour, a fleet cut and a demand surge run from their tabs; the session is kept with the project, saved with it, and restored from it with no network.`);
+        console.log(`✓ logistics region window: the sample region and a searched region discover offline; the model (${nodes} nodes, ${edges} relationships) opens in the canvas; dragging Alder Industrial Park moves its lane from ${before} to ${after} km; a customer added on the map is served; a chokepoint's cargo is diverted to Birch Harbour; an invented operator is labelled synthetic; a road closure, a detour, a fleet cut and a demand surge run from their tabs; the session is kept with the project (and a scenario runs straight after it is restored), saved with it, and restored from it with no network.`);
     } finally {
         await app?.close().catch(() => {});
     }
