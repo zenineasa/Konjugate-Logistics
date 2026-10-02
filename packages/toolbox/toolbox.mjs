@@ -63,6 +63,85 @@ const map = new MapView($('#map'), {
     }
 });
 
+// ---- layout, accordion & splitter ---------------------------------------------------------------------
+
+document.querySelectorAll('.stepHeader').forEach((header) => {
+    header.addEventListener('click', (event) => {
+        // Prevent toggle if clicking on an interactive element inside header
+        if (event.target.tagName === 'INPUT' || event.target.tagName === 'SELECT') return;
+        const step = header.closest('.step');
+        if (step) step.classList.toggle('collapsed');
+    });
+});
+
+function updateStepSummaries() {
+    const regSummary = $('#stepRegionSummary');
+    if (regSummary) {
+        if (state.place) regSummary.textContent = `${state.place.display_name.split(',')[0]} · ${$('#marginSelect').value} km`;
+        else if (state.discovered) regSummary.textContent = 'Sample region';
+        else regSummary.textContent = '';
+    }
+    const covSummary = $('#stepCoverageSummary');
+    if (covSummary && state.discovered?.coverage) {
+        const c = state.discovered.coverage;
+        covSummary.textContent = `${c.ports.found} ports · ${c.towns.found} towns`;
+    }
+    const curSummary = $('#stepCurateSummary');
+    if (curSummary && state.discovered) {
+        const kp = state.kept.ports.size;
+        const kz = state.kept.zones.size;
+        const kt = state.kept.towns.size;
+        curSummary.textContent = `${kp} ports · ${kz} zones · ${kt} towns`;
+    }
+    const bldSummary = $('#stepBuildSummary');
+    if (bldSummary && state.built) {
+        bldSummary.textContent = `${state.built.nodes} nodes · ${state.built.edges} edges`;
+    }
+    const scnSummary = $('#stepScenarioSummary');
+    if (scnSummary && state.scenario) {
+        const idName = { chokepointDisruption: 'Chokepoint', chokepointDiversion: 'Chokepoint', roadClosure: 'Road closure', fleetChange: 'Fleet', demandSurge: 'Demand' }[state.scenario.id] ?? 'Scenario';
+        scnSummary.textContent = `${idName} run`;
+    }
+}
+
+// Resizable panel splitter
+const splitter = $('#splitter');
+const panel = $('#panel');
+let resizing = false;
+let startX = 0;
+let startWidth = 0;
+
+if (splitter && panel) {
+    splitter.addEventListener('pointerdown', (event) => {
+        resizing = true;
+        startX = event.clientX;
+        startWidth = panel.getBoundingClientRect().width;
+        splitter.setPointerCapture(event.pointerId);
+        splitter.classList.add('dragging');
+        document.body.style.userSelect = 'none';
+    });
+
+    splitter.addEventListener('pointermove', (event) => {
+        if (!resizing) return;
+        const newWidth = Math.max(320, Math.min(800, startWidth + (event.clientX - startX)));
+        panel.style.width = `${newWidth}px`;
+    });
+
+    const stopResize = (event) => {
+        if (!resizing) return;
+        resizing = false;
+        splitter.classList.remove('dragging');
+        document.body.style.userSelect = '';
+        try { splitter.releasePointerCapture(event.pointerId); } catch {}
+    };
+    splitter.addEventListener('pointerup', stopResize);
+    splitter.addEventListener('pointercancel', stopResize);
+    splitter.addEventListener('dblclick', () => { panel.style.width = '420px'; });
+}
+
+$('#zoomInButton')?.addEventListener('click', () => map.zoom(0.75));
+$('#zoomOutButton')?.addEventListener('click', () => map.zoom(1.33));
+
 // ---- region -------------------------------------------------------------------------------------------
 
 function boundsAround(place, marginKilometres) {
@@ -299,6 +378,9 @@ async function discover({ keepSites = false, keepCuration = false } = {}) {
     renderHistoryHint();
     renderCandidates();
     changed({ rebuild: Boolean(state.built) });
+    $('#stepRegion').classList.add('completed');
+    $('#stepCoverage').classList.add('completed');
+    updateStepSummaries();
     const warnings = answer.report?.warnings ?? [];
     if (warnings.length) $('#regionStatus').insertAdjacentHTML('beforeend', warnings.map((text) => notice('warning', text)).join(''));
 }
@@ -477,6 +559,7 @@ function selection() {
 
 function changed({ rebuild = true } = {}) {
     renderCandidates();
+    updateStepSummaries();
     const kept = groups.map((group) => allSites(group).filter((site) => site.kept).length);
     const missing = groups.filter((_group, index) => !kept[index]).map((group) => ({ ports: 'a port', zones: 'a logistics zone', towns: 'a town or customer' })[group]);
     $('#buildButton').disabled = state.busy || missing.length > 0;
@@ -513,6 +596,9 @@ async function build({ focus = false } = {}) {
             + (histories.length ? notice('', `Arrivals follow IMF PortWatch history: ${histories.map((item) => `${item.port} from ${item.from} (model day 0) to ${item.to}`).join('; ')}.`) : '')
             + state.built.warnings.map((text) => notice('warning', text)).join('');
         renderBuilt();
+        $('#stepCurate').classList.add('completed');
+        $('#stepBuild').classList.add('completed');
+        updateStepSummaries();
         state.scenario = null;
         renderScenario({ fetchTransits: true });
     } catch (error) {
@@ -1059,6 +1145,14 @@ function summariseRun(answer, id, run, start) {
     const laneNames = built.lanes.map((lane) => lane.name);
     const warehouseNames = [...new Set(built.lanes.map((lane) => lane.to))];
     const days = (built.days * day - start) / day;
+    const sampleSpark = (series, startTime, count = 12) => {
+        if (!series || !series.length) return [];
+        const pts = series.filter((p) => p[0] >= startTime - 1);
+        if (!pts.length) return [];
+        if (pts.length <= count) return pts.map((p) => p[1]);
+        const step = (pts.length - 1) / (count - 1);
+        return Array.from({ length: count }, (_, i) => pts[Math.round(i * step)][1]);
+    };
     return {
         id, describe: run.describe, start: start / day, days, ...run.extra,
         totals: {
@@ -1080,11 +1174,17 @@ function summariseRun(answer, id, run, start) {
         })),
         warehouses: warehouseNames.map((name) => {
             const low = extreme(scenario[name]?.stock, (value, best) => value < best);
-            return { name, baseline: extreme(baseline[name]?.stock, (value, best) => value < best)[1], low: low[1], day: low[0] / day };
+            return {
+                name, baseline: extreme(baseline[name]?.stock, (value, best) => value < best)[1], low: low[1], day: low[0] / day,
+                scenPts: sampleSpark(scenario[name]?.stock, start), basePts: sampleSpark(baseline[name]?.stock, start)
+            };
         }),
         towns: townNames.map((name) => {
             const peak = extreme(scenario[name]?.backlog, (value, best) => value > best);
-            return { name, baseline: extreme(baseline[name]?.backlog, (value, best) => value > best)[1], peak: peak[1], day: peak[0] / day };
+            return {
+                name, baseline: extreme(baseline[name]?.backlog, (value, best) => value > best)[1], peak: peak[1], day: peak[0] / day,
+                scenPts: sampleSpark(scenario[name]?.backlog, start), basePts: sampleSpark(baseline[name]?.backlog, start)
+            };
         })
     };
 }
@@ -1093,6 +1193,8 @@ function renderScenarioResult() {
     const result = state.scenario;
     $('#showScenarioButton').disabled = !result;
     if (!result) { $('#scenarioResult').innerHTML = ''; return; }
+    $('#stepScenario').classList.add('completed');
+    updateStepSummaries();
     // A session saved before the other scenarios kept only the chokepoint disruption's summary.
     const id = result.id ?? 'chokepointDisruption';
     const describe = result.describe ?? `${result.chokepoint}: transits cut by ${result.settings.cut}% from day ${result.settings.startDay} for ${result.settings.days} days.`;
@@ -1103,6 +1205,20 @@ function renderScenarioResult() {
         return by > Math.max(0.01 * Math.abs(before), noise) ? ' class="number worse"' : ' class="number"';
     };
     const percent = (value) => `${number(value * 100, 1)}%`;
+    const drawSpark = (scenPts, basePts, { stroke = 'var(--accent)' } = {}) => {
+        if (!scenPts?.length) return '';
+        const all = [...scenPts, ...(basePts ?? [])];
+        const min = Math.min(...all);
+        const max = Math.max(...all);
+        const range = max - min || 1;
+        const w = 48;
+        const h = 14;
+        const toY = (v) => (h - 2 - ((v - min) / range) * (h - 4)).toFixed(1);
+        const toPts = (pts) => pts.map((v, i) => `${((i / (pts.length - 1)) * w).toFixed(1)},${toY(v)}`).join(' ');
+        const base = basePts?.length ? `<polyline points="${toPts(basePts)}" fill="none" stroke="var(--muted)" stroke-width="1" stroke-dasharray="2 2" opacity="0.5"/>` : '';
+        const scen = `<polyline points="${toPts(scenPts)}" fill="none" stroke="${stroke}" stroke-width="1.5"/>`;
+        return `<svg class="sparkline" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" aria-hidden="true" title="Trajectory over time">${base}${scen}</svg>`;
+    };
     const totals = result.totals ? `
         <table><thead><tr><th>Since day ${number(result.start)}</th><th class="number">Scenario</th><th class="number">baseline</th></tr></thead>
             <tbody>
@@ -1131,9 +1247,9 @@ function renderScenarioResult() {
         ${result.clamped?.length ? notice('warning', `Some of the values this scenario supplied lie outside what the model allows, and were held to its limits, so the run differs from what was asked: ${result.clamped.join('; ')}.`) : ''}
         ${totals}${ports}${waits}${lanes}
         <table><thead><tr><th>Warehouse</th><th class="number">Lowest stock</th><th class="number">baseline</th><th class="number">day</th></tr></thead>
-            <tbody>${result.warehouses.map((item) => `<tr><td>${escape(item.name)}</td><td${worse(item.low, item.baseline, { lowerIsWorse: true })}>${number(item.low)}</td><td class="number">${number(item.baseline)}</td><td class="number">${number(item.day, 1)}</td></tr>`).join('')}</tbody></table>
+            <tbody>${result.warehouses.map((item) => `<tr><td><div class="nameWithSpark"><span>${escape(item.name)}</span>${drawSpark(item.scenPts, item.basePts, { stroke: 'var(--warn)' })}</div></td><td${worse(item.low, item.baseline, { lowerIsWorse: true })}>${number(item.low)}</td><td class="number">${number(item.baseline)}</td><td class="number">${number(item.day, 1)}</td></tr>`).join('')}</tbody></table>
         <table><thead><tr><th>Town</th><th class="number">Highest backlog</th><th class="number">baseline</th><th class="number">day</th></tr></thead>
-            <tbody>${towns.map((item) => `<tr><td>${escape(item.name)}</td><td${worse(item.peak, item.baseline)}>${number(item.peak)}</td><td class="number">${number(item.baseline)}</td><td class="number">${number(item.day, 1)}</td></tr>`).join('')}</tbody></table>
+            <tbody>${towns.map((item) => `<tr><td><div class="nameWithSpark"><span>${escape(item.name)}</span>${drawSpark(item.scenPts, item.basePts, { stroke: 'var(--danger)' })}</div></td><td${worse(item.peak, item.baseline)}>${number(item.peak)}</td><td class="number">${number(item.baseline)}</td><td class="number">${number(item.day, 1)}</td></tr>`).join('')}</tbody></table>
         <p class="muted small">Costs are in the model's cost units, counted from the day the scenario starts. The forked run is in the canvas beside the baseline; Show in Konjugate brings it forward.</p>`;
 }
 

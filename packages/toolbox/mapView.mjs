@@ -77,6 +77,18 @@ export class MapView {
         this.applyView();
     }
 
+    zoom(factor) {
+        const cx = this.view.x + this.view.width / 2;
+        const cy = this.view.y + this.view.height / 2;
+        this.view = {
+            x: cx - (cx - this.view.x) * factor,
+            y: cy - (cy - this.view.y) * factor,
+            width: this.view.width * factor,
+            height: this.view.height * factor
+        };
+        this.applyView();
+    }
+
     // `map` is the importer's mapLayers(); it sets the region and redraws the base layers.
     setMap(map) {
         this.bbox = map.bbox;

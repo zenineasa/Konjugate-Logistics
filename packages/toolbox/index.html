@@ -10,164 +10,196 @@
     <main class="layout">
         <aside class="panel" id="panel">
             <section class="step" id="stepRegion">
-                <h2><span class="stepNumber">1</span> Region</h2>
-                <form id="searchForm" class="row">
-                    <input id="searchInput" type="search" placeholder="A port, city or area" autocomplete="off" aria-label="Search for a place">
-                    <button class="button" type="submit" id="searchButton">Search</button>
-                </form>
-                <ul class="results" id="searchResults" hidden></ul>
-                <div class="chosen" id="chosenRegion" hidden>
-                    <div class="chosenName" id="chosenName"></div>
-                    <label class="row small">Include
-                        <select id="marginSelect">
-                            <option value="0">the place itself</option>
-                            <option value="10">10 km around it</option>
-                            <option value="25" selected>25 km around it</option>
-                            <option value="50">50 km around it</option>
-                        </select>
-                    </label>
-                    <div class="muted small" id="areaSize"></div>
-                    <button class="button primary" type="button" id="fetchButton">Fetch map data</button>
+                <div class="stepHeader" data-step="stepRegion">
+                    <h2><span class="stepNumber">1</span> Region</h2>
+                    <span class="stepSummary" id="stepRegionSummary"></span>
+                    <button type="button" class="stepToggle" aria-label="Toggle Region section">▾</button>
                 </div>
-                <ul class="progress" id="fetchProgress" hidden></ul>
-                <div class="row small">
-                    <button class="link" type="button" id="sampleButton">Use the sample region</button>
-                    <span class="muted">·</span>
-                    <button class="link" type="button" id="sitesButton">Add your own sites (CSV)</button>
+                <div class="stepContent">
+                    <form id="searchForm" class="row">
+                        <input id="searchInput" type="search" placeholder="A port, city or area" autocomplete="off" aria-label="Search for a place">
+                        <button class="button" type="submit" id="searchButton">Search</button>
+                    </form>
+                    <ul class="results" id="searchResults" hidden></ul>
+                    <div class="chosen" id="chosenRegion" hidden>
+                        <div class="chosenName" id="chosenName"></div>
+                        <label class="row small">Include
+                            <select id="marginSelect">
+                                <option value="0">the place itself</option>
+                                <option value="10">10 km around it</option>
+                                <option value="25" selected>25 km around it</option>
+                                <option value="50">50 km around it</option>
+                            </select>
+                        </label>
+                        <div class="muted small" id="areaSize"></div>
+                        <button class="button primary" type="button" id="fetchButton">Fetch map data</button>
+                    </div>
+                    <ul class="progress" id="fetchProgress" hidden></ul>
+                    <div class="row small">
+                        <button class="link" type="button" id="sampleButton">Use the sample region</button>
+                        <span class="muted">·</span>
+                        <button class="link" type="button" id="sitesButton">Add your own sites (CSV)</button>
+                    </div>
+                    <div id="regionStatus"></div>
                 </div>
-                <div id="regionStatus"></div>
             </section>
 
             <section class="step" id="stepCoverage" hidden>
-                <h2><span class="stepNumber">2</span> What the map data shows</h2>
-                <div id="coverageSummary" class="coverage"></div>
-                <div id="notices"></div>
+                <div class="stepHeader" data-step="stepCoverage">
+                    <h2><span class="stepNumber">2</span> What the map data shows</h2>
+                    <span class="stepSummary" id="stepCoverageSummary"></span>
+                    <button type="button" class="stepToggle" aria-label="Toggle Coverage section">▾</button>
+                </div>
+                <div class="stepContent">
+                    <div id="coverageSummary" class="coverage"></div>
+                    <div id="notices"></div>
+                </div>
             </section>
 
             <section class="step" id="stepCurate" hidden>
-                <h2><span class="stepNumber">3</span> Keep what matters</h2>
-                <p class="muted small">Tick sites here or click them on the map. Drag a kept site to move it. Most significant first.</p>
-                <div class="tabs" role="tablist" id="kindTabs">
-                    <button type="button" role="tab" data-group="ports" class="active">Ports <span class="count" data-count="ports"></span></button>
-                    <button type="button" role="tab" data-group="zones">Logistics zones <span class="count" data-count="zones"></span></button>
-                    <button type="button" role="tab" data-group="towns">Towns <span class="count" data-count="towns"></span></button>
+                <div class="stepHeader" data-step="stepCurate">
+                    <h2><span class="stepNumber">3</span> Keep what matters</h2>
+                    <span class="stepSummary" id="stepCurateSummary"></span>
+                    <button type="button" class="stepToggle" aria-label="Toggle Curate section">▾</button>
                 </div>
-                <div class="row small">
-                    <label>Keep the top <input type="number" id="topN" min="0" max="99" step="1"></label>
-                    <button class="link" type="button" id="applyTop">Apply</button>
+                <div class="stepContent">
+                    <p class="muted small">Tick sites here or click them on the map. Drag a kept site to move it. Most significant first.</p>
+                    <div class="tabs" role="tablist" id="kindTabs">
+                        <button type="button" role="tab" data-group="ports" class="active">Ports <span class="count" data-count="ports"></span></button>
+                        <button type="button" role="tab" data-group="zones">Logistics zones <span class="count" data-count="zones"></span></button>
+                        <button type="button" role="tab" data-group="towns">Towns <span class="count" data-count="towns"></span></button>
+                    </div>
+                    <div class="row small">
+                        <label>Keep the top <input type="number" id="topN" min="0" max="99" step="1"></label>
+                        <button class="link" type="button" id="applyTop">Apply</button>
+                    </div>
+                    <div class="row small" id="portVolumeRow">
+                        <label title="For ports with no IMF PortWatch activity: shared among them by their port land">Assumed volume, on average per port <input type="number" id="portVolume" min="1" step="10"> TEU/day</label>
+                    </div>
+                    <ul class="candidates" id="candidateList"></ul>
                 </div>
-                <div class="row small" id="portVolumeRow">
-                    <label title="For ports with no IMF PortWatch activity: shared among them by their port land">Assumed volume, on average per port <input type="number" id="portVolume" min="1" step="10"> TEU/day</label>
-                </div>
-                <ul class="candidates" id="candidateList"></ul>
             </section>
 
             <section class="step" id="stepBuild" hidden>
-                <h2><span class="stepNumber">4</span> Model</h2>
-                <div class="row">
-                    <button class="button primary" type="button" id="buildButton">Build model</button>
-                    <button class="button" type="button" id="showButton" disabled>Show in Konjugate</button>
+                <div class="stepHeader" data-step="stepBuild">
+                    <h2><span class="stepNumber">4</span> Model</h2>
+                    <span class="stepSummary" id="stepBuildSummary"></span>
+                    <button type="button" class="stepToggle" aria-label="Toggle Model section">▾</button>
                 </div>
-                <label class="row small" title="For ports matched to IMF PortWatch. Steady average: the baseline holds still. Follow history: each day's arrivals over the run are that port's container imports on the matching day, the latest days of its history.">Port arrivals
-                    <select id="arrivalsSelect">
-                        <option value="history">Follow PortWatch history</option>
-                        <option value="average">Steady average</option>
-                    </select></label>
-                <div class="row small" title="PortWatch gives container imports in tonnes. An imported TEU weighs this much on average (loaded boxes more, empties less), and this share of the imports is handed inland: the rest only changes ships at the port (transhipment). Both are assumptions; set them from figures you trust.">
-                    <label>An imported TEU weighs <input type="number" id="tonnesPerTeuInput" min="1" max="40" step="0.5" value="10"> t;</label>
-                    <label><input type="number" id="inlandShareInput" min="1" max="100" step="5" value="100"> % goes inland</label>
-                </div>
-                <label class="row small" title="The days of PortWatch history the model uses: the arrivals it replays, or the days it averages over. Empty: the latest days (replayed), or the whole year fetched (averaged).">History from
-                    <input type="date" id="historyFromInput"> <span class="muted" id="historyFromHint">empty: the latest days</span></label>
-                <div class="row small" title="A haulier's trucks: its truck sizes and costs become the region's, and the lanes it carries run on its trucks. An invented operator is plausible, and labelled synthetic wherever it is used.">
-                    <label>Fleet operator
-                        <select id="operatorSelect">
-                            <option value="">None: each lane sized to its flow</option>
-                            <option value="synthetic">An invented operator (synthetic)</option>
-                            <option value="file">Your own (JSON)</option>
+                <div class="stepContent">
+                    <div class="row">
+                        <button class="button primary" type="button" id="buildButton">Build model</button>
+                        <button class="button" type="button" id="showButton" disabled>Show in Konjugate</button>
+                    </div>
+                    <label class="row small" title="For ports matched to IMF PortWatch. Steady average: the baseline holds still. Follow history: each day's arrivals over the run are that port's container imports on the matching day, the latest days of its history.">Port arrivals
+                        <select id="arrivalsSelect">
+                            <option value="history">Follow PortWatch history</option>
+                            <option value="average">Steady average</option>
                         </select></label>
-                    <button class="link" type="button" id="operatorFileButton" hidden>Choose its file</button>
+                    <div class="row small" title="PortWatch gives container imports in tonnes. An imported TEU weighs this much on average (loaded boxes more, empties less), and this share of the imports is handed inland: the rest only changes ships at the port (transhipment). Both are assumptions; set them from figures you trust.">
+                        <label>An imported TEU weighs <input type="number" id="tonnesPerTeuInput" min="1" max="40" step="0.5" value="10"> t;</label>
+                        <label><input type="number" id="inlandShareInput" min="1" max="100" step="5" value="100"> % goes inland</label>
+                    </div>
+                    <label class="row small" title="The days of PortWatch history the model uses: the arrivals it replays, or the days it averages over. Empty: the latest days (replayed), or the whole year fetched (averaged).">History from
+                        <input type="date" id="historyFromInput"> <span class="muted" id="historyFromHint">empty: the latest days</span></label>
+                    <div class="row small" title="A haulier's trucks: its truck sizes and costs become the region's, and the lanes it carries run on its trucks. An invented operator is plausible, and labelled synthetic wherever it is used.">
+                        <label>Fleet operator
+                            <select id="operatorSelect">
+                                <option value="">None: each lane sized to its flow</option>
+                                <option value="synthetic">An invented operator (synthetic)</option>
+                                <option value="file">Your own (JSON)</option>
+                            </select></label>
+                        <button class="link" type="button" id="operatorFileButton" hidden>Choose its file</button>
+                    </div>
+                    <label class="row small"><input type="checkbox" id="keepInStep" checked> Keep the canvas in step with changes here</label>
+                    <div id="buildStatus"></div>
+                    <div id="buildResult"></div>
                 </div>
-                <label class="row small"><input type="checkbox" id="keepInStep" checked> Keep the canvas in step with changes here</label>
-                <div id="buildStatus"></div>
-                <div id="buildResult"></div>
             </section>
 
             <section class="step" id="stepScenario" hidden>
-                <h2><span class="stepNumber">5</span> Scenarios</h2>
-                <p class="muted small">Each scenario forks the model on the day it starts and runs beside the baseline.</p>
-                <div class="tabs" role="tablist" id="scenarioTabs">
-                    <button type="button" role="tab" data-scenario="chokepointDisruption" class="active">Chokepoint</button>
-                    <button type="button" role="tab" data-scenario="roadClosure">Road closure</button>
-                    <button type="button" role="tab" data-scenario="fleetChange">Fleet</button>
-                    <button type="button" role="tab" data-scenario="demandSurge">Demand</button>
+                <div class="stepHeader" data-step="stepScenario">
+                    <h2><span class="stepNumber">5</span> Scenarios</h2>
+                    <span class="stepSummary" id="stepScenarioSummary"></span>
+                    <button type="button" class="stepToggle" aria-label="Toggle Scenarios section">▾</button>
                 </div>
-                <div class="scenarioPanel" data-panel="chokepointDisruption">
-                    <p class="muted small">Fewer ships through a strait or canal for a while: the ports that depend on it receive less.</p>
-                    <label class="row small">Chokepoint <select id="chokepointSelect"></select></label>
-                    <div class="transits small" id="transitSummary" hidden></div>
+                <div class="stepContent">
+                    <p class="muted small">Each scenario forks the model on the day it starts and runs beside the baseline.</p>
+                    <div class="tabs" role="tablist" id="scenarioTabs">
+                        <button type="button" role="tab" data-scenario="chokepointDisruption" class="active">Chokepoint</button>
+                        <button type="button" role="tab" data-scenario="roadClosure">Road closure</button>
+                        <button type="button" role="tab" data-scenario="fleetChange">Fleet</button>
+                        <button type="button" role="tab" data-scenario="demandSurge">Demand</button>
+                    </div>
+                    <div class="scenarioPanel" data-panel="chokepointDisruption">
+                        <p class="muted small">Fewer ships through a strait or canal for a while: the ports that depend on it receive less.</p>
+                        <label class="row small">Chokepoint <select id="chokepointSelect"></select></label>
+                        <div class="transits small" id="transitSummary" hidden></div>
+                        <div class="row small">
+                            <label>Cut transits by <input type="number" id="cutInput" min="0" max="100" step="5" value="50"> %</label>
+                        </div>
+                        <div class="row small" title="Cargo kept out may be lost (diverted elsewhere, cancelled) or only delayed: ships that wait or sail around arrive after the disruption ends. The delayed part arrives evenly over the days given, on top of the usual traffic.">
+                            <label>Of the cargo kept out, <input type="number" id="delayedInput" min="0" max="100" step="10" value="0"> % arrives later,</label>
+                            <label>over <input type="number" id="catchUpInput" min="1" step="1" value="20"> days</label>
+                        </div>
+                        <div class="row small" title="Ships that can't pass may land their cargo at a port outside the chokepoint instead, to be trucked inland from there. Its warehouses order that cargo from it, over a standby lane where they have no lane from it yet, and those lanes hire trucks for it.">
+                            <label><input type="number" id="divertedInput" min="0" max="100" step="10" value="0"> % is diverted to</label>
+                            <select id="divertToSelect"></select>
+                        </div>
+                        <div class="row small" id="diversionRow" hidden>
+                            <label title="Of the trucks the diverted cargo needs on its lanes, the share that can be found and hired">trucks found <input type="number" id="trucksFoundInput" min="0" max="100" step="10" value="100"> %</label>
+                            <label title="The model sizes a port's berths for the cargo it hands inland. A port that is mostly transhipment may have far more; leave empty to keep its own.">its berths take <input type="number" id="divertBerthsInput" min="1" step="100" placeholder=""> TEU/day</label>
+                        </div>
+                        <table class="dependence" id="dependenceTable"></table>
+                    </div>
+                    <div class="scenarioPanel" data-panel="roadClosure" hidden>
+                        <p class="muted small">A road lane closed, or restricted, for a while. Trucks already on it finish their trips.</p>
+                        <label class="row small">Lane <select id="closureLaneSelect"></select></label>
+                        <label class="row small" title="Wait: orders queue on the lane until it reopens, and the cargo waits at the port. Detour: the lane stays open, but every trip is longer. Other ports: the warehouse orders from its other ports">Its trucks
+                            <select id="closureModeSelect">
+                                <option value="wait">wait for it to reopen</option>
+                                <option value="detour">take a detour</option>
+                                <option value="otherPorts">the warehouse orders from its other ports</option>
+                            </select></label>
+                        <div class="row small" id="closureOpenRow">
+                            <label>Open <input type="number" id="closureOpenInput" min="0" max="95" step="5" value="0"> % of the way</label>
+                        </div>
+                        <div class="row small" id="closureDetourRow" hidden>
+                            <label>The detour adds <input type="number" id="detourHoursInput" min="0.5" max="72" step="0.5" value="3"> hours each way</label>
+                        </div>
+                        <div class="muted small" id="closureHint"></div>
+                    </div>
+                    <div class="scenarioPanel" data-panel="fleetChange" hidden>
+                        <p class="muted small">Fewer trucks (drivers short, trucks off the road) or more (the operator hires). Trucks are hired or released over a few days; only idle ones are released.</p>
+                        <label class="row small">On <select id="fleetLanesSelect"></select></label>
+                        <div class="row small">
+                            <label>Change the trucks by <input type="number" id="fleetChangeInput" min="-100" max="200" step="5" value="-30"> %</label>
+                        </div>
+                        <div class="muted small" id="fleetHint"></div>
+                    </div>
+                    <div class="scenarioPanel" data-panel="demandSurge" hidden>
+                        <p class="muted small">Towns order more for a while, as on peak days.</p>
+                        <label class="row small">In <select id="demandTownsSelect"></select></label>
+                        <div class="row small">
+                            <label>Raise demand by <input type="number" id="demandChangeInput" min="-90" max="300" step="5" value="30"> %</label>
+                        </div>
+                        <div class="muted small" id="demandHint"></div>
+                    </div>
                     <div class="row small">
-                        <label>Cut transits by <input type="number" id="cutInput" min="0" max="100" step="5" value="50"> %</label>
+                        <label>from day <input type="number" id="startInput" min="0" step="1" value="10"></label>
+                        <label>for <input type="number" id="durationInput" min="1" step="1" value="30"> days</label>
                     </div>
-                    <div class="row small" title="Cargo kept out may be lost (diverted elsewhere, cancelled) or only delayed: ships that wait or sail around arrive after the disruption ends. The delayed part arrives evenly over the days given, on top of the usual traffic.">
-                        <label>Of the cargo kept out, <input type="number" id="delayedInput" min="0" max="100" step="10" value="0"> % arrives later,</label>
-                        <label>over <input type="number" id="catchUpInput" min="1" step="1" value="20"> days</label>
+                    <div class="row">
+                        <button class="button primary" type="button" id="runScenarioButton">Run the scenario</button>
+                        <button class="button" type="button" id="showScenarioButton" disabled>Show in Konjugate</button>
                     </div>
-                    <div class="row small" title="Ships that can't pass may land their cargo at a port outside the chokepoint instead, to be trucked inland from there. Its warehouses order that cargo from it, over a standby lane where they have no lane from it yet, and those lanes hire trucks for it.">
-                        <label><input type="number" id="divertedInput" min="0" max="100" step="10" value="0"> % is diverted to</label>
-                        <select id="divertToSelect"></select>
-                    </div>
-                    <div class="row small" id="diversionRow" hidden>
-                        <label title="Of the trucks the diverted cargo needs on its lanes, the share that can be found and hired">trucks found <input type="number" id="trucksFoundInput" min="0" max="100" step="10" value="100"> %</label>
-                        <label title="The model sizes a port's berths for the cargo it hands inland. A port that is mostly transhipment may have far more; leave empty to keep its own.">its berths take <input type="number" id="divertBerthsInput" min="1" step="100" placeholder=""> TEU/day</label>
-                    </div>
-                    <table class="dependence" id="dependenceTable"></table>
+                    <div id="scenarioStatus"></div>
+                    <div id="scenarioResult"></div>
                 </div>
-                <div class="scenarioPanel" data-panel="roadClosure" hidden>
-                    <p class="muted small">A road lane closed, or restricted, for a while. Trucks already on it finish their trips.</p>
-                    <label class="row small">Lane <select id="closureLaneSelect"></select></label>
-                    <label class="row small" title="Wait: orders queue on the lane until it reopens, and the cargo waits at the port. Detour: the lane stays open, but every trip is longer. Other ports: the warehouse orders over its other lanes, which ship only what their own ports hold; the closed lane's cargo still waits at its port.">Its trucks
-                        <select id="closureModeSelect">
-                            <option value="wait">wait for it to reopen</option>
-                            <option value="detour">take a detour</option>
-                            <option value="otherPorts">the warehouse orders from its other ports</option>
-                        </select></label>
-                    <div class="row small" id="closureOpenRow">
-                        <label>Open <input type="number" id="closureOpenInput" min="0" max="95" step="5" value="0"> % of the way</label>
-                    </div>
-                    <div class="row small" id="closureDetourRow" hidden>
-                        <label>The detour adds <input type="number" id="detourHoursInput" min="0.5" max="72" step="0.5" value="3"> hours each way</label>
-                    </div>
-                    <div class="muted small" id="closureHint"></div>
-                </div>
-                <div class="scenarioPanel" data-panel="fleetChange" hidden>
-                    <p class="muted small">Fewer trucks (drivers short, trucks off the road) or more (the operator hires). Trucks are hired or released over a few days; only idle ones are released.</p>
-                    <label class="row small">On <select id="fleetLanesSelect"></select></label>
-                    <div class="row small">
-                        <label>Change the trucks by <input type="number" id="fleetChangeInput" min="-100" max="200" step="5" value="-30"> %</label>
-                    </div>
-                    <div class="muted small" id="fleetHint"></div>
-                </div>
-                <div class="scenarioPanel" data-panel="demandSurge" hidden>
-                    <p class="muted small">Towns order more for a while, as on peak days.</p>
-                    <label class="row small">In <select id="demandTownsSelect"></select></label>
-                    <div class="row small">
-                        <label>Raise demand by <input type="number" id="demandChangeInput" min="-90" max="300" step="5" value="30"> %</label>
-                    </div>
-                    <div class="muted small" id="demandHint"></div>
-                </div>
-                <div class="row small">
-                    <label>from day <input type="number" id="startInput" min="0" step="1" value="10"></label>
-                    <label>for <input type="number" id="durationInput" min="1" step="1" value="30"> days</label>
-                </div>
-                <div class="row">
-                    <button class="button primary" type="button" id="runScenarioButton">Run the scenario</button>
-                    <button class="button" type="button" id="showScenarioButton" disabled>Show in Konjugate</button>
-                </div>
-                <div id="scenarioStatus"></div>
-                <div id="scenarioResult"></div>
             </section>
         </aside>
+
+        <div class="splitter" id="splitter" title="Drag to resize panel (double-click to reset)"></div>
 
         <section class="mapArea">
             <div class="mapTools">
@@ -176,6 +208,8 @@
                 <button type="button" class="tool" data-add="zone">Warehouse</button>
                 <button type="button" class="tool" data-add="town">Customer</button>
                 <span class="spacer"></span>
+                <button type="button" class="tool" id="zoomInButton" title="Zoom in">+</button>
+                <button type="button" class="tool" id="zoomOutButton" title="Zoom out">−</button>
                 <button type="button" class="tool" id="fitButton">Fit</button>
             </div>
             <svg id="map" role="img" aria-label="Map of the region"></svg>
