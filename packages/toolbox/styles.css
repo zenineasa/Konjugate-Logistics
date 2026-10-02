@@ -130,6 +130,10 @@ details summary:hover { text-decoration: underline; }
 #map .site.highlight { stroke: #fff; }
 #map .label { fill: var(--bright); font-family: var(--font); paint-order: stroke; stroke: #08121a; pointer-events: none; font-weight: 500; }
 #map .lane { stroke: var(--lane); stroke-opacity: 0.85; stroke-linecap: round; fill: none; }
+#map path.lane { stroke-linejoin: round; stroke-opacity: 0.95; }
+#map .laneCasing { fill: none; stroke: #08121a; stroke-opacity: 0.8; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+#map .lane.estimated { stroke-opacity: 0.6; }
+#map .lane.standby { stroke-opacity: 0.55; }
 #map .serve { stroke: var(--town); stroke-opacity: 0.65; stroke-dasharray: 3 3; fill: none; }
 
 .legend { display: flex; gap: 14px; align-items: center; padding: 6px 12px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); background: var(--surface); }

@@ -615,6 +615,8 @@ function renderBuilt() {
     const built = state.built;
     const positions = new Map(groups.flatMap((group) => allSites(group).map((site) => [site.name, site])));
     map.setFlows({
+        // The roads the lanes run on (a build saved before corridors falls back to straight lanes).
+        corridors: built.corridors ?? null,
         lanes: built.lanes.filter((lane) => positions.has(lane.from) && positions.has(lane.to)).map((lane) => ({
             from: positions.get(lane.from), to: positions.get(lane.to), rate: lane.rate,
             title: `${lane.name}: ${number(lane.rate, 1)} TEU/day, ${number(lane.kilometres, 1)} km, ${number(lane.leadTime * 24, 1)} h, ${trucksOf(lane)} trucks${lane.operator ? ` (${built.operator.name})` : ''}`

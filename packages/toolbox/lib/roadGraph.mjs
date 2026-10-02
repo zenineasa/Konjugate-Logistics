@@ -3,7 +3,7 @@
 // A road graph from OpenStreetMap's major roads, small enough to route in the add-on itself: every
 // road node is a vertex (so a site snaps onto the road itself, not just to a junction), and each edge
 // carries its length and its travel time at a speed set by the road's class. Roads are treated as
-// two-way.
+// two-way. A routed answer also gives the road nodes it follows, so a map can draw the lane along its road.
 
 import { distance } from './geo.mjs';
 
@@ -84,6 +84,8 @@ function nearestVertex(graph, point) {
 function shortestFrom(graph, sourceId) {
     const hours = new Map([[sourceId, 0]]);
     const metres = new Map([[sourceId, 0]]);
+    // Each vertex's predecessor on its shortest path, so a route can be walked back to give its road.
+    const previous = new Map();
     const heap = [[0, sourceId]];
     const push = (item) => {
         heap.push(item);
@@ -122,11 +124,12 @@ function shortestFrom(graph, sourceId) {
             if (next < (hours.get(edge.to) ?? Infinity)) {
                 hours.set(edge.to, next);
                 metres.set(edge.to, metres.get(id) + edge.metres);
+                previous.set(edge.to, id);
                 push([next, edge.to]);
             }
         }
     }
-    return { hours, metres };
+    return { hours, metres, previous };
 }
 
 // A router between { lat, lon } points. Each answer says how it was found: `routed` over the road
@@ -166,10 +169,15 @@ export function createRouter(graph) {
             const roadHours = tree.hours.get(to.vertex.id);
             if (roadHours === undefined) return straight(a, b);
             const accessKilometres = (from.metres + to.metres) / 1000 * detourFactor;
+            // The road nodes from the one nearest `a` to the one nearest `b`: ids, and their points.
+            const ids = [to.vertex.id];
+            while (ids[ids.length - 1] !== from.vertex.id) ids.push(tree.previous.get(ids[ids.length - 1]));
+            ids.reverse();
             return {
                 kilometres: tree.metres.get(to.vertex.id) / 1000 + accessKilometres,
                 hours: roadHours + accessKilometres / accessSpeed,
-                basis: 'routed'
+                basis: 'routed',
+                path: { ids, points: ids.map((id) => ({ lat: graph.vertices.get(id).lat, lon: graph.vertices.get(id).lon })) }
             };
         }
     };

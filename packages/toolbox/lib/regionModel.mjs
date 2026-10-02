@@ -6,6 +6,7 @@
 // initial value is the steady state, so the baseline holds still. Every value records where it came
 // from: sourced, routed, assumed or the user's own.
 
+import { laneCorridors } from './corridors.mjs';
 import { toLocal } from './geo.mjs';
 import { allocateFleet, parseOperator } from './operator.mjs';
 import { historyWindow, tonnesPerTeu } from './portwatch.mjs';
@@ -395,6 +396,8 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
         flowsByZone.get(zoneId).push({ port: ports.find((port) => port.id === portId), rate: flows.get(key), leg: legs.get(key) });
     }
     const lanes = [];
+    // Each lane's ends and the roads it was routed over, for the map's corridors.
+    const laneGeometry = [];
     const warehouses = new Map();
     const laneTime = (flow) => Number(((flow.leg.hours + settings.gateHours) / 24).toFixed(4));
     // The operator's trucks, shared among its contracted lanes by what each needs on the road: loaded and returning
@@ -471,9 +474,14 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
                 note(laneName, 'Fleet', fleet, 'trucks', 'assumed', `Enough for the baseline flow of ${lane.rate.toFixed(1)} TEU/day, plus a reserve.`);
             }
             lanes.push({ name: laneName, from: lane.port.name, to: zone.name, rate: lane.rate, leadTime, kilometres, fleet, fleet2, operator: Boolean(contract), standby: Boolean(lane.standby), basis: lane.leg.basis });
+            laneGeometry.push({ name: laneName, rate: lane.rate, standby: Boolean(lane.standby), basis: lane.leg.basis, origin: lane.port, destination: zone, path: lane.leg.path ?? null });
         }
         warehouses.set(zone.id, warehouse);
     }
+
+    // The roads the lanes run on, simplified as the map simplifies its roads: about half a pixel on a 1000-pixel map.
+    const latitudes = [...ports, ...usedZones].map((item) => item.lat);
+    const corridors = laneCorridors(laneGeometry, { tolerance: Math.max(20, (Math.max(...latitudes) - Math.min(...latitudes)) * 111320 / 2000) });
 
     // ---- towns, each served by its zones
     for (const town of towns) {
@@ -548,6 +556,8 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
         // The ports whose arrivals follow their history, and the dates model day 0 and the last day stand for.
         histories: [...histories].map(([id, history]) => ({ port: ports.find((port) => port.id === id).name, from: history.from, to: history.to, days: history.samples.length })),
         unusedZones: unusedZones.map((zone) => zone.name),
+        // The roads the lanes run on, for the map: [{ points, rate, lanes, basis, standby }].
+        corridors,
         // Each town's demand as built, what a scenario that steps it up starts from.
         towns: towns.map((town) => ({ name: town.name, demand: demand.get(town.id) })),
         // One entry per town and zone serving it: the zone's share of the town's demand.

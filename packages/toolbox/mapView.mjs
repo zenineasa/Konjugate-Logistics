@@ -133,7 +133,7 @@ export class MapView {
     }
 
     setFlows(flows) {
-        this.flows = flows ?? { lanes: [], serves: [] };
+        this.flows = flows ?? { corridors: null, lanes: [], serves: [] };
         this.drawFlows();
     }
 
@@ -178,17 +178,47 @@ export class MapView {
         const unit = this.unit();
         this.flowLayer.replaceChildren();
         const at = (point) => this.project(point.lat, point.lon);
+        // Corridors: each lane along the roads it was routed over, a road several lanes share drawn once, as thick as
+        // what it carries. A lane estimated rather than routed is straight and dashed; one on standby (no flow yet) thin
+        // and dotted.
+        if (this.flows.corridors) {
+            const maximum = Math.max(1, ...this.flows.corridors.map((corridor) => corridor.rate));
+            const number = (value) => Number(value).toLocaleString('en', { maximumFractionDigits: 0 });
+            for (const corridor of this.flows.corridors) {
+                const d = corridor.points.map(([lat, lon], index) => {
+                    const { x, y } = this.project(lat, lon);
+                    return `${index ? 'L' : 'M'}${x.toFixed(3)} ${y.toFixed(3)}`;
+                }).join('');
+                const estimated = corridor.basis === 'straight-line';
+                // A dark casing under the corridor lifts it off the road it follows.
+                if (!(corridor.standby && !(corridor.rate > 0))) element('path', { d, class: 'laneCasing', 'stroke-width': (3.5 + 5 * corridor.rate / maximum) * unit }, this.flowLayer);
+                const dash = corridor.standby && !(corridor.rate > 0) ? `${1.5 * unit} ${3 * unit}` : estimated ? `${6 * unit} ${4 * unit}` : null;
+                const path = element('path', {
+                    d, class: `lane${estimated ? ' estimated' : ''}${corridor.standby && !(corridor.rate > 0) ? ' standby' : ''}`,
+                    'stroke-width': (corridor.standby && !(corridor.rate > 0) ? 1.2 : 1.5 + 5 * corridor.rate / maximum) * unit,
+                    ...(dash ? { 'stroke-dasharray': dash } : {})
+                }, this.flowLayer);
+                const how = { routed: 'over major roads', local: 'local streets, estimated', 'straight-line': 'no road route found: a straight-line estimate' }[corridor.basis] ?? corridor.basis;
+                element('title', {}, path).textContent = `${number(corridor.rate)} TEU/day (${how})\n${corridor.lanes.map((name) => name.replace(/^Road /, '')).join('\n')}`;
+            }
+        } else {
+            this.drawStraightLanes(unit, at);
+        }
+        for (const serve of this.flows.serves) {
+            const a = at(serve.from);
+            const b = at(serve.to);
+            element('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: 'serve', 'stroke-width': 1.2 * unit, 'stroke-dasharray': `${3 * unit} ${3 * unit}` }, this.flowLayer);
+        }
+    }
+
+    // A build saved before corridors: each lane straight between its ends.
+    drawStraightLanes(unit, at) {
         const maximum = Math.max(1, ...this.flows.lanes.map((lane) => lane.rate));
         for (const lane of this.flows.lanes) {
             const a = at(lane.from);
             const b = at(lane.to);
             const line = element('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: 'lane', 'stroke-width': (1.5 + 5 * lane.rate / maximum) * unit }, this.flowLayer);
             element('title', {}, line).textContent = lane.title;
-        }
-        for (const serve of this.flows.serves) {
-            const a = at(serve.from);
-            const b = at(serve.to);
-            element('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: 'serve', 'stroke-width': 1.2 * unit, 'stroke-dasharray': `${3 * unit} ${3 * unit}` }, this.flowLayer);
         }
     }
 

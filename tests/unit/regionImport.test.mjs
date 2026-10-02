@@ -932,3 +932,36 @@ test('geography tiles are named by their corner, and rings and lines are cut to 
     assert.equal(layers.land.length, 1);
     assert.deepEqual(layers.borders.map((border) => border.settled), [true, false]);
 });
+
+test('a routed lane gives the roads it follows, and lanes sharing a road are drawn as one corridor carrying both', async () => {
+    const { laneCorridors } = await import('../../packages/toolbox/lib/corridors.mjs');
+    const discovered = discoverRegion(syntheticRegion());
+    const router = createRouter(discovered.roadGraph);
+    const selection = defaultSelection(discovered.candidates);
+    const [port] = selection.ports;
+    const [first, second] = selection.zones;
+    const legA = router.route(port, first);
+    const legB = router.route(port, second);
+    for (const leg of [legA, legB].filter((item) => item.basis === 'routed')) {
+        // The path's own length is the road distance the leg reports, less its access legs.
+        const metres = leg.path.points.slice(1).reduce((total, point, index) => total + distance(leg.path.points[index], point), 0);
+        assert.ok(leg.path.ids.length >= 2 && metres <= leg.kilometres * 1000 + 1, 'a path no longer than the leg');
+    }
+    // Two lanes from one port over a shared first stretch (made by hand), one on standby, one estimated.
+    const point = (lat, lon) => ({ lat, lon });
+    const lanes = [
+        { name: 'A', rate: 30, standby: false, basis: 'routed', origin: point(0, 0), destination: point(0, 3), path: { ids: [1, 2, 3], points: [point(0, 0.1), point(0, 1), point(0, 2.9)] } },
+        { name: 'B', rate: 10, standby: false, basis: 'routed', origin: point(0, 0), destination: point(1, 1), path: { ids: [1, 2, 4], points: [point(0, 0.1), point(0, 1), point(0.9, 1)] } },
+        { name: 'C', rate: 0, standby: true, basis: 'routed', origin: point(0, 0), destination: point(-1, 1), path: { ids: [1, 5], points: [point(0, 0.1), point(-0.9, 1)] } },
+        { name: 'D', rate: 5, standby: false, basis: 'straight-line', origin: point(2, 2), destination: point(3, 3), path: null }
+    ];
+    const corridors = laneCorridors(lanes, { tolerance: 1 });
+    const shared = corridors.find((item) => item.lanes.join() === 'A,B');
+    assert.ok(shared, 'the stretch A and B share is one corridor');
+    assert.equal(shared.rate, 40, 'carrying both');
+    assert.ok(corridors.some((item) => item.lanes.join() === 'A' && item.rate === 30) && corridors.some((item) => item.lanes.join() === 'B' && item.rate === 10), 'each goes on alone after');
+    assert.ok(corridors.some((item) => item.lanes.join() === 'A,B,C' && item.rate === 40 && !item.standby), 'a standby lane on a busy stretch adds nothing and does not make it standby');
+    assert.ok(corridors.some((item) => item.lanes.join() === 'C' && item.standby), 'alone, it is standby');
+    const estimated = corridors.find((item) => item.lanes.join() === 'D');
+    assert.deepEqual([estimated.basis, estimated.points], ['straight-line', [[2, 2], [3, 3]]], 'an estimated lane stays straight, and says so');
+});
