@@ -59,6 +59,21 @@
                 "interventions": [{ "parameter": "vesselArrivals", "target": "supplied", "samples": true }]
             },
             {
+                "scenarioId": "chokepointDiversion",
+                "name": "Chokepoint disruption, cargo diverted",
+                "description": "Fewer ships come through a strait or canal for a while, and part of the cargo kept out lands at a port outside it instead and is trucked inland from there. Watch that port's anchorage and yard, and the trucks on its lanes.",
+                "forkAt": 864000,
+                "runTime": 7776000,
+                "effects": ["Each port's arrivals fall by its share of ships through the chokepoint times the cut.", "The diverted cargo arrives at the chosen port; its warehouses order it from there, and those lanes hire trucks for it.", "The chosen port's berths keep their capacity, or take the capacity given from the disruption's first day to the end of the run."],
+                "interventions": [
+                    { "parameter": "vesselArrivals", "target": "supplied", "samples": true },
+                    { "parameter": "orderShare", "target": "supplied", "samples": true },
+                    { "parameter": "fleetSize", "target": "supplied", "samples": true },
+                    { "parameter": "berthCapacity", "target": "supplied", "samples": true },
+                    { "parameter": "outageCapacity", "target": "supplied", "samples": true }
+                ]
+            },
+            {
                 "scenarioId": "roadClosure",
                 "name": "Road closure",
                 "description": "A road lane is closed, or restricted, for a while. Its trucks wait for it to reopen, take a detour, or the warehouse orders from its other ports. Watch the warehouse's stock fall, the lane's trucks get busy and the cargo wait at the port.",

@@ -10,7 +10,7 @@ import { maximumSplitDepth, overpassRequests, overpassStatusUrl, overpassUrl, re
 import { nominatimSearchUrl, rankPlaces } from './lib/places.mjs';
 import { chokepointById, chokepointDependence, chokepointRecentUrl, chokepoints, chokepointYearlyUrl, disruptionPlan, summariseTransits } from './lib/chokepoints.mjs';
 import { portwatchActivityUrl, portwatchPortsUrl } from './lib/portwatch.mjs';
-import { closurePlan, demandPlan, fleetPlan } from './lib/scenarios.mjs';
+import { closurePlan, demandPlan, diversionPlan, fleetPlan } from './lib/scenarios.mjs';
 
 const api = window.konjugateLauncher;
 const $ = (selector) => document.querySelector(selector);
@@ -31,7 +31,9 @@ const state = {
     // fetched per chokepoint, and the last run's summary.
     dependence: new Map(), transits: new Map(), scenario: null,
     // The scenario tab chosen.
-    scenarioTab: 'chokepointDisruption'
+    scenarioTab: 'chokepointDisruption',
+    // Ports with standby lanes in the model, for cargo diverted to them.
+    standby: new Set()
 };
 
 const escape = (text) => String(text ?? '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
@@ -493,7 +495,7 @@ async function build({ focus = false } = {}) {
     setBusy(true);
     $('#buildStatus').innerHTML = notice('', 'Building the model: routing every lane…');
     try {
-        const answer = await call(api.runImport(importerId, { step: 'build', bbox: state.bbox, selection: selection(), settings: { portTeuPerDay: state.portVolume, arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(), operator: $('#operatorSelect').value || null } }));
+        const answer = await call(api.runImport(importerId, { step: 'build', bbox: state.bbox, selection: selection(), settings: { portTeuPerDay: state.portVolume, arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(), operator: $('#operatorSelect').value || null, standbyPorts: [...state.standby] } }));
         if (!answer.imported) throw new Error((answer.report?.errors ?? ['The model could not be built.']).join(' '));
         state.built = answer.data;
         await call(api.openInCanvas(null, { focus, silent: true, session: sessionState() }));
@@ -528,7 +530,7 @@ function renderBuilt() {
     $('#buildResult').innerHTML = `
         <table>
             <thead><tr><th>Road lane</th><th class="number">TEU/day</th><th class="number">km</th><th class="number">hours</th><th class="number" title="${built.operator ? `${escape(built.operator.trucks.map((truck) => truck.label).join(' + '))}` : 'Trucks of the first size'}">trucks</th></tr></thead>
-            <tbody>${built.lanes.map((lane) => `<tr><td>${escape(lane.from)} → ${escape(lane.to)} <span class="basis ${lane.basis === 'routed' ? '' : 'assumed'}">${basisLabel[lane.basis]}</span>${lane.operator ? ` <span class="basis ${built.operator.synthetic ? 'synthetic' : 'user'}">operator</span>` : ''}</td><td class="number">${number(lane.rate, 1)}</td><td class="number">${number(lane.kilometres, 1)}</td><td class="number">${number(lane.leadTime * 24, 1)}</td><td class="number">${trucksOf(lane)}</td></tr>`).join('')}</tbody>
+            <tbody>${built.lanes.map((lane) => `<tr><td>${escape(lane.from)} → ${escape(lane.to)} <span class="basis ${lane.basis === 'routed' ? '' : 'assumed'}">${basisLabel[lane.basis]}</span>${lane.operator ? ` <span class="basis ${built.operator.synthetic ? 'synthetic' : 'user'}">operator</span>` : ''}${lane.standby ? ' <span class="basis" title="Carries nothing until cargo is diverted to its port">standby</span>' : ''}</td><td class="number">${number(lane.rate, 1)}</td><td class="number">${number(lane.kilometres, 1)}</td><td class="number">${number(lane.leadTime * 24, 1)}</td><td class="number">${trucksOf(lane)}</td></tr>`).join('')}</tbody>
         </table>
         ${renderOperator(built.operator)}
         <table>
@@ -573,7 +575,7 @@ function sessionState() {
         kept: Object.fromEntries(groups.map((group) => [group, [...state.kept[group]]])),
         changes: [...state.changes], added: state.added, built: state.built, keepInStep: $('#keepInStep').checked,
         arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(),
-        operator: $('#operatorSelect').value || null, operatorFile: Boolean(state.operatorFile),
+        operator: $('#operatorSelect').value || null, operatorFile: Boolean(state.operatorFile), standby: [...state.standby],
         disruption: { ...disruptionSettings(), dependence: [...state.dependence], transits: [...state.transits].filter(([, value]) => value && !value.error) },
         scenarioTab: state.scenarioTab, scenarioSettings: scenarioSettings(), scenario: state.scenario
     };
@@ -610,6 +612,7 @@ async function restoreSession() {
         $('#inlandShareInput').value = Math.round((saved.inlandShare ?? 1) * 100);
         $('#operatorSelect').value = saved.operator ?? '';
         state.operatorFile = Boolean(saved.operatorFile);
+        state.standby = new Set(saved.standby ?? []);
         if (state.operatorFile) $('#operatorFileButton').textContent = 'Choose another file';
         showOperatorChoice();
         state.scenarioTab = saved.scenarioTab ?? 'chokepointDisruption';
@@ -622,6 +625,10 @@ async function restoreSession() {
             $('#durationInput').value = saved.disruption.days ?? 30;
             $('#delayedInput').value = saved.disruption.delayed ?? 0;
             $('#catchUpInput').value = saved.disruption.catchUpDays ?? 20;
+            $('#divertedInput').value = saved.disruption.diverted ?? 0;
+            $('#trucksFoundInput').value = saved.disruption.trucksFound ?? 100;
+            $('#divertBerthsInput').value = saved.disruption.divertBerths ?? '';
+            state.savedDivertTo = saved.disruption.divertTo ?? null;
             state.savedChokepoint = saved.disruption.chokepoint ?? null;
         }
         state.built = null;
@@ -678,7 +685,10 @@ function disruptionSettings() {
     return {
         chokepoint: $('#chokepointSelect').value || null,
         cut: Number($('#cutInput').value), startDay: Number($('#startInput').value), days: Number($('#durationInput').value),
-        delayed: Number($('#delayedInput').value) || 0, catchUpDays: Number($('#catchUpInput').value) || 0
+        delayed: Number($('#delayedInput').value) || 0, catchUpDays: Number($('#catchUpInput').value) || 0,
+        diverted: Number($('#divertedInput').value) || 0, divertTo: $('#divertToSelect').value || null,
+        trucksFound: $('#trucksFoundInput').value === '' ? 100 : Number($('#trucksFoundInput').value),
+        divertBerths: Number($('#divertBerthsInput').value) > 0 ? Number($('#divertBerthsInput').value) : null
     };
 }
 
@@ -701,7 +711,22 @@ function renderScenario({ fetchTransits = false } = {}) {
     renderScenarioResult();
 }
 
+// The ports cargo can be diverted to: kept ports the chokepoint doesn't reach.
+function renderDiversion() {
+    const chokepoint = $('#chokepointSelect').value;
+    const previous = $('#divertToSelect').value || state.savedDivertTo;
+    state.savedDivertTo = null;
+    const outside = state.built.ports.filter((port) => !((sharesOf(port)[chokepoint] ?? 0) > 0));
+    $('#divertToSelect').innerHTML = outside.length
+        ? outside.map((port) => `<option value="${escape(port.name)}">${escape(port.name)} (berths for ${number(port.berths ?? port.arrivals * 1.5)} TEU/day)</option>`).join('')
+        : '<option value="">no kept port outside it</option>';
+    if (previous && outside.some((port) => port.name === previous)) $('#divertToSelect').value = previous;
+    $('#diversionRow').hidden = !(Number($('#divertedInput').value) > 0);
+}
+$('#divertedInput').addEventListener('input', () => { $('#diversionRow').hidden = !(Number($('#divertedInput').value) > 0); });
+
 function renderDependence() {
+    renderDiversion();
     const chokepoint = $('#chokepointSelect').value;
     $('#dependenceTable').innerHTML = `<thead><tr><th>Port</th><th>Sea</th><th class="number" title="The share of the port's ships that pass this chokepoint: from the sea it lies in, an assumption you can change">Through it</th></tr></thead><tbody>${
         state.built.ports.map((port) => `<tr data-port="${escape(port.name)}"><td>${escape(port.name)}</td><td class="sea">${escape(seaOf(port) ?? 'open sea')}</td>`
@@ -713,6 +738,7 @@ function renderDependence() {
         const value = Math.min(100, Math.max(0, Number(input.value) || 0)) / 100;
         state.dependence.set(name, { ...sharesOf(port), [$('#chokepointSelect').value]: value });
         input.value = Math.round(value * 100);
+        renderDiversion();
     }));
 }
 
@@ -852,6 +878,8 @@ function chokepointRun(settings, start, runTime, status) {
     if (!(settings.cut > 0 && settings.cut <= 100)) throw new Error('Cut the transits by more than 0% and at most 100%.');
     if (!(settings.delayed >= 0 && settings.delayed <= 100)) throw new Error('The share of the cargo that arrives later is from 0% to 100%.');
     if (settings.delayed > 0 && !(settings.catchUpDays > 0)) throw new Error('The delayed cargo must arrive over at least a day.');
+    if (!(settings.diverted >= 0 && settings.delayed + settings.diverted <= 100)) throw new Error('The cargo that arrives later and the cargo diverted add up to at most 100% of what is kept out.');
+    if (settings.diverted > 0 && !settings.divertTo) throw new Error('Choose a port outside the chokepoint to divert the cargo to.');
     const affected = state.built.ports.map((port) => ({ port, share: sharesOf(port)[settings.chokepoint] ?? 0 })).filter((item) => item.share > 0);
     if (!affected.length) throw new Error(`None of the ports depends on ${chokepointById.get(settings.chokepoint).name}. Set a port's share through it to run the disruption.`);
     // A period already far below a port's usual traffic may be the disruption itself: cutting it again counts it twice.
@@ -880,11 +908,24 @@ function chokepointRun(settings, start, runTime, status) {
         volumes[port.name] = { keptOut: plan.keptOut / day, caughtUp: plan.caughtUp / day };
     }
     const name = chokepointById.get(settings.chokepoint).name;
+    const reaching = `${name}: transits cut by ${settings.cut}% from day ${settings.startDay} for ${settings.days} days, reaching ${affected.map((item) => `${item.port.name} (${Math.round(item.share * 100)}% of its ships)`).join(', ')}`;
+    const later = settings.delayed > 0 ? `; ${settings.delayed}% of the cargo kept out arrives over the ${settings.catchUpDays} days after` : '';
+    const extra = { chokepoint: name, affected: affected.map((item) => ({ port: item.port.name, share: item.share, ...volumes[item.port.name] })) };
+    if (!(settings.diverted > 0)) {
+        return { id: 'chokepointDisruption', supplied, lanes: [], describe: `${reaching}${later || '; the cargo kept out is lost'}.`, extra };
+    }
+    // Part of it lands at a port outside the chokepoint and is trucked inland from there.
+    const diversion = diversionPlan({
+        lanes: state.built.lanes, ports: state.built.ports, affected: affected.map((item) => ({ port: item.port.name, share: item.share })), to: settings.divertTo,
+        cut: settings.cut / 100, diverted: settings.diverted / 100, trucksFound: settings.trucksFound / 100, berths: settings.divertBerths,
+        start, duration: settings.days * day, forkAt: start, runTime, ...state.built.trucking
+    });
+    const byParameter = { ...diversion.supplied, vesselArrivals: { entities: [...supplied.entities, settings.divertTo], samples: { ...supplied.samples, ...diversion.supplied.vesselArrivals.samples } } };
+    const target = state.built.ports.find((port) => port.name === settings.divertTo);
     return {
-        supplied,
-        lanes: [],
-        describe: `${name}: transits cut by ${settings.cut}% from day ${settings.startDay} for ${settings.days} days, reaching ${affected.map((item) => `${item.port.name} (${Math.round(item.share * 100)}% of its ships)`).join(', ')}${settings.delayed > 0 ? `; ${settings.delayed}% of the cargo kept out arrives over the ${settings.catchUpDays} days after` : '; the cargo kept out is lost'}.`,
-        extra: { chokepoint: name, affected: affected.map((item) => ({ port: item.port.name, share: item.share, ...volumes[item.port.name] })) }
+        id: 'chokepointDiversion', supplied: { byParameter }, lanes: diversion.lanes,
+        describe: `${reaching}${later}; ${settings.diverted}% of it is diverted to ${settings.divertTo} (${number(diversion.divertedTeu)} TEU), whose berths take ${number(settings.divertBerths ?? target.berths)} TEU/day, and trucked inland over ${diversion.lanes.length} lane${diversion.lanes.length === 1 ? '' : 's'} with ${number(diversion.trucks)} trucks${settings.trucksFound < 100 ? ` (${settings.trucksFound}% of those needed)` : ''}${diversion.unreachable.length ? `; ${diversion.unreachable.join(', ')} ${diversion.unreachable.length === 1 ? 'has' : 'have'} no lane from it, so ${diversion.unreachable.length === 1 ? 'its' : 'their'} share stays kept out` : ''}.`,
+        extra: { ...extra, diversion: { to: settings.divertTo, teu: diversion.divertedTeu } }
     };
 }
 
@@ -931,16 +972,25 @@ $('#runScenarioButton').addEventListener('click', async () => {
     try {
         if (!(startDay >= 0 && start < runTime)) throw new Error(`Start the scenario from day 0 to day ${state.built.days - 1}.`);
         if (!(Number($('#durationInput').value) > 0)) throw new Error('The scenario must last at least a day.');
+        // Cargo diverted to a port needs lanes from it to the warehouses that lose it: build them first, on standby.
+        const divertTo = id === 'chokepointDisruption' && Number($('#divertedInput').value) > 0 ? $('#divertToSelect').value : null;
+        if (divertTo && !state.built.standbyPorts?.includes(divertTo)) {
+            state.standby.add(divertTo);
+            status.innerHTML = notice('', `Adding standby lanes from ${divertTo} to the model…`);
+            await build();
+            if (!state.built?.standbyPorts?.includes(divertTo)) throw new Error(`The model could not be built with standby lanes from ${divertTo}.`);
+        }
         const run = scenarioRun(id, start, runTime, status);
         if (!run) return;
+        const scenarioId = run.id ?? id;
         setBusy(true);
         $('#runScenarioButton').disabled = true;
         status.innerHTML = notice('', 'Running the baseline and the scenario…');
-        const answer = await call(api.runScenario(id, { supplied: run.supplied, forkAt: start, runTime, signals: summarySignals }));
-        state.scenario = summariseRun(answer, id, run, start);
+        const answer = await call(api.runScenario(scenarioId, { supplied: run.supplied, forkAt: start, runTime, signals: summarySignals }));
+        state.scenario = summariseRun(answer, scenarioId, run, start);
         status.innerHTML = '';
         renderScenarioResult();
-        await call(api.openInCanvas(id, { focus: false, silent: true, session: sessionState() }));
+        await call(api.openInCanvas(scenarioId, { focus: false, silent: true, session: sessionState() }));
         $('#showScenarioButton').disabled = false;
     } catch (error) {
         status.innerHTML = notice('error', error.message);
@@ -1037,7 +1087,7 @@ function renderScenarioResult() {
                 <tr><td>Orders delivered</td><td${worse(result.totals.fill.scenario, result.totals.fill.baseline, { lowerIsWorse: true, noise: 0.001 })}>${percent(result.totals.fill.scenario)}</td><td class="number">${percent(result.totals.fill.baseline)}</td></tr>
                 ${[['transport', 'Transport cost'], ['fleet', 'Fleet cost'], ['holding', 'Holding cost'], ['backlog', 'Backlog cost']].map(([key, label]) => `<tr><td>${label}</td><td${worse(result.totals[key].scenario, result.totals[key].baseline)}>${number(result.totals[key].scenario)}</td><td class="number">${number(result.totals[key].baseline)}</td></tr>`).join('')}
             </tbody></table>` : '';
-    const ports = id === 'chokepointDisruption' ? `
+    const ports = id.startsWith('chokepoint') ? `
         <table><thead><tr><th>Port</th><th class="number">Kept out (TEU)</th><th class="number">arrived later</th><th class="number">never arrived</th></tr></thead>
             <tbody>${result.ports.map((port) => {
                 const affected = result.affected.find((item) => item.port === port.name);

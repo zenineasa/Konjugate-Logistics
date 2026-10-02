@@ -40,7 +40,7 @@ import { chokepointById, chokepointRecentUrl, chokepointYearlyUrl, disruptionPla
 import { portwatchActivityUrl, portwatchPortsUrl } from '../packages/toolbox/lib/portwatch.mjs';
 import { generateOperator, parseOperator } from '../packages/toolbox/lib/operator.mjs';
 import { buildRegionModel } from '../packages/toolbox/lib/regionModel.mjs';
-import { closurePlan, demandPlan, fleetPlan } from '../packages/toolbox/lib/scenarios.mjs';
+import { closurePlan, demandPlan, diversionPlan, fleetPlan } from '../packages/toolbox/lib/scenarios.mjs';
 import { createRouter } from '../packages/toolbox/lib/roadGraph.mjs';
 import { konjugateModule, logisticsRoot } from './konjugatePaths.mjs';
 import { loadTemplates, ModelBuilder } from './templatePlacement.mjs';
@@ -217,6 +217,12 @@ if (argument('operator') === 'synthetic') {
     const text = await readFile(argument('operator'), 'utf8');
     buildOptions.operator = { ...parseOperator(text), synthetic: JSON.parse(text).synthetic === true };
 }
+// For the scenarios: the chokepoint the kept ports depend on most, and a kept port outside it to divert cargo to, with
+// standby lanes from it (they change nothing in the baseline).
+const portShares = selection.ports.map((port) => port.chokepoints?.shares ?? {});
+const [mainChokepoint] = [...new Set(portShares.flatMap((item) => Object.keys(item)))].sort((a, b) => portShares.reduce((sum, item) => sum + (item[b] ?? 0), 0) - portShares.reduce((sum, item) => sum + (item[a] ?? 0), 0));
+const divertTo = mainChokepoint ? selection.ports.find((port) => !((port.chokepoints?.shares?.[mainChokepoint] ?? 0) > 0)) : null;
+if (flag('scenarios') && divertTo) buildOptions.standbyPorts = [divertTo.name];
 const built = buildRegionModel({ builder, selection, route, options: buildOptions });
 if (built.operator) {
     console.log(`\nOperator: ${built.operator.name}${built.operator.synthetic ? ' (synthetic)' : ''}, ${built.operator.trucks.map((truck) => `${truck.label} at ${truck.costPerKm}/km and ${truck.costPerDay}/day`).join('; ')}`);
@@ -369,19 +375,35 @@ if (flag('run')) {
                 return document;
             };
             const busiest = [...built.lanes].sort((a, b) => b.rate - a.rate)[0];
-            const shares = keptPorts.map((port) => port.chokepoints?.shares ?? {});
-            const [chokepoint] = [...new Set(shares.flatMap((item) => Object.keys(item)))].sort((a, b) => shares.reduce((sum, item) => sum + (item[b] ?? 0), 0) - shares.reduce((sum, item) => sum + (item[a] ?? 0), 0));
+            const chokepoint = mainChokepoint;
             const scenarios = [];
             if (chokepoint) {
                 const samples = {};
                 const entities = [];
+                const affected = [];
                 for (const port of built.ports) {
                     const share = keptPorts.find((item) => item.name === port.name)?.chokepoints?.shares?.[chokepoint] ?? 0;
                     if (!(share > 0)) continue;
                     entities.push(port.name);
+                    affected.push({ port: port.name, share });
                     samples[port.name] = disruptionPlan({ base: port.schedule ?? port.arrivals, dependence: share, cut: 0.5, ...window }).path;
                 }
-                scenarios.push({ name: `${chokepointById.get(chokepoint).name} cut by half`, supplied: { vesselArrivals: { entities, samples } } });
+                const name = chokepointById.get(chokepoint).name;
+                scenarios.push({ name: `${name} cut by half`, supplied: { vesselArrivals: { entities, samples } } });
+                // Half the cargo kept out diverted to the port outside it: with its own berths, then with berths for it.
+                if (divertTo) {
+                    for (const berths of [null, divertTo && built.ports.reduce((sum, port) => sum + port.arrivals, 0)]) {
+                        try {
+                            const plan = diversionPlan({ lanes: built.lanes, ports: built.ports, affected, to: divertTo.name, cut: 0.5, diverted: 0.5, berths, ...window, ...built.trucking });
+                            scenarios.push({
+                                name: `${name} cut by half, half diverted to ${divertTo.name}${berths ? ' (berths for it)' : ''}`,
+                                supplied: { ...plan.supplied, vesselArrivals: { entities: [...entities, divertTo.name], samples: { ...samples, ...plan.supplied.vesselArrivals.samples } } }
+                            });
+                        } catch (error) {
+                            console.log(`  (no diversion to ${divertTo.name}: ${error.message})`);
+                        }
+                    }
+                }
             }
             scenarios.push({ name: `${busiest.name.replace(/^Road /, '')} closed, trucks waiting`, supplied: closurePlan({ lanes: built.lanes, closed: busiest.name, mode: 'wait', ...window }).supplied });
             scenarios.push({ name: `${busiest.name.replace(/^Road /, '')} on a 3-hour detour`, supplied: closurePlan({ lanes: built.lanes, closed: busiest.name, mode: 'detour', detourHours: 3, ...window }).supplied });

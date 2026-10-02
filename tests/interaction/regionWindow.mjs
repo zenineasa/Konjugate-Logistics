@@ -9,7 +9,7 @@
 //   - a port's volume is set, the model is built and appears in the canvas with the importer's node count
 //   - dragging a kept site on the map rebuilds the model with new lane distances
 //   - a customer added on the map is served in the rebuilt model
-//   - a chokepoint disruption; then an invented fleet operator, labelled synthetic, and a road closure, a fleet cut
+//   - a chokepoint disruption, its cargo lost, delayed or diverted to another port; then an invented fleet operator, labelled synthetic, and a road closure, a fleet cut
 //     and a demand surge from the scenario tabs
 // Uses Playwright from the Konjugate checkout, as the other interaction test does.
 
@@ -220,6 +220,16 @@ try {
         assert.ok(Math.abs(keptOutAgain - 337.5) <= 1 && Math.abs(caughtUpAgain - 202.5) <= 1 && Math.abs(lostAgain - 135) <= 1, `60% of 337.5 TEU should arrive later and 135 never (shown ${keptOutAgain}, ${caughtUpAgain}, ${lostAgain}).`);
         assert.match(await toolbox.textContent('#scenarioResult'), /Suez Canal: transits cut by 75% from day 2 for 3 days, reaching Port Alder \(100% of its ships\)/);
         assert.equal(await toolbox.locator('#showScenarioButton').isDisabled(), false);
+        // Again with half of it diverted to Birch Harbour, outside the canal, whose berths take 400 TEU a day meanwhile:
+        // 168.75 TEU land there instead, and its lanes hire trucks for them.
+        await toolbox.fill('#delayedInput', '0');
+        await toolbox.fill('#divertedInput', '50');
+        await toolbox.dispatchEvent('#divertedInput', 'input');
+        assert.equal(await toolbox.locator('#diversionRow').isVisible(), true);
+        assert.deepEqual(await toolbox.evaluate(() => [...document.querySelectorAll('#divertToSelect option')].map((option) => option.value)), ['Birch Harbour'], 'only ports outside the chokepoint');
+        await toolbox.fill('#divertBerthsInput', '400');
+        await toolbox.click('#runScenarioButton');
+        await toolbox.waitForFunction(() => /50% of it is diverted to Birch Harbour \(169 TEU\), whose berths take 400 TEU\/day, and trucked inland over \d lanes? with \d+ trucks/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
         assert.equal(log.filter((line) => line.startsWith('pageerror') || line.startsWith('error')).length, 0, log.join('\n'));
 
         // 5c. An invented fleet operator: the model is rebuilt with its trucks, labelled synthetic.
@@ -318,7 +328,7 @@ try {
         } finally {
             await offline.close().catch(() => {});
         }
-        console.log(`✓ logistics region window: the sample region and a searched region discover offline; the model (${nodes} nodes, ${edges} relationships) opens in the canvas; dragging Alder Industrial Park moves its lane from ${before} to ${after} km; a customer added on the map is served; an invented operator is labelled synthetic; a road closure, a detour, a fleet cut and a demand surge run from their tabs; the session is kept with the project, saved with it, and restored from it with no network.`);
+        console.log(`✓ logistics region window: the sample region and a searched region discover offline; the model (${nodes} nodes, ${edges} relationships) opens in the canvas; dragging Alder Industrial Park moves its lane from ${before} to ${after} km; a customer added on the map is served; a chokepoint's cargo is diverted to Birch Harbour; an invented operator is labelled synthetic; a road closure, a detour, a fleet cut and a demand surge run from their tabs; the session is kept with the project, saved with it, and restored from it with no network.`);
     } finally {
         await app?.close().catch(() => {});
     }

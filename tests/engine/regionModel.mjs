@@ -9,6 +9,7 @@
 //   - with an invented fleet operator (two truck sizes), a baseline that holds still, and the window's scenarios
 //     followed as stored schedules from day 0: a road closed (its warehouse's other lane takes its orders), the
 //     operator's trucks halved, and demand stepped up
+//   - a chokepoint cut at Port Alder with part of its cargo diverted to Birch Harbour over standby lanes
 // Both must conserve containers, conserve every road lane's trucks, and keep each warehouse's on-order
 // count equal to what waits on and travels along its lanes.
 //
@@ -22,7 +23,8 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { defaultSelection, discoverRegion } from '../../packages/toolbox/lib/discovery.mjs';
 import { generateOperator } from '../../packages/toolbox/lib/operator.mjs';
-import { closurePlan, demandPlan, fleetPlan } from '../../packages/toolbox/lib/scenarios.mjs';
+import { disruptionPlan } from '../../packages/toolbox/lib/chokepoints.mjs';
+import { closurePlan, demandPlan, diversionPlan, fleetPlan } from '../../packages/toolbox/lib/scenarios.mjs';
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
 import { createRouter } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { konjugateModule } from '../../scripts/konjugatePaths.mjs';
@@ -50,9 +52,9 @@ function execute(args) {
     });
 }
 
-async function run(name, { days, change = () => {}, region = candidates, options = {} }) {
+async function run(name, { days, change = () => {}, region = candidates, selection = defaultSelection(region), options = {} }) {
     const builder = new ModelBuilder(templates);
-    const built = buildRegionModel({ builder, selection: defaultSelection(region), route, options });
+    const built = buildRegionModel({ builder, selection, route, options });
     change(builder, built);
     const document = builder.document({ days, stepDays: 15 / 1440, outputDays: 1 / 24 });
     const inputPath = join(directory, `${name}.kjt`);
@@ -79,6 +81,7 @@ async function run(name, { days, change = () => {}, region = candidates, options
 const sum = (arrays) => arrays[0].map((_, index) => arrays.reduce((total, values) => total + values[index], 0));
 const maxDrift = (values) => Math.max(...values.map((value) => Math.abs(value - values[0])));
 const hour = (days) => Math.round(days * 24);
+const close = (actual, expected, tolerance, message) => assert.ok(Math.abs(actual - expected) <= tolerance, `${message}: ${actual} is not within ${tolerance} of ${expected}`);
 
 function checkInvariants({ name, document, series }, { fleetsChange = false } = {}) {
     const ofType = (type) => document.nodes.filter((node) => node.type === type).map((node) => node.name);
@@ -234,7 +237,57 @@ try {
     const backlog = (result, at) => towns.reduce((total, town) => total + result.series(`${town.name}.backlog`)[hour(at)], 0);
     assert.ok(backlog(demandRun, 15) > backlog(withOperator, 15) * 1.2, 'demand: orders should wait at the peak.');
 
-    console.log(`✓ region model from the synthetic region: ${baseline.document.nodes.length} nodes and ${baseline.document.edges.length} edges hold still in the baseline; a berth outage at Port Alder queues ${Math.round(queue[hour(50)]).toLocaleString('en')} TEU; arrivals following PortWatch history match it day by day and queue ships on the busy days; an invented operator's two truck sizes hold still; a closed road's trucks wait, detour or order elsewhere (the warehouse holds ${stockAt(waited, 29).toFixed(0)}, ${stockAt(detoured, 29).toFixed(0)} and ${stockAt(otherPorts, 29).toFixed(0)} TEU on day 29); halving the operator's trucks slows ${lane.name.replace(/^Road /, '')} to ${carried(fleetRun, lane.name, 10, 15).toFixed(1)} TEU/day; a demand surge orders ${demand.extraTeu.toFixed(0)} TEU more; containers, trucks and orders conserved.`);
+    // Port Alder's ships cut by 80% for 10 days; 60% of what is kept out lands at East Quay instead (a small port of the
+    // user's own, which in the baseline supplies only the zone nearest it) and is trucked to Alder's warehouses over
+    // its lanes: a standby lane to Alder Industrial Park, and its usual lane to the other zone. Both hire trucks for it.
+    const withQuay = { ...defaultSelection(candidates) };
+    withQuay.ports = [...withQuay.ports, { id: 'added:east', name: 'East Quay', lat: -29.82, lon: -19.62, teuPerDay: 10, kind: 'port', user: true }];
+    const quayOptions = { standbyPorts: ['East Quay'] };
+    const standby = await run('standby', { days: 30, selection: withQuay, options: quayOptions });
+    checkInvariants(standby);
+    const standbyLane = standby.built.lanes.find((lane) => lane.standby);
+    assert.ok(standbyLane?.from === 'East Quay' && standbyLane.rate === 0 && standbyLane.fleet === 0, 'a standby lane from East Quay, carrying nothing with no trucks');
+    for (const node of standby.document.nodes) {
+        for (const state of node.states) {
+            if (/^(arrived|handled|delivered|ordered|transportCost|fleetCost|holdingCost|backlogCost)$/.test(state.symbol)) continue;
+            const values = standby.series(`${node.name}.${state.symbol}`);
+            assert.ok(maxDrift(values) < 1e-6 * Math.max(1, Math.abs(values[0])), `standby: ${node.name}.${state.symbol} should hold still (drift ${maxDrift(values)}).`);
+        }
+    }
+    const ports = standby.built.ports;
+    const alder = ports.find((port) => port.name === 'Port Alder');
+    const cutWindow = { start: 5 * day, duration: 10 * day, forkAt: 0, runTime: 30 * day };
+    const cutAlder = disruptionPlan({ base: alder.arrivals, dependence: 1, cut: 0.8, ...cutWindow }).path;
+    const diversion = diversionPlan({ lanes: standby.built.lanes, ports, affected: [{ port: 'Port Alder', share: 1 }], to: 'East Quay', cut: 0.8, diverted: 0.6, ...cutWindow, ...standby.built.trucking });
+    assert.deepEqual(diversion.unreachable, [], 'every warehouse Alder supplies has a lane from East Quay');
+    close(diversion.divertedTeu, alder.arrivals * 0.8 * 0.6 * 10, 1e-6 * diversion.divertedTeu, 'diversion: 60% of 80% of Alder\'s ships for 10 days');
+    const supplied = { ...diversion.supplied, vesselArrivals: { entities: ['Port Alder', 'East Quay'], samples: { 'Port Alder': cutAlder, ...diversion.supplied.vesselArrivals.samples } } };
+    const lost = await run('cut', { days: 30, selection: withQuay, options: quayOptions, change: follow({ vesselArrivals: { entities: ['Port Alder'], samples: { 'Port Alder': cutAlder } } }) });
+    const divertedRun = await run('diverted', { days: 30, selection: withQuay, options: quayOptions, change: follow(supplied) });
+    checkInvariants(lost);
+    checkInvariants(divertedRun, { fleetsChange: true });
+    const received = divertedRun.series('East Quay.arrived').at(-1) - standby.series('East Quay.arrived').at(-1);
+    close(received, diversion.divertedTeu, 0.01 * diversion.divertedTeu, 'diversion: East Quay receives the diverted cargo');
+    // East Quay's berths are sized for its own 10 TEU a day, so most of the diverted cargo waits at its anchorage, and
+    // the towns get little more than when the cargo is lost.
+    const quayQueue = (result) => Math.max(...result.series('East Quay.queue'));
+    const quayBerths = ports.find((port) => port.name === 'East Quay').berths;
+    assert.ok(quayQueue(divertedRun) > 0.8 * (diversion.divertedTeu - (quayBerths - 10) * 10), `diversion: the cargo should wait at East Quay's anchorage (largest queue ${quayQueue(divertedRun).toFixed(0)} TEU).`);
+    // With berths for it, the cargo reaches the towns: Alder Industrial Park's share over the standby lane, once its
+    // trucks are hired.
+    const roomy = diversionPlan({ lanes: standby.built.lanes, ports, affected: [{ port: 'Port Alder', share: 1 }], to: 'East Quay', cut: 0.8, diverted: 0.6, berths: 150, ...cutWindow, ...standby.built.trucking });
+    const roomyRun = await run('diverted-berths', { days: 30, selection: withQuay, options: quayOptions, change: follow({ ...roomy.supplied, vesselArrivals: { entities: ['Port Alder', 'East Quay'], samples: { 'Port Alder': cutAlder, ...roomy.supplied.vesselArrivals.samples } } }) });
+    checkInvariants(roomyRun, { fleetsChange: true });
+    assert.ok(quayQueue(roomyRun) < 0.1 * quayQueue(divertedRun), `diversion: with berths for it, little should wait at East Quay (${quayQueue(roomyRun).toFixed(0)} TEU).`);
+    const movedToPark = standby.built.lanes.find((lane) => lane.from === 'Port Alder' && lane.to === standbyLane.to).rate * 0.8 * 0.6;
+    const viaQuay = carried(roomyRun, standbyLane.name, 9, 15);
+    assert.ok(viaQuay > 0.8 * movedToPark, `diversion: ${standbyLane.name} should carry most of the ${movedToPark.toFixed(0)} TEU a day moved to it (got ${viaQuay.toFixed(1)}).`);
+    assert.ok(carried(roomyRun, standbyLane.name, 24, 30) < 0.05 * movedToPark, 'diversion: the standby lane goes quiet again after the disruption.');
+    const quayTowns = standby.built.towns;
+    const servedBy = (result, at) => quayTowns.reduce((total, town) => total + result.series(`${town.name}.delivered`)[hour(at)], 0);
+    assert.ok(servedBy(roomyRun, 20) > servedBy(lost, 20) + 0.5 * diversion.divertedTeu, `diversion: towns should get most of the diverted cargo (${servedBy(roomyRun, 20).toFixed(0)} against ${servedBy(lost, 20).toFixed(0)} TEU by day 20, ${diversion.divertedTeu.toFixed(0)} diverted).`);
+
+    console.log(`✓ region model from the synthetic region: ${baseline.document.nodes.length} nodes and ${baseline.document.edges.length} edges hold still in the baseline; a berth outage at Port Alder queues ${Math.round(queue[hour(50)]).toLocaleString('en')} TEU; arrivals following PortWatch history match it day by day and queue ships on the busy days; an invented operator's two truck sizes hold still; a closed road's trucks wait, detour or order elsewhere (the warehouse holds ${stockAt(waited, 29).toFixed(0)}, ${stockAt(detoured, 29).toFixed(0)} and ${stockAt(otherPorts, 29).toFixed(0)} TEU on day 29); halving the operator's trucks slows ${lane.name.replace(/^Road /, '')} to ${carried(fleetRun, lane.name, 10, 15).toFixed(1)} TEU/day; a demand surge orders ${demand.extraTeu.toFixed(0)} TEU more; ${diversion.divertedTeu.toFixed(0)} TEU of Port Alder's cargo diverted to East Quay waits at its anchorage, or with berths for it reaches the towns over its lanes, a standby one included; containers, trucks and orders conserved.`);
 } finally {
     await rm(directory, { recursive: true, force: true });
 }

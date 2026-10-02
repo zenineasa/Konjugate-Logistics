@@ -113,6 +113,14 @@
                         <label>Of the cargo kept out, <input type="number" id="delayedInput" min="0" max="100" step="10" value="0"> % arrives later,</label>
                         <label>over <input type="number" id="catchUpInput" min="1" step="1" value="20"> days</label>
                     </div>
+                    <div class="row small" title="Ships that can't pass may land their cargo at a port outside the chokepoint instead, to be trucked inland from there. Its warehouses order that cargo from it, over a standby lane where they have no lane from it yet, and those lanes hire trucks for it.">
+                        <label><input type="number" id="divertedInput" min="0" max="100" step="10" value="0"> % is diverted to</label>
+                        <select id="divertToSelect"></select>
+                    </div>
+                    <div class="row small" id="diversionRow" hidden>
+                        <label title="Of the trucks the diverted cargo needs on its lanes, the share that can be found and hired">trucks found <input type="number" id="trucksFoundInput" min="0" max="100" step="10" value="100"> %</label>
+                        <label title="The model sizes a port's berths for the cargo it hands inland. A port that is mostly transhipment may have far more; leave empty to keep its own.">its berths take <input type="number" id="divertBerthsInput" min="1" step="100" placeholder=""> TEU/day</label>
+                    </div>
                     <table class="dependence" id="dependenceTable"></table>
                 </div>
                 <div class="scenarioPanel" data-panel="roadClosure" hidden>

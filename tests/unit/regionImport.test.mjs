@@ -10,7 +10,7 @@ import { chokepointById, chokepointDependence, chokepointRecentUrl, chokepoints,
 import { allocateFleet, generateOperator, parseOperator } from '../../packages/toolbox/lib/operator.mjs';
 import { findShift, historyWindow, matchPorts, portwatchActivityUrl, portwatchPortsUrl, readPortwatchActivity, readPortwatchPorts, summariseActivity } from '../../packages/toolbox/lib/portwatch.mjs';
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
-import { closureModes, closurePlan, demandPlan, fleetPlan, heldPath } from '../../packages/toolbox/lib/scenarios.mjs';
+import { closureModes, closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath } from '../../packages/toolbox/lib/scenarios.mjs';
 import { createRouter } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { parseSites } from '../../packages/toolbox/lib/sites.mjs';
 import { loadTemplates, ModelBuilder } from '../../scripts/templatePlacement.mjs';
@@ -848,4 +848,53 @@ test('a fleet change rounds each size to whole trucks, and a demand surge counts
     const demand = demandPlan({ towns: [{ name: 'T', demand: 40 }, { name: 'U', demand: 10 }], change: 0.5, ...window });
     assert.deepEqual(demand.supplied.baseDemand.samples.T.map((sample) => sample[1]), [60, 60, 40, 40]);
     close(demand.extraTeu, 250, 1e-9, '25 TEU a day more for 10 days');
+});
+
+test('cargo diverted to a port outside the chokepoint is ordered from it, and its lanes hire trucks for it', () => {
+    const day = 86400;
+    const lanes = [
+        { name: 'J → W1', from: 'J', to: 'W1', rate: 80, leadTime: 0.1, fleet: 20 },
+        { name: 'K → W1', from: 'K', to: 'W1', rate: 0, leadTime: 0.2, fleet: 0 },
+        { name: 'J → W2', from: 'J', to: 'W2', rate: 20, leadTime: 0.1, fleet: 5 },
+        { name: 'K → W3', from: 'K', to: 'W3', rate: 10, leadTime: 0.2, fleet: 3 }
+    ];
+    const ports = [{ name: 'J', arrivals: 100, berths: 150, schedule: null }, { name: 'K', arrivals: 10, berths: 15, schedule: [[0, 10], [7 * day, 20], [14 * day, 10]] }];
+    const window = { start: 5 * day, duration: 4 * day, forkAt: 5 * day, runTime: 30 * day, truckCapacity: 2, loadDays: 0.25 };
+    const plan = diversionPlan({ lanes, ports, affected: [{ port: 'J', share: 1 }], to: 'K', cut: 0.5, diverted: 0.5, berths: 60, ...window });
+    // W2 has no lane from K: its share of J's cargo is not diverted.
+    assert.deepEqual(plan.unreachable, ['W2']);
+    close(plan.divertedTeu, 80 * 0.25 * 4, 1e-9, 'a quarter of the 80 TEU a day bound for W1, for 4 days');
+    // K's arrivals: its own schedule, plus 20 TEU a day for the 4 days.
+    const arrivalsAt = (seconds) => plan.supplied.vesselArrivals.samples.K.findLast(([time]) => time <= seconds)[1];
+    assert.deepEqual([arrivalsAt(0), arrivalsAt(2 * day + 10), arrivalsAt(4 * day + 10), arrivalsAt(9 * day + 10)], [30, 40, 20, 10]);
+    const during = (name) => plan.supplied.orderShare.samples[name][0][1];
+    close(during('J → W1') + during('K → W1'), 1, 1e-12, 'W1\'s shares still add up to 1');
+    close(during('K → W1'), 0.25, 1e-12, 'a quarter of W1\'s orders move to K');
+    assert.deepEqual(plan.supplied.fleetSize.entities, ['K → W1']);
+    assert.equal(plan.supplied.fleetSize.samples['K → W1'][0][1], Math.ceil((2 * 20 * 0.2 + 2 * 20 * 0.25) / 2), 'trucks for 20 TEU a day, as the toolbox sizes a lane');
+    assert.equal(plan.supplied.berthCapacity.samples.K[0][1], 60);
+    assert.equal(plan.supplied.outageCapacity.samples.K.at(-1)[1], 60, 'berths opened for the diversion stay open to the end of the run');
+    const short = diversionPlan({ lanes, ports, affected: [{ port: 'J', share: 1 }], to: 'K', cut: 0.5, diverted: 0.5, trucksFound: 0.5, ...window });
+    assert.equal(short.supplied.fleetSize.samples['K → W1'][0][1], Math.round(9 * 0.5));
+    assert.equal(short.supplied.berthCapacity.samples.K[0][1], 15, 'berths unchanged unless given');
+    assert.throws(() => diversionPlan({ lanes, ports, affected: [{ port: 'J', share: 1 }], to: 'J', cut: 0.5, diverted: 0.5, ...window }), /outside it/);
+    assert.throws(() => diversionPlan({ lanes: lanes.filter((lane) => lane.from !== 'K' || lane.to !== 'W1'), ports, affected: [{ port: 'J', share: 1 }], to: 'K', cut: 0.5, diverted: 0.5, ...window }), /standby lanes from K/);
+});
+
+test('a port with no container imports over the period has no lanes, and can still take diverted cargo on standby lanes', async () => {
+    const answers = Object.fromEntries(Object.entries({ ...syntheticRegion(), ...syntheticPortwatch() }).map(([kind, value]) => [kind, [JSON.stringify(value)]]));
+    const discovered = discoverRegion(answers, { bbox: syntheticBbox });
+    const selection = defaultSelection(discovered.candidates);
+    // Birch Harbour, as Fujairah before the diversion: a matched port whose history is empty for the days modelled.
+    const dates = Array.from({ length: 120 }, (_, index) => new Date(Date.UTC(2025, 10, 1) + index * 86400000).toISOString().slice(0, 10));
+    selection.ports = selection.ports.map((port) => (port.name !== 'Birch Harbour' ? port : {
+        ...port, activity: { name: 'Birch', importTonnesPerDay: 125, daily: dates.map((date, index) => [date, index < 90 ? 0 : 500]), from: dates[0], to: dates.at(-1), days: 120, shift: null }
+    }));
+    const built = buildRegionModel({ builder: new ModelBuilder(await loadTemplates()), selection, route: createRouter(discovered.roadGraph).route, options: { historyFrom: dates[0], standbyPorts: ['Birch Harbour'] } });
+    assert.equal(built.ports.find((port) => port.name === 'Birch Harbour').arrivals, 0);
+    assert.ok(built.warnings.some((text) => /Birch Harbour hands nothing inland over the period chosen/.test(text)));
+    const fromBirch = built.lanes.filter((lane) => lane.from === 'Birch Harbour');
+    assert.ok(fromBirch.length >= 1 && fromBirch.every((lane) => lane.standby && lane.rate === 0), 'only standby lanes from it');
+    const birch = built.document.nodes.find((node) => node.name === 'Birch Harbour');
+    assert.ok(birch.states.every((state) => Number.isFinite(state.initialValue)), 'no 0/0 in its starting values');
 });

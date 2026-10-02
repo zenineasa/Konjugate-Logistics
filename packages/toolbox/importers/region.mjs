@@ -114,6 +114,8 @@ export default async function importRegion({ files, helpers, options = {} }) {
         if (tonnes >= 1 && tonnes <= 40) settings.tonnesPerTeu = tonnes;
         const inland = Number(options.settings?.inlandShare);
         if (inland > 0 && inland <= 1) settings.inlandShare = inland;
+        // Standby lanes from these ports (by name), for a scenario that diverts cargo to them.
+        if (Array.isArray(options.settings?.standbyPorts)) settings.standbyPorts = options.settings.standbyPorts.map(String);
         const route = createRouter(discovered.roadGraph).route;
         const buildWith = (options) => buildRegionModel({ builder: new ModelBuilder(templates, helpers), selection, route, options });
         // A fleet operator: the user's own, from a file, or an invented one made for this model's lanes.
@@ -138,7 +140,7 @@ export default async function importRegion({ files, helpers, options = {} }) {
             parameterIndex: built.parameterIndex,
             data: {
                 step: 'build', lanes: built.lanes, served: built.served, provenance: built.provenance, warnings: built.warnings, histories: built.histories, ports: built.ports, days: built.days,
-                operator: built.operator, towns: built.towns,
+                operator: built.operator, towns: built.towns, trucking: built.trucking, standbyPorts: built.standbyPorts,
                 unusedZones: built.unusedZones, nodes: built.document.nodes.length, edges: built.document.edges.length, lanesByBasis
             },
             report: {

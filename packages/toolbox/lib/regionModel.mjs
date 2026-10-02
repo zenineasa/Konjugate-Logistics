@@ -34,6 +34,9 @@ export const regionModelDefaults = {
     gateHours: 2,
     // A zone orders from at most this many ports, preferring nearer ones.
     portsPerZone: 2,
+    // Ports (by name) with a standby lane to every zone they don't already supply: no flow and no trucks in the
+    // baseline, for a scenario that diverts cargo to them.
+    standbyPorts: [],
     // A lane carrying less than this share of its zone's supply, or less than this many TEU a day, is dropped
     // where the rest can still balance: a lane of a fraction of a truck a day is noise, not a route.
     minimumShare: 0.1,
@@ -252,25 +255,32 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
     // ---- zones to ports: nearest ports, balanced so every port ships what arrives and every zone gets what it needs
     const legs = new Map();
     for (const zone of usedZones) for (const port of ports) legs.set(`${zone.id}|${port.id}`, route(port, zone));
+    // A port that hands nothing inland over the period (no container imports in it) has no lanes in the baseline; it
+    // stays in the model, where a scenario can divert cargo to it over standby lanes.
+    const supplying = ports.filter((port) => supply.get(port.id) > 0);
+    if (!supplying.length) throw new Error('None of the kept ports hands anything inland over the period chosen. Choose another period, or give a port a volume of your own.');
+    const idle = ports.filter((port) => !(supply.get(port.id) > 0));
+    if (idle.length) warnings.push(`${idle.map((port) => port.name).join(', ')} ${idle.length === 1 ? 'hands' : 'hand'} nothing inland over the period chosen, so ${idle.length === 1 ? 'it has' : 'they have'} no lanes; cargo can still be diverted to ${idle.length === 1 ? 'it' : 'them'} in a scenario.`);
+    const supplyOf = new Map(supplying.map((port) => [port.id, supply.get(port.id)]));
     const pairFor = (zone, port) => {
         const key = `${zone.id}|${port.id}`;
         return { key, zone: zone.id, port: port.id, weight: supply.get(port.id) * Math.exp(-legs.get(key).hours / settings.gravityHours) };
     };
-    const nearestPorts = (zone) => [...ports].sort((a, b) => legs.get(`${zone.id}|${a.id}`).hours - legs.get(`${zone.id}|${b.id}`).hours);
-    const pairsOf = (keys) => usedZones.flatMap((zone) => ports.filter((port) => keys.has(`${zone.id}|${port.id}`)).map((port) => pairFor(zone, port)));
+    const nearestPorts = (zone) => [...supplying].sort((a, b) => legs.get(`${zone.id}|${a.id}`).hours - legs.get(`${zone.id}|${b.id}`).hours);
+    const pairsOf = (keys) => usedZones.flatMap((zone) => supplying.filter((port) => keys.has(`${zone.id}|${port.id}`)).map((port) => pairFor(zone, port)));
     // Each zone draws on its nearest few ports, one more at a time until every port ships what arrives and every zone gets what it needs.
     let support = null;
     let flows = null;
-    let portsPerZone = Math.min(settings.portsPerZone, ports.length);
-    for (; portsPerZone <= ports.length && !flows; portsPerZone += 1) {
+    let portsPerZone = Math.min(settings.portsPerZone, supplying.length);
+    for (; portsPerZone <= supplying.length && !flows; portsPerZone += 1) {
         support = new Set();
         for (const zone of usedZones) nearestPorts(zone).slice(0, portsPerZone).forEach((port) => support.add(`${zone.id}|${port.id}`));
-        for (const port of ports) {
+        for (const port of supplying) {
             if ([...support].some((key) => key.endsWith(`|${port.id}`))) continue;
             const nearest = [...usedZones].sort((a, b) => legs.get(`${a.id}|${port.id}`).hours - legs.get(`${b.id}|${port.id}`).hours)[0];
             support.add(`${nearest.id}|${port.id}`);
         }
-        flows = balanceFlows(pairsOf(support), zoneDemand, supply);
+        flows = balanceFlows(pairsOf(support), zoneDemand, supplyOf);
     }
     if (!flows) throw new Error('The flows between ports and zones could not be balanced.');
     if (portsPerZone - 1 > settings.portsPerZone) warnings.push(`The nearest ${settings.portsPerZone} ports could not supply every zone in balance, so zones draw on up to ${portsPerZone - 1}.`);
@@ -286,7 +296,7 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
         for (const key of small) {
             const trial = new Set(support);
             trial.delete(key);
-            const balanced = balanceFlows(pairsOf(trial), zoneDemand, supply);
+            const balanced = balanceFlows(pairsOf(trial), zoneDemand, supplyOf);
             if (balanced) { support = trial; flows = balanced; dropped = true; break; }
         }
         if (!dropped) break;
@@ -350,7 +360,8 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
         note(port.name, 'Berth capacity', berthCapacity, 'TEU/day', 'assumed', `${settings.berthHeadroom} times its arrivals.`);
         portNodes.set(port.id, place('port', port.name, {
             name: port.name, position: position(port),
-            initialValues: { queue: arrivals * berthingDays, stock: arrivals * 3, waitDays: arrivals * berthingDays / berthCapacity },
+            // The wait counts at least a TEU a day of berths, as the template does, so a port with none is not 0/0.
+            initialValues: { queue: arrivals * berthingDays, stock: arrivals * 3, waitDays: arrivals * berthingDays / Math.max(berthCapacity, 1) },
             shared: { vesselArrivals: arrivals, berthCapacity, outageCapacity: berthCapacity }
         }));
         const indexed = parameterIndex.findLast((entry) => entry.entity === port.name && entry.key === 'vesselArrivals');
@@ -367,6 +378,10 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
         // busiest day.
         const busiest = Math.max(arrivals, ...(history?.samples.map((sample) => sample[1]) ?? []));
         makeLive(port.name, 'vesselArrivals', niceCeiling(4 * busiest));
+        // And its berths, so a scenario can let a port take cargo diverted to it: up to four times the region's arrivals.
+        const berthMaximum = niceCeiling(4 * Math.max(berthCapacity, totalSupply));
+        makeLive(port.name, 'berthCapacity', berthMaximum);
+        makeLive(port.name, 'outageCapacity', berthMaximum);
     }
 
     // ---- zones (warehouses), their lanes from ports, and towns
@@ -386,10 +401,15 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
         from: flow.port.name, to: zone.name, origin: flow.port, need: laneNeed(flow.rate, laneTime(flow))
     })))) : {};
     const operatorLanes = [];
+    const standbyPorts = ports.filter((port) => (settings.standbyPorts ?? []).includes(port.name));
+    const unknownStandby = (settings.standbyPorts ?? []).filter((name) => !ports.some((port) => port.name === name));
+    if (unknownStandby.length) warnings.push(`No standby lanes from ${unknownStandby.join(', ')}: not a kept port.`);
     for (const zone of usedZones) {
         const zoneFlows = flowsByZone.get(zone.id).filter((flow) => flow.rate > 1e-9);
         const total = zoneDemand.get(zone.id);
-        const laneSpecs = zoneFlows.map((flow) => ({ ...flow, leadTime: laneTime(flow) }));
+        const standby = standbyPorts.filter((port) => !zoneFlows.some((flow) => flow.port === port))
+            .map((port) => ({ port, rate: 0, leg: legs.get(`${zone.id}|${port.id}`), standby: true }));
+        const laneSpecs = [...zoneFlows, ...standby].map((flow) => ({ ...flow, leadTime: laneTime(flow) }));
         const onOrder = laneSpecs.reduce((sum, lane) => sum + lane.rate * (responseDays + lane.leadTime), 0);
         const planningLeadTime = onOrder / total;
         const warehouse = place('warehouse', zone.name, {
@@ -427,7 +447,8 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
             makeLive(laneName, 'orderShare', 1);
             makeLive(laneName, 'leadTime', niceCeiling(4 * leadTime));
             makeLive(laneName, 'distance', niceCeiling(4 * Math.max(kilometres, 1)));
-            const fleetMaximum = niceCeiling(Math.max(10, 3 * Math.max(fleet, fleet2)));
+            // A standby lane may come to carry all its zone's orders.
+            const fleetMaximum = niceCeiling(Math.max(10, 3 * Math.max(fleet, fleet2), lane.standby ? 3 * Math.ceil(laneNeed(total, leadTime) / truckCapacity) : 0));
             makeLive(laneName, 'fleetSize', fleetMaximum, 1);
             makeLive(laneName, 'fleetSize2', fleetMaximum, 1);
             const how = {
@@ -440,10 +461,12 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
             if (contract) {
                 note(laneName, 'Fleet', fleet, 'trucks', operatorBasis, `${operator.name}'s ${operator.trucks[0].label} trucks from its ${contract.depot}, shared among its contracted lanes by what each needs${operator.synthetic ? ' (invented)' : ''}.`);
                 if (operator.trucks[1]) note(laneName, 'Fleet, second size', fleet2, 'trucks', operatorBasis, `${operator.name}'s ${operator.trucks[1].label} trucks from its ${contract.depot}${operator.synthetic ? ' (invented)' : ''}.`);
+            } else if (lane.standby) {
+                note(laneName, 'Fleet', fleet, 'trucks', 'assumed', 'On standby: it carries nothing, and has no trucks, until a scenario diverts cargo to its port.');
             } else {
                 note(laneName, 'Fleet', fleet, 'trucks', 'assumed', `Enough for the baseline flow of ${lane.rate.toFixed(1)} TEU/day, plus a reserve.`);
             }
-            lanes.push({ name: laneName, from: lane.port.name, to: zone.name, rate: lane.rate, leadTime, kilometres, fleet, fleet2, operator: Boolean(contract), basis: lane.leg.basis });
+            lanes.push({ name: laneName, from: lane.port.name, to: zone.name, rate: lane.rate, leadTime, kilometres, fleet, fleet2, operator: Boolean(contract), standby: Boolean(lane.standby), basis: lane.leg.basis });
         }
         warehouses.set(zone.id, warehouse);
     }
@@ -510,10 +533,13 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
         // Each port's arrivals as built: its average, and the held schedule it follows when it has one -- what a
         // scenario that changes them starts from. And the run's length in days.
         ports: ports.map((port) => ({
-            name: port.name, arrivals: supply.get(port.id), schedule: histories.get(port.id)?.samples ?? null,
+            name: port.name, arrivals: supply.get(port.id), berths: supply.get(port.id) * settings.berthHeadroom, schedule: histories.get(port.id)?.samples ?? null,
             usual: normals.get(port.id) ?? null, shift: port.activity?.shift ?? null
         })),
         days: settings.days,
+        // How the toolbox sizes a lane's fleet, for a scenario that hires trucks.
+        trucking: { truckCapacity, loadDays, idleReserve: settings.idleReserve },
+        standbyPorts: standbyPorts.map((port) => port.name),
         operator: operator ? { name: operator.name, synthetic: operator.synthetic, trucks: operator.trucks, depots: operator.depots, lanes: operatorLanes } : null,
         // The ports whose arrivals follow their history, and the dates model day 0 and the last day stand for.
         histories: [...histories].map(([id, history]) => ({ port: ports.find((port) => port.id === id).name, from: history.from, to: history.to, days: history.samples.length })),
