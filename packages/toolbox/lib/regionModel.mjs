@@ -155,7 +155,9 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
         if (sourced(port)) {
             const activity = port.activity;
             const teu = (tonnes) => tonnes / settings.tonnesPerTeu * settings.inlandShare;
-            const conversion = `at an assumed ${settings.tonnesPerTeu} t a TEU${settings.inlandShare === 1 ? ', counting containers that only change ships there' : `, ${Math.round(settings.inlandShare * 100)}% of them handed inland (assumed)`}`;
+            // The defaults are assumptions; a value the user set is theirs (from a figure they trust, which the model cannot see).
+            const weight = settings.tonnesPerTeu === tonnesPerTeu ? `an assumed ${settings.tonnesPerTeu} t a TEU` : `${settings.tonnesPerTeu} t a TEU (yours)`;
+            const conversion = `at ${weight}${settings.inlandShare === 1 ? ', counting containers that only change ships there' : `, ${Math.round(settings.inlandShare * 100)}% of them handed inland (yours)`}`;
             const period = activity.daily?.length ? historyWindow(activity.daily, { from: settings.historyFrom, days: settings.days }) : [];
             if (settings.historyFrom && !period.length) {
                 warnings.push(`${port.name}'s PortWatch history has no days from ${settings.historyFrom}; its latest ${settings.days} days are used instead.`);

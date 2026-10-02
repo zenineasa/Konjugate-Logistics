@@ -732,7 +732,7 @@ test('the weight of a TEU and the share handed inland set a matched port’s vol
     const built = buildRegionModel({ builder: new ModelBuilder(await loadTemplates()), selection: defaultSelection(discovered.candidates), route: createRouter(discovered.roadGraph).route, options: { tonnesPerTeu: 12, inlandShare: 0.6 } });
     const alder = built.provenance.find((item) => item.entity === 'Port Alder' && item.parameter === 'Containers handed inland');
     close(alder.value, 1200 * 8 / 7 / 12 * 0.6, 1e-9, '1,371 t a day at 12 t a TEU, 60% inland');
-    assert.match(alder.detail, /at an assumed 12 t a TEU, 60% of them handed inland \(assumed\)/);
+    assert.match(alder.detail, /at 12 t a TEU \(yours\), 60% of them handed inland \(yours\)/, 'values the user set are theirs, not assumptions');
 });
 
 test('a fleet operator is read, its trucks shared among its lanes by need, and a synthetic one generated', () => {
