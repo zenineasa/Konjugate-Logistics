@@ -947,6 +947,42 @@ test('a town mapped with a district\'s population is not believed, and an unname
     assert.ok(candidates.ports.some((port) => port.name === 'Birch Harbour'), 'a named port keeps its own name');
 });
 
+test('a dense belt of warehouses is split into zones, a zone is named only after logistics, and a joint port takes PortWatch\'s joint name', () => {
+    const region = { ...syntheticRegion(), ...syntheticPortwatch() };
+    // Forty warehouse buildings a kilometre apart along the coast road: one chain of clusters 39 km wide.
+    const square = (lat, lon, tags) => {
+        const d = 0.0005;
+        return { type: 'way', id: 880000 + Math.round(lon * -1000), tags, geometry: [[-d, -d], [-d, d], [d, d], [d, -d], [-d, -d]].map(([a, b]) => ({ lat: lat + a, lon: lon + b })) };
+    };
+    const names = ['4 warehouse', 'Grace Chapel', 'Harbour Freight Depot'];
+    for (let index = 0; index < 40; index += 1) region.logistics.elements.push(square(-29.86, -19.99 + index * 0.0104, { building: 'warehouse', ...(index < 3 ? { name: names[index] } : {}) }));
+    region.portwatchPorts.features[0].attributes.portname = 'Alder-Birchwood';
+    const answers = Object.fromEntries(Object.entries(region).map(([kind, value]) => [kind, [JSON.stringify(value)]]));
+    const { candidates } = discoverRegion(answers, { bbox: syntheticBbox });
+    const belt = candidates.zones.filter((zone) => Math.abs(zone.lat + 29.86) < 0.01);
+    assert.ok(belt.length >= 3, `the 39 km belt is split into zones no wider than 15 km (got ${belt.length})`);
+    const zoneNames = candidates.zones.map((zone) => zone.name);
+    assert.ok(zoneNames.includes('Harbour Freight Depot'), 'a logistics business names its zone');
+    assert.ok(!zoneNames.includes('4 warehouse') && !zoneNames.includes('Grace Chapel'), 'a number or a chapel does not');
+    assert.equal(candidates.ports.find((port) => port.portwatch?.portid === 'port9001').name, 'Port of Alder-Birchwood', 'the port PortWatch counts with its neighbour takes their joint name');
+});
+
+test('a major port PortWatch places in the middle of its port land, beyond any one terminal\'s reach, is still matched, and named after the port', () => {
+    const region = { ...syntheticRegion(), ...syntheticPortwatch() };
+    // Instead of Alder, a major port listed 12 km inland of Port Alder's land, as Rotterdam's point lies 13 km from Maasvlakte.
+    region.portwatchPorts.features[0].attributes = { ...region.portwatchPorts.features[0].attributes, portname: 'Wideport', lat: -29.995 + 12 / 111.32, vessel_count_container: 5000 };
+    const answers = Object.fromEntries(Object.entries(region).map(([kind, value]) => [kind, [JSON.stringify(value)]]));
+    const { candidates } = discoverRegion(answers, { bbox: syntheticBbox });
+    const matched = candidates.ports.find((port) => port.portwatch?.portid === 'port9001');
+    assert.ok(matched, 'matched across 12 km');
+    assert.equal(matched.name, 'Port of Wideport');
+    assert.ok(matched.activity, 'with its history');
+    // A small port listed as far away is not.
+    region.portwatchPorts.features[0].attributes.vessel_count_container = 200;
+    const small = discoverRegion(Object.fromEntries(Object.entries(region).map(([kind, value]) => [kind, [JSON.stringify(value)]])), { bbox: syntheticBbox });
+    assert.ok(!small.candidates.ports.some((port) => port.portwatch?.portid === 'port9001'), 'a small port is matched only within its own reach');
+});
+
 test('a busy port IMF PortWatch lists just outside the region is pointed out, so the region can be widened', () => {
     const region = { ...syntheticRegion(), ...syntheticPortwatch() };
     // A port busier than Port Alder 5 km south of the region, and the far one (well beyond PortWatch's margin) as it is.

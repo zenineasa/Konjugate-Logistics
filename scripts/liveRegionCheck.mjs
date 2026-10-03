@@ -8,6 +8,8 @@
 //
 //   node scripts/liveRegionCheck.mjs --bbox south,west,north,east [--run] [--refresh]
 //   node scripts/liveRegionCheck.mjs --place "Jebel Ali" [--pick 2] [--radius 40] [--run]
+//   node scripts/liveRegionCheck.mjs --place "Rotterdam" --pick 2 --margin 10   the place's own bounds and 10 km around
+//                                                                               them, the box the window fetches
 //   ... [--overpass overpass.private.coffee]   another Overpass server, when the main one is overloaded
 //   ... [--arrivals history]   matched ports' arrivals follow their daily PortWatch history (default: steady average)
 //   ... [--from 2025-10-01]   the history period: the model's days from that date (default: the latest days)
@@ -69,6 +71,15 @@ async function bboxOf() {
     places.slice(0, 5).forEach((item, index) => console.log(`${index + 1 === pick ? '>' : ' '} ${index + 1}. ${item.display_name} (${item.category ?? item.class}/${item.type})`));
     const found = places[pick - 1];
     if (!found) throw new Error(`There is no match number ${pick}.`);
+    // As the window does: the place's own bounds, and this many kilometres around them.
+    if (argument('margin') !== undefined) {
+        const margin = Number(argument('margin'));
+        const [south, north, west, east] = found.boundingbox.map(Number);
+        const dLat = margin / 111.32;
+        const dLon = margin / (111.32 * Math.cos((south + north) / 2 * Math.PI / 180));
+        console.log(`${found.display_name}: its bounds and ${margin} km around them.`);
+        return { south: south - dLat, west: west - dLon, north: north + dLat, east: east + dLon };
+    }
     const radius = Number(argument('radius') ?? 40);
     const lat = Number(found.lat);
     const lon = Number(found.lon);

@@ -18,6 +18,10 @@ export const discoveryDefaults = {
     portClusterMetres: 3000,
     // Warehouses closer than this form one logistics zone.
     zoneClusterMetres: 1500,
+    // Where warehouses are mapped densely (a city's whole warehouse belt, as in Los Angeles), clusters chain together
+    // for tens of kilometres: a zone wider than this is split, as a city's demand areas are, so its floor area is not
+    // placed at one point. A large free zone or industrial city (Dubai Industrial City) stays whole.
+    zoneMaximumSpanMetres: 15000,
     // Industrial land at least this large, with no warehouse mapped on it, becomes an estimated zone.
     estimatedZoneMinimumSquareMetres: 200000,
     // Floor area assumed on industrial land with no mapped warehouses: a share of the land.
@@ -178,11 +182,15 @@ export function discoverRegion(answers, options = {}) {
             if (rings(parcel.feature).some((ring) => pointInRing(warehouse.feature.point, ring))) { parcel.warehouses += 1; warehouse.parcel = parcel; break; }
         }
     }
-    const mappedZones = clusterByDistance(warehouses, (item) => item.feature.point, settings.zoneClusterMetres).map((group) => {
+    // A zone's name: its industrial land's name, or a warehouse's when it reads as a logistics business (a building
+    // named "4 warehouse" or after a church is not a name for a logistics zone).
+    const logisticsName = (name) => name && !/^\s*\d/.test(name) && /warehouse|logistic|distribution|depot|cargo|freight|shipping|storage|store|transport|express|supply|terminal|hub|industrial|industry|estate|zone|area|city|land|free|trade|market|wholesale/i.test(name);
+    const mappedZones = clusterByDistance(warehouses, (item) => item.feature.point, settings.zoneClusterMetres)
+        .flatMap((group) => splitToSpan(group, (item) => item.feature.point, settings.zoneMaximumSpanMetres)).map((group) => {
         const floorArea = group.reduce((total, item) => total + item.area.squareMetres, 0);
         return {
             points: group.map((item) => item.feature.point), weights: group.map((item) => item.area.squareMetres || 1),
-            names: [...group.map((item) => nameOf(item.feature.tags)), ...group.map((item) => item.parcel && nameOf(item.parcel.feature.tags))].filter(Boolean),
+            names: [...group.map((item) => nameOf(item.feature.tags)).filter(logisticsName), ...group.map((item) => item.parcel && nameOf(item.parcel.feature.tags))].filter(Boolean),
             floorArea, floorAreaBasis: group.some((item) => item.area.approximate) ? 'approximate' : 'mapped', buildings: group.length,
             firstId: `${group[0].feature.osmType}/${group[0].feature.osmId}`
         };
@@ -196,7 +204,8 @@ export function discoverRegion(answers, options = {}) {
     // Where warehouses are well mapped, industrial land without any is taken to be something else
     // (factories, utilities). Elsewhere it stands in for the warehouses the map is missing.
     const bareParcels = warehouseLevel === 'good' ? [] : parcels.filter((parcel) => parcel.warehouses === 0 && parcel.area >= settings.estimatedZoneMinimumSquareMetres);
-    const estimatedZones = clusterByDistance(bareParcels, (parcel) => parcel.feature.point, settings.zoneClusterMetres).map((group) => {
+    const estimatedZones = clusterByDistance(bareParcels, (parcel) => parcel.feature.point, settings.zoneClusterMetres)
+        .flatMap((group) => splitToSpan(group, (parcel) => parcel.feature.point, settings.zoneMaximumSpanMetres)).map((group) => {
         const land = group.reduce((total, parcel) => total + parcel.area, 0);
         return {
             points: group.map((parcel) => parcel.feature.point), weights: group.map((parcel) => parcel.area),
@@ -334,6 +343,12 @@ export function discoverRegion(answers, options = {}) {
     }).sort((a, b) => b.significance - a.significance).map((zone, index) => ({
         ...zone, name: zone.name ?? `Logistics zone ${index + 1}${zone.near ? ` (near ${zone.near})` : ''}`
     }));
+    // A port the map leaves unnamed says where it is, as an unnamed zone does (PortWatch may name it below).
+    for (const port of ports) {
+        if (port.named) continue;
+        const near = nearestTownName(port);
+        if (near) port.name = `${port.name} (near ${near})`;
+    }
     // ---- port activity: IMF PortWatch ports matched by position, with their history where it was fetched
     const portwatchListed = (answers.portwatchPorts ?? []).flatMap((text) => {
         try {
@@ -358,6 +373,20 @@ export function discoverRegion(answers, options = {}) {
         if (generic && !ports.some((other) => other !== port && other.name === match.port.name)) {
             port.name = match.port.name;
             port.named = true;
+            port.nameFrom = 'IMF PortWatch';
+        }
+        // A terminal matched to a major port's whole land (see matchPorts) stands for that port, and takes its name.
+        if (match.wholePort && !ports.some((other) => other !== port && other.name === `Port of ${match.port.name}`)) {
+            port.name = `Port of ${match.port.name}`;
+            port.named = true;
+            port.nameFrom = 'IMF PortWatch';
+        }
+        // PortWatch counts some neighbouring ports as one ("Los Angeles-Long Beach") where the map has port land for only
+        // one of them: the port carries both ports' volume, so it takes the joint name.
+        const core = port.name.replace(/^port\s+(of\s+)?|\s+(port|harbou?r)$/gi, '').trim().toLowerCase();
+        const joint = match.port.name.toLowerCase();
+        if (!generic && core && joint !== core && joint.includes(core) && /[-–\/]|\band\b/.test(match.port.name)) {
+            port.name = `Port of ${match.port.name}`;
             port.nameFrom = 'IMF PortWatch';
         }
         const history = histories.get(match.port.portid);
@@ -440,7 +469,7 @@ export function discoverRegion(answers, options = {}) {
     } else if (warehouseLevel === 'thin' || warehouseLevel === 'partial') {
         const share = Math.round(coveredShare * 100);
         notices.push({ kind: 'warehouses', level: warehouseLevel === 'thin' ? 'warning' : 'info', text:
-            `${warehouseLevel === 'thin' ? 'Few' : 'Some'} warehouses are mapped in this region: ${warehouses.length} across ${round(industrialArea / 1e6, 1)} km² of industrial land, and only ${share}% of the larger industrial areas have any warehouse mapped. `
+            `${warehouseLevel === 'thin' ? 'Few' : 'Some'} warehouses are mapped in this region: ${warehouses.length} across ${round(industrialArea / 1e6, 1)} km² of industrial land, and ${share > 0 ? `only ${share}% of the larger industrial areas have` : 'none of the larger industrial areas has'} any warehouse mapped. `
             + `${estimatedZones.length ? 'The model groups the unmapped industrial areas into logistics zones with an estimated floor area. ' : ''}Add your own sites for a more accurate model.` });
     }
     if (!roadKilometres) notices.push({ kind: 'roads', level: 'warning', text: 'No major roads are mapped here, so travel times are straight-line estimates.' });

@@ -140,5 +140,18 @@ export function matchPorts(ports, portwatchPorts) {
         matches.set(port.id, { port: listed, kilometres });
         used.add(listed.portid);
     }
+    // A major container port PortWatch places at the middle of port land tens of kilometres long (Rotterdam, from
+    // Maasvlakte to the city) is beyond any one terminal's reach: it goes to the largest commercial port left within
+    // the margin PortWatch is asked for.
+    for (const listed of portwatchPorts) {
+        if (used.has(listed.portid) || !(listed.containerVessels >= majorContainerVessels)) continue;
+        const candidates = ports.filter((port) => port.commercial && !matches.has(port.id) && distance(port, listed) / 1000 <= marginKilometres)
+            .sort((a, b) => (Number(b.areaSquareKilometres) || 0) - (Number(a.areaSquareKilometres) || 0));
+        if (!candidates.length) continue;
+        matches.set(candidates[0].id, { port: listed, kilometres: distance(candidates[0], listed) / 1000, wholePort: true });
+        used.add(listed.portid);
+    }
     return matches;
 }
+// Container ship calls a year that make a port major enough to be matched across its whole port land.
+const majorContainerVessels = 1000;

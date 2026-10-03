@@ -180,7 +180,9 @@ $('#searchForm').addEventListener('submit', async (event) => {
         const list = $('#searchResults');
         list.hidden = false;
         list.innerHTML = places.length
-            ? places.map((place, index) => `<li><button type="button" data-index="${index}">${escape(place.display_name)} <span class="kind">${escape(place.type ?? '')}</span></button></li>`).join('')
+            // The kind of area as well as its type: two administrative areas of one name (Rotterdam the city and the
+            // municipality, which reaches its port at the sea) otherwise look the same.
+            ? places.map((place, index) => `<li><button type="button" data-index="${index}">${escape(place.display_name)} <span class="kind">${escape(place.type ?? '')}${place.addresstype && place.addresstype !== place.type ? ` · ${escape(place.addresstype)}` : ''}</span></button></li>`).join('')
             : '<li><button type="button" disabled>No place found by that name.</button></li>';
         list.querySelectorAll('button[data-index]').forEach((button) => button.addEventListener('click', () => {
             state.place = places[Number(button.dataset.index)];
