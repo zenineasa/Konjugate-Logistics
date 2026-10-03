@@ -25,7 +25,7 @@ export const tonnesPerTeu = 10;
 export const matchKilometres = 5;
 const reachKilometres = (port) => matchKilometres + 2 * Math.sqrt((Number(port.areaSquareKilometres) || 0) / Math.PI);
 // How far around the region PortWatch ports are looked for: a port's point may lie off its land.
-const marginKilometres = 20;
+export const marginKilometres = 20;
 
 export const portwatchQueryUrl = (service, parameters) => `https://${portwatchHost}${servicePath}/${service}/FeatureServer/0/query?${new URLSearchParams({ ...parameters, f: 'json' })}`;
 

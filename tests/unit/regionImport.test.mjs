@@ -927,6 +927,39 @@ test('cargo can be diverted to two ports at once, and the cargo lost is never or
     close(lost.supplied.orderShare.samples['J → W2'].at(-1)[1], 1, 1e-12, 'and all of it again once the cut ends');
 });
 
+test('a town mapped with a district\'s population is not believed, and an unnamed port takes IMF PortWatch\'s name', () => {
+    const region = { ...syntheticRegion(), ...syntheticPortwatch() };
+    // Port Alder's land unnamed on the map; two towns with figures a town can't have, one too large and one perhaps too small.
+    for (const element of region.ports.elements) if (/Alder/.test(element.tags?.name ?? '')) delete element.tags.name;
+    const node = (id, lat, lon, tags) => ({ type: 'node', id, lat, lon, tags });
+    region.places.elements.push(node(990001, -29.6, -19.8, { place: 'town', name: 'Farhaven', population: '1870374' }), node(990002, -29.65, -19.35, { place: 'town', name: 'Gully', population: '800' }));
+    const answers = Object.fromEntries(Object.entries(region).map(([kind, value]) => [kind, [JSON.stringify(value)]]));
+    const { candidates, notices } = discoverRegion(answers, { bbox: syntheticBbox });
+    const town = (name) => candidates.towns.find((item) => item.name === name);
+    assert.equal(town('Farhaven').population, 20000, 'a town of 1.9 million takes the assumed size of a town');
+    assert.equal(town('Farhaven').populationBasis, 'assumed');
+    assert.equal(town('Gully').population, 800, 'a small town is kept as mapped');
+    assert.ok(notices.some((notice) => notice.level === 'warning' && /Farhaven \(1,870,374\) is mapped as a town with more people than a town holds/.test(notice.text)));
+    assert.ok(notices.some((notice) => /Gully \(800\) is mapped as a town with fewer than 2,000 people/.test(notice.text)));
+    const alder = candidates.ports.find((port) => port.portwatch?.portid === 'port9001');
+    assert.equal(alder.name, 'Alder', 'the unnamed port is named as IMF PortWatch names it');
+    assert.equal(alder.nameFrom, 'IMF PortWatch');
+    assert.ok(candidates.ports.some((port) => port.name === 'Birch Harbour'), 'a named port keeps its own name');
+});
+
+test('a busy port IMF PortWatch lists just outside the region is pointed out, so the region can be widened', () => {
+    const region = { ...syntheticRegion(), ...syntheticPortwatch() };
+    // A port busier than Port Alder 5 km south of the region, and the far one (well beyond PortWatch's margin) as it is.
+    region.portwatchPorts.features.push({ attributes: { portid: 'port9004', portname: 'Bigport', country: 'Synthetica', lat: syntheticBbox.south - 5 / 111.32, lon: -19.7, vessel_count_container: 5000, vessel_count_total: 9000 } });
+    const answers = Object.fromEntries(Object.entries(region).map(([kind, value]) => [kind, [JSON.stringify(value)]]));
+    const { notices } = discoverRegion(answers, { bbox: syntheticBbox });
+    const notice = notices.find((item) => /just outside this region/.test(item.text));
+    assert.ok(notice, 'the busy port outside is named');
+    assert.match(notice.text, /Bigport \(5,000 container ship calls, 5 km outside\)/);
+    assert.doesNotMatch(notice.text, /Far Away Port/, 'not a port beyond the margin PortWatch is asked for');
+    assert.equal(notice.level, 'warning');
+});
+
 test('a port with no container imports over the period has no lanes, and can still take diverted cargo on standby lanes', async () => {
     const answers = Object.fromEntries(Object.entries({ ...syntheticRegion(), ...syntheticPortwatch() }).map(([kind, value]) => [kind, [JSON.stringify(value)]]));
     const discovered = discoverRegion(answers, { bbox: syntheticBbox });

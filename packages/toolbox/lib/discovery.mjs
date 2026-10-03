@@ -8,7 +8,7 @@
 import { boundsArea, centroid, clusterByDistance, distance, lineLength, pointInRing, ringArea, splitToSpan } from './geo.mjs';
 import { readOverpass } from './overpass.mjs';
 import { chokepointDependence } from './chokepoints.mjs';
-import { matchPorts, readPortwatchActivity, readPortwatchPorts, summariseActivity, tonnesPerTeu } from './portwatch.mjs';
+import { marginKilometres, matchPorts, readPortwatchActivity, readPortwatchPorts, summariseActivity, tonnesPerTeu } from './portwatch.mjs';
 
 const tonnesPerTeuText = String(tonnesPerTeu);
 import { buildRoadGraph } from './roadGraph.mjs';
@@ -26,6 +26,11 @@ export const discoveryDefaults = {
     coverageParcelMinimumSquareMetres: 50000,
     // Settlement sizes assumed where OpenStreetMap has no population.
     assumedPopulation: { city: 100000, town: 20000 },
+    // A place mapped as a town with more people than this is not believed: the figure is most likely its district's
+    // or region's (Kanyakumari, a town of about 20,000, carries its district's 1.9 million). It is set aside and the
+    // town takes the assumed size. One with fewer than the floor is kept, and named, as it may be a small real town.
+    townPopulationCeiling: 250000,
+    townPopulationFloor: 2000,
     // A city or town with at least this many mapped suburbs is split into demand areas, so its people are
     // spread across it rather than placed at its centre. A suburb belongs to the nearest settlement that
     // reaches it: these distances, grown with the square root of a mapped population over a million (a city
@@ -209,8 +214,22 @@ export function discoverRegion(answers, options = {}) {
         if (/^(city|town)$/.test(feature.tags.place ?? '')) settlements.push(feature);
         else if (/^(suburb|quarter)$/.test(feature.tags.place ?? '')) suburbs.push(feature);
     }
-    const settlementTown = (feature) => {
+    // A settlement's mapped population, unless it is implausible for its kind (see townPopulationCeiling).
+    const implausible = []; // { name, population } set aside
+    const small = []; // { name, population } kept, but named
+    const mappedPopulation = (feature) => {
         const population = parsePopulation(feature.tags.population);
+        if (population && feature.tags.place === 'town' && population > settings.townPopulationCeiling) return null;
+        return population;
+    };
+    for (const feature of settlements) {
+        const population = parsePopulation(feature.tags.population);
+        if (!population || feature.tags.place !== 'town') continue;
+        if (population > settings.townPopulationCeiling) implausible.push({ name: nameOf(feature.tags) ?? 'An unnamed town', population });
+        else if (population < settings.townPopulationFloor) small.push({ name: nameOf(feature.tags) ?? 'An unnamed town', population });
+    }
+    const settlementTown = (feature) => {
+        const population = mappedPopulation(feature);
         return {
             id: `town:node/${feature.osmId}`, kind: 'town', name: nameOf(feature.tags) ?? `Unnamed ${feature.tags.place}`,
             lat: feature.point.lat, lon: feature.point.lon, place: feature.tags.place,
@@ -222,8 +241,8 @@ export function discoverRegion(answers, options = {}) {
     // A settlement with no population close to one with a population is a district of it: one more suburb.
     const districts = []; // { name, of } for the notice
     for (const settlement of [...settlements]) {
-        if (parsePopulation(settlement.tags.population)) continue;
-        const city = settlements.find((other) => other !== settlement && parsePopulation(other.tags.population) && distance(settlement.point, other.point) <= settings.districtMetres);
+        if (mappedPopulation(settlement)) continue;
+        const city = settlements.find((other) => other !== settlement && mappedPopulation(other) && distance(settlement.point, other.point) <= settings.districtMetres);
         if (!city) continue;
         settlements.splice(settlements.indexOf(settlement), 1);
         suburbs.push(settlement);
@@ -231,7 +250,7 @@ export function discoverRegion(answers, options = {}) {
     }
     // Each suburb belongs to the nearest settlement that reaches it.
     const reachOf = (settlement) => {
-        const population = parsePopulation(settlement.tags.population);
+        const population = mappedPopulation(settlement);
         if (!population) return settings.suburbReachMetres.town;
         return settings.suburbReachMetres[settlement.tags.place] * Math.sqrt(Math.max(1, population / 1e6));
     };
@@ -333,6 +352,14 @@ export function discoverRegion(answers, options = {}) {
         const match = matches.get(port.id);
         if (!match) continue;
         port.portwatch = { portid: match.port.portid, name: match.port.name, kilometres: round(match.kilometres, 1), containerVessels: match.port.containerVessels };
+        // A port the map leaves unnamed ("Port 3") or names after one berth or jetty takes IMF PortWatch's name for it,
+        // unless another port already has that name.
+        const generic = !port.named || /^(berth|jetty|wharf|pier|quay|dock)\b|^(berth|jetty|wharf|pier|quay|dock)?\s*(no\.?\s*)?\d+[a-z]?$/i.test(port.name.trim());
+        if (generic && !ports.some((other) => other !== port && other.name === match.port.name)) {
+            port.name = match.port.name;
+            port.named = true;
+            port.nameFrom = 'IMF PortWatch';
+        }
         const history = histories.get(match.port.portid);
         if (history) port.activity = summariseActivity(history);
     }
@@ -345,6 +372,18 @@ export function discoverRegion(answers, options = {}) {
     const insideRegion = (point) => !box || (point.lat >= box.south && point.lat <= box.north && point.lon >= box.west && point.lon <= box.east);
     const matchedIds = new Set([...matches.values()].map((match) => match.port.portid));
     const unmatchedListed = portwatchListed.filter((listed) => !matchedIds.has(listed.portid) && listed.containerVessels > 0 && insideRegion(listed));
+    // A busy port IMF PortWatch lists just outside the region (its ports are fetched with a margin): busier than any
+    // port matched inside, it is likely the port the region was meant to hold (a search for "Rotterdam" centres on the
+    // city, kilometres from its port), so the region should be widened.
+    const outsideKilometres = (point) => {
+        const dLat = Math.max(0, box.south - point.lat, point.lat - box.north) * 111.32;
+        const dLon = Math.max(0, box.west - point.lon, point.lon - box.east) * 111.32 * Math.cos(point.lat * Math.PI / 180);
+        return Math.hypot(dLat, dLon);
+    };
+    const busiestMatched = Math.max(0, ...[...matches.values()].map((match) => match.port.containerVessels ?? 0));
+    const justOutside = box ? portwatchListed
+        .filter((listed) => !matchedIds.has(listed.portid) && !insideRegion(listed) && listed.containerVessels >= 100 && listed.containerVessels > busiestMatched && outsideKilometres(listed) <= marginKilometres)
+        .sort((a, b) => b.containerVessels - a.containerVessels).slice(0, 3) : [];
 
     // ---- rail
     const railLines = railFeatures.filter((feature) => feature.tags.railway === 'rail' && feature.line);
@@ -391,6 +430,7 @@ export function discoverRegion(answers, options = {}) {
             notices.push({ kind: 'ports', level: 'warning', text: `${port.name}'s container imports ${shift.change < 0 ? 'fell' : 'rose'} ${Math.round(Math.abs(shift.change) * 100)}% from ${monthName(shift.month)} in IMF PortWatch (from about ${tonnes(shift.before)} to ${tonnes(shift.after)} t a day on average). The volume the model starts from, and what a replay shows, depend on the period chosen for the history.` });
         }
         if (quiet.length) notices.push({ kind: 'ports', level: 'info', text: `IMF PortWatch has no recent activity for ${quiet.map((port) => `${port.name} (${port.portwatch.name})`).join(', ')}, so ${quiet.length === 1 ? 'it starts' : 'they start'} with an assumed volume, which you can change.` });
+        if (justOutside.length) notices.push({ kind: 'ports', level: 'warning', text: `IMF PortWatch lists ${justOutside.map((listed) => `${listed.name} (${listed.containerVessels.toLocaleString('en')} container ship calls, ${Math.max(1, Math.round(outsideKilometres(listed)))} km outside)`).join(', ')} just outside this region, busier than any port in it. Widen the region to include ${justOutside.length === 1 ? 'it' : 'them'} if ${justOutside.length === 1 ? 'it is' : 'they are'} the port${justOutside.length === 1 ? '' : 's'} you meant.` });
         if (unmatchedListed.length) notices.push({ kind: 'ports', level: 'info', text: `IMF PortWatch also lists ${unmatchedListed.slice(0, 4).map((listed) => listed.name).join(', ')}${unmatchedListed.length > 4 ? ` and ${unmatchedListed.length - 4} more` : ''} here, which OpenStreetMap does not map as a cargo port. Add ${unmatchedListed.length === 1 ? 'it' : 'one'} on the map if containers come through ${unmatchedListed.length === 1 ? 'it' : 'them'}.` });
     }
     if (warehouseLevel === 'none') {
@@ -405,6 +445,9 @@ export function discoverRegion(answers, options = {}) {
     }
     if (!roadKilometres) notices.push({ kind: 'roads', level: 'warning', text: 'No major roads are mapped here, so travel times are straight-line estimates.' });
     else if (roadGraph.components > 1) notices.push({ kind: 'roads', level: 'info', text: `The major roads form ${roadGraph.components} separate networks; sites are routed on the largest, and straight-line estimates are used where a site is far from it.` });
+    const peopleText = (item) => `${item.name} (${item.population.toLocaleString('en')})`;
+    if (implausible.length) notices.push({ kind: 'towns', level: 'warning', text: `${implausible.map(peopleText).join(', ')} ${implausible.length === 1 ? 'is' : 'are'} mapped as ${implausible.length === 1 ? 'a town' : 'towns'} with more people than a town holds, most likely ${implausible.length === 1 ? 'its' : 'their'} district's or region's figure, so ${implausible.length === 1 ? 'it takes' : 'they take'} the assumed size of a town (${settings.assumedPopulation.town.toLocaleString('en')}) instead. Change ${implausible.length === 1 ? 'it' : 'them'} if you know better.` });
+    if (small.length) notices.push({ kind: 'towns', level: 'info', text: `${small.map(peopleText).join(', ')} ${small.length === 1 ? 'is' : 'are'} mapped as ${small.length === 1 ? 'a town' : 'towns'} with fewer than ${settings.townPopulationFloor.toLocaleString('en')} people, which may be too few; ${small.length === 1 ? 'it is' : 'they are'} kept as mapped.` });
     for (const district of districts) {
         notices.push({ kind: 'towns', level: 'info', text: `${district.name} has no population mapped and lies within ${district.of}, so it is counted as one of ${district.of}'s suburbs.` });
     }
