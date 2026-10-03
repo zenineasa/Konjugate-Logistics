@@ -10,7 +10,7 @@ import { chokepointById, chokepointDependence, chokepointRecentUrl, chokepoints,
 import { allocateFleet, generateOperator, parseOperator } from '../../packages/toolbox/lib/operator.mjs';
 import { findShift, historyWindow, matchPorts, portwatchActivityUrl, portwatchPortsUrl, readPortwatchActivity, readPortwatchPorts, summariseActivity } from '../../packages/toolbox/lib/portwatch.mjs';
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
-import { closureModes, closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath } from '../../packages/toolbox/lib/scenarios.mjs';
+import { closureModes, closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan } from '../../packages/toolbox/lib/scenarios.mjs';
 import { clipLine, clipRing, decode, tileName, tilesFor } from '../../packages/toolbox/lib/geography.mjs';
 import { geographyLayers } from '../../packages/toolbox/lib/mapData.mjs';
 import { createRouter } from '../../packages/toolbox/lib/roadGraph.mjs';
@@ -805,7 +805,7 @@ test('a scenario’s paths hold their values between steps a second apart, count
     assert.throws(() => heldPath({ outside: 1, inside: 0, start: 5 * day, duration: day, forkAt: 10 * day, runTime: 30 * day }), /at or after the fork/);
 });
 
-test('a road closure holds every path its scenario declares, and its warehouse’s order shares add up to 1', () => {
+test('a road closure holds every path its scenario declares; its warehouse’s order shares add up to 1, except what a closed lane can’t take while it waits', () => {
     const day = 86400;
     const lanes = [
         { name: 'A → W', from: 'A', to: 'W', rate: 60, leadTime: 0.25, kilometres: 80 },
@@ -821,13 +821,19 @@ test('a road closure holds every path its scenario declares, and its warehouse�
         const plan = closurePlan({ lanes, closed: 'A → W', mode, detourHours: 6, ...window });
         assert.deepEqual(Object.keys(plan.supplied), ['laneOpen', 'orderShare', 'leadTime', 'distance'], mode);
         assert.deepEqual(plan.supplied.orderShare.entities, ['A → W', 'B → W', 'C → W'], `${mode}: only the warehouse's own lanes`);
-        for (const pick of [during, after]) close(shares(plan).reduce((sum, samples) => sum + pick(samples), 0), 1, 1e-12, `${mode}: shares add up to 1`);
+        close(shares(plan).reduce((sum, samples) => sum + after(samples), 0), 1, 1e-12, `${mode}: shares add up to 1 again`);
+        if (mode !== 'wait') close(shares(plan).reduce((sum, samples) => sum + during(samples), 0), 1, 1e-12, `${mode}: shares add up to 1`);
         assert.equal(after(plan.supplied.laneOpen.samples['A → W']), 1, `${mode}: reopened`);
         assert.equal(after(plan.supplied.leadTime.samples['A → W']), 0.25, `${mode}: the usual trip again`);
     }
     const wait = closurePlan({ lanes, closed: 'A → W', mode: 'wait', ...window });
     assert.equal(during(wait.supplied.laneOpen.samples['A → W']), 0);
-    assert.equal(during(wait.supplied.orderShare.samples['A → W']), 0.6, 'its orders stay with it, and wait');
+    // Nothing is ordered over the closed lane: orders placed on it would count as on their way and hold back the
+    // warehouse's orders on its open lanes.
+    assert.equal(during(wait.supplied.orderShare.samples['A → W']), 0, 'nothing is ordered over it while it is closed');
+    assert.equal(during(wait.supplied.orderShare.samples['B → W']), 0.2, 'the other lanes keep their shares');
+    const restricted = closurePlan({ lanes, closed: 'A → W', mode: 'wait', open: 0.25, ...window });
+    close(during(restricted.supplied.orderShare.samples['A → W']), 0.15, 1e-12, 'a restricted lane is ordered its open share');
     assert.equal(wait.teuPerDay, 60);
     const detour = closurePlan({ lanes, closed: 'A → W', mode: 'detour', detourHours: 6, ...window });
     assert.equal(during(detour.supplied.laneOpen.samples['A → W']), 1, 'a detour keeps the lane open');
@@ -884,6 +890,41 @@ test('cargo diverted to a port outside the chokepoint is ordered from it, and it
     assert.equal(short.supplied.berthCapacity.samples.K[0][1], 15, 'berths unchanged unless given');
     assert.throws(() => diversionPlan({ lanes, ports, affected: [{ port: 'J', share: 1 }], to: 'J', cut: 0.5, diverted: 0.5, ...window }), /outside it/);
     assert.throws(() => diversionPlan({ lanes: lanes.filter((lane) => lane.from !== 'K' || lane.to !== 'W1'), ports, affected: [{ port: 'J', share: 1 }], to: 'K', cut: 0.5, diverted: 0.5, ...window }), /standby lanes from K/);
+});
+
+test('cargo can be diverted to two ports at once, and the cargo lost is never ordered', () => {
+    const day = 86400;
+    const lanes = [
+        { name: 'J → W1', from: 'J', to: 'W1', rate: 80, leadTime: 0.1, fleet: 20 },
+        { name: 'K → W1', from: 'K', to: 'W1', rate: 0, leadTime: 0.2, fleet: 0 },
+        { name: 'F → W1', from: 'F', to: 'W1', rate: 0, leadTime: 0.3, fleet: 0 },
+        { name: 'J → W2', from: 'J', to: 'W2', rate: 20, leadTime: 0.1, fleet: 5 },
+        { name: 'K → W3', from: 'K', to: 'W3', rate: 10, leadTime: 0.2, fleet: 3 }
+    ];
+    const ports = [{ name: 'J', arrivals: 100, berths: 150, schedule: null }, { name: 'K', arrivals: 10, berths: 15, schedule: null }, { name: 'F', arrivals: 0, berths: 1, schedule: null }];
+    const window = { start: 5 * day, duration: 4 * day, forkAt: 5 * day, runTime: 30 * day, truckCapacity: 2, loadDays: 0.25 };
+    const affected = [{ port: 'J', share: 1 }];
+    const plan = diversionPlan({ lanes, ports, affected, cut: 0.5, targets: [{ to: 'K', diverted: 0.4, berths: 60 }, { to: 'F', diverted: 0.2 }], ...window });
+    const [k, f] = plan.targets;
+    close(k.teu, 80 * 0.5 * 0.4 * 4, 1e-9, 'K takes 40% of the 40 TEU a day kept out of W1, for 4 days');
+    close(f.teu, 80 * 0.5 * 0.2 * 4, 1e-9, 'F takes 20%');
+    close(plan.divertedTeu, k.teu + f.teu, 1e-9);
+    assert.deepEqual(plan.supplied.vesselArrivals.entities, ['K', 'F']);
+    assert.deepEqual([k.lanes, f.lanes], [['K → W1'], ['F → W1']]);
+    assert.deepEqual([plan.supplied.berthCapacity.samples.K[0][1], plan.supplied.berthCapacity.samples.F[0][1]], [60, 1], 'each port its own berths');
+    const during = (name) => plan.supplied.orderShare.samples[name][0][1];
+    close(during('J → W1'), 0.5, 1e-12, 'J\'s lane keeps what J can still supply');
+    close(during('K → W1'), 0.2, 1e-12);
+    close(during('F → W1'), 0.1, 1e-12);
+    // W2 has no lane from either: it stops ordering the half of its cargo J will not have.
+    close(during('J → W2'), 0.5, 1e-12, 'a warehouse no diversion reaches still stops ordering what will not come');
+    assert.throws(() => diversionPlan({ lanes, ports, affected, cut: 0.5, targets: [{ to: 'K', diverted: 0.7 }, { to: 'F', diverted: 0.4 }], ...window }), /at most 100%/);
+    assert.throws(() => diversionPlan({ lanes, ports, affected, cut: 0.5, targets: [{ to: 'K', diverted: 0.2 }, { to: 'K', diverted: 0.2 }], ...window }), /each port once/);
+    // The cargo kept out lost: every warehouse that ordered from J orders only what J can still supply.
+    const lost = keptOutPlan({ lanes, affected, cut: 0.9, ...window });
+    assert.deepEqual(lost.supplied.orderShare.entities.sort(), ['F → W1', 'J → W1', 'J → W2', 'K → W1']);
+    close(lost.supplied.orderShare.samples['J → W1'][0][1], 0.1, 1e-12);
+    close(lost.supplied.orderShare.samples['J → W2'].at(-1)[1], 1, 1e-12, 'and all of it again once the cut ends');
 });
 
 test('a port with no container imports over the period has no lanes, and can still take diverted cargo on standby lanes', async () => {

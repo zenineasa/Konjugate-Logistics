@@ -40,7 +40,7 @@ test('the manifest declares a file role for every kind the importer reads, and e
     assert.ok(addon.permissions.includes('scenario.run'));
     for (const feature of ['scenarioForkTime', 'parameterSchedules', 'suppliedPerParameter']) assert.ok(addon.requires.includes(feature), feature);
     assert.deepEqual(addon.contributes.scenarios.map((scenario) => [scenario.scenarioId, scenario.interventions.map((item) => item.parameter)]), [
-        ['chokepointDisruption', ['vesselArrivals', 'baseDemand']], ['chokepointDiversion', ['vesselArrivals', 'orderShare', 'fleetSize', 'berthCapacity', 'outageCapacity', 'baseDemand']], ['roadClosure', ['laneOpen', 'orderShare', 'leadTime', 'distance']], ['fleetChange', ['fleetSize', 'fleetSize2']], ['demandSurge', ['baseDemand']]
+        ['chokepointDisruption', ['vesselArrivals', 'orderShare', 'baseDemand']], ['chokepointDiversion', ['vesselArrivals', 'orderShare', 'fleetSize', 'berthCapacity', 'outageCapacity', 'baseDemand']], ['roadClosure', ['laneOpen', 'orderShare', 'leadTime', 'distance']], ['fleetChange', ['fleetSize', 'fleetSize2']], ['demandSurge', ['baseDemand']]
     ]);
     for (const scenario of addon.contributes.scenarios) {
         assert.equal(scenario.runTime, 90 * 86400);

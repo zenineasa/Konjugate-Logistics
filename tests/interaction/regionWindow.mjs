@@ -344,6 +344,11 @@ try {
         // 7. Saving the project writes the session into it: the window's state and the map data it was built from.
         const savedPath = join(scratch, 'region.kjt');
         await app.evaluate(({ dialog }, path) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: path }); }, savedPath);
+        // A change shown in Konjugate and saved at once: the save waits for the project on its way from the toolbox,
+        // so it carries the change.
+        await toolbox.fill('#demandChangeInput', '35');
+        await toolbox.dispatchEvent('#demandChangeInput', 'change');
+        await toolbox.click('#showScenarioButton');
         await window.click('#saveButton');
         // The canvas holds the disruption's results now, so Konjugate asks what to save: the model alone is enough here.
         const asked = await window.waitForFunction(() => document.querySelector('#saveContentDialog').open, null, { timeout: 10000 }).then(() => true, () => false);
@@ -360,6 +365,7 @@ try {
         assert.deepEqual(entry.window.added.map((site) => site.name), ['Harbour customers'], 'and the customer added on the map');
         assert.equal(entry.window.operator, 'synthetic', 'and the invented operator');
         assert.equal(saved.nodes.length, nodes + 1, 'the model with the added customer');
+        assert.equal(entry.window.scenarioSettings.demand.change, 35, 'and the change shown in Konjugate just before saving');
         await app.close();
         app = null;
 

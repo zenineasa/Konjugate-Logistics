@@ -32,7 +32,10 @@ export function heldPath({ outside, inside, start, duration = null, forkAt, runT
 }
 
 // A road closed (`open` 0) or restricted (between 0 and 1) for a while, and what its trucks do meanwhile:
-//   'wait'      the lane loads only its open share; the warehouse's orders queue on it until it reopens.
+//   'wait'      the lane loads only its open share, and the warehouse orders over it only that share until it reopens:
+//               the cargo waits at the port, and the warehouse lives on its stock and its other lanes. (Orders placed
+//               on a closed lane would count as on their way, and the warehouse's order rule would then cut its orders
+//               on every lane, the open ones included, while its stock ran out.)
 //   'detour'    the lane stays open, but every trip takes `detourHours` longer (each way), over proportionally more
 //               kilometres, so more of its trucks are on the road and its cost per trip rises.
 //   'otherPorts' the warehouse orders what the lane can't take over its other lanes, from other ports, in proportion to
@@ -58,7 +61,9 @@ export function closurePlan({ lanes, closed, mode = 'wait', open = 0, detourHour
     const samples = {};
     for (const item of siblings) {
         const share = item.rate / total;
-        samples[item.name] = hold(share, item === lane ? share - moved : share + moved * item.rate / othersTotal);
+        // The closed lane takes only its open share of the orders (all of them on a detour); with other ports, what it
+        // can't take moves to the other lanes, otherwise it is not ordered while the road is closed.
+        samples[item.name] = hold(share, item === lane ? (mode === 'detour' ? share : share * open) : share + moved * item.rate / othersTotal);
     }
     const detour = mode === 'detour' ? lane.leadTime + detourHours / 24 : lane.leadTime;
     const kilometres = lane.kilometres * detour / lane.leadTime;
@@ -141,66 +146,115 @@ const valueOf = (base) => {
     };
 };
 
-// A chokepoint disruption's cargo diverted to a port outside it, and trucked inland from there: `diverted` of what the
-// cut keeps out of each affected port arrives at port `to` instead, for the days of the disruption. Each warehouse
-// that ordered from an affected port moves the matching share of its orders to its lane from `to` (a standby lane,
-// or one it already has), and that lane hires trucks towards what its new flow needs (`trucksFound` of them: 1 for
-// all, less when trucks are short), over the lane's hiring time, and keeps them to the end of the run. Only cargo bound for a warehouse with a lane from
-// `to` can be diverted; the rest of the share stays kept out, and the warehouses without a lane are listed.
-// `lanes` are the build's lanes ({ name, from, to, rate, leadTime, fleet }), `ports` its ports ({ name, arrivals,
-// berths, schedule }), `affected` the ports the cut reaches ([{ port, share }]). The berths at `to` keep their own
-// capacity, sized for its usual traffic, unless `berths` (TEU a day) is given, from the disruption's first day to the
-// end of the run: a port that hands little inland may have far more berths than that, and may not.
-export function diversionPlan({ lanes, ports, affected, to, cut, diverted, trucksFound = 1, berths = null, start, duration, forkAt, runTime, truckCapacity, loadDays, idleReserve = 2 }) {
-    const target = ports.find((port) => port.name === to);
-    if (!target) throw new Error(`There is no port "${to}" in the model.`);
-    if (affected.some((item) => item.port === to)) throw new Error(`${to} is reached by the disruption itself: divert to a port outside it.`);
-    if (!(diverted > 0 && diverted <= 1)) throw new Error('Divert more than 0% and at most 100% of the cargo kept out.');
+// The orders of every warehouse that orders from a port a chokepoint cut reaches, while the cut lasts: a lane from an
+// affected port keeps only the share its port can still supply (`dependence` of its ships through the chokepoint,
+// `cut` of them kept out), a lane from a port cargo is diverted to takes the diverted cargo (`moved`: warehouse ->
+// port -> TEU a day), and the cargo lost is not ordered at all, so the shares add up to less than 1. An order for cargo
+// that will not come would sit on its lane as on order and hold back the warehouse's orders from everywhere else.
+function chokepointOrders({ lanes, affected, cut, moved = new Map(), hold }) {
+    const dependence = new Map(affected.map((item) => [item.port, item.share]));
+    const warehouses = [...new Set(lanes.filter((lane) => dependence.has(lane.from) && lane.rate > 0).map((lane) => lane.to)), ...moved.keys()];
+    const orderShare = { entities: [], samples: {} };
+    for (const warehouse of new Set(warehouses)) {
+        const own = lanes.filter((lane) => lane.to === warehouse);
+        const total = own.reduce((sum, lane) => sum + lane.rate, 0);
+        if (!(total > 0)) continue;
+        for (const lane of own) {
+            const share = lane.rate / total;
+            const gained = moved.get(warehouse)?.get(lane.from) ?? 0;
+            const during = gained > 0 ? share + gained / total : share * (1 - (dependence.get(lane.from) ?? 0) * cut);
+            orderShare.entities.push(lane.name);
+            orderShare.samples[lane.name] = hold(share, during);
+        }
+    }
+    return orderShare;
+}
+
+// A chokepoint disruption with the cargo kept out lost (or arriving later): its warehouses stop ordering what will not
+// come, while the cut lasts. `lanes` are the build's lanes, `affected` the ports the cut reaches ([{ port, share }]).
+export function keptOutPlan({ lanes, affected, cut, start, duration, forkAt, runTime }) {
+    const hold = (outside, during) => heldPath({ outside, inside: during, start, duration, forkAt, runTime });
+    const orderShare = chokepointOrders({ lanes, affected, cut, hold });
+    // A cut that reaches no warehouse (a port with no lanes) still names a lane, at its usual share, so the scenario
+    // has the data it declares.
+    if (!orderShare.entities.length && lanes.length) {
+        const lane = lanes[0];
+        const share = lane.rate / lanes.filter((item) => item.to === lane.to).reduce((sum, item) => sum + item.rate, 0);
+        orderShare.entities.push(lane.name);
+        orderShare.samples[lane.name] = hold(share, share);
+    }
+    return { supplied: { orderShare } };
+}
+
+// A chokepoint disruption's cargo diverted to ports outside it, and trucked inland from there: of what the cut keeps
+// out of each affected port, each target's `diverted` share arrives at that port instead, for the days of the
+// disruption (`targets`: [{ to, diverted, berths }], or one port as `to`, `diverted` and `berths`). Each warehouse
+// that ordered from an affected port moves the matching shares of its orders to its lanes from those ports (standby
+// lanes, or ones it already has), and those lanes hire trucks towards what their new flow needs (`trucksFound` of them:
+// 1 for all, less when trucks are short), over the lane's hiring time, and keep them to the end of the run. Only cargo
+// bound for a warehouse with a lane from a target can go there; the rest of that share stays kept out, and the
+// warehouses without a lane are listed. `lanes` are the build's lanes ({ name, from, to, rate, leadTime, fleet }),
+// `ports` its ports ({ name, arrivals, berths, schedule }), `affected` the ports the cut reaches ([{ port, share }]).
+// A target's berths keep their own capacity, sized for its usual traffic, unless its `berths` (TEU a day) are given,
+// from the disruption's first day to the end of the run: a port that hands little inland may have far more berths than
+// that, and may not.
+export function diversionPlan({ lanes, ports, affected, to = null, cut, diverted, trucksFound = 1, berths = null, targets = null, start, duration, forkAt, runTime, truckCapacity, loadDays, idleReserve = 2 }) {
+    targets = (targets ?? [{ to, diverted, berths }]).map((target) => ({ berths: null, ...target }));
+    if (!targets.length) throw new Error('Choose a port to divert the cargo to.');
+    if (new Set(targets.map((target) => target.to)).size !== targets.length) throw new Error('Divert to each port once.');
+    for (const target of targets) {
+        if (!ports.some((port) => port.name === target.to)) throw new Error(`There is no port "${target.to}" in the model.`);
+        if (affected.some((item) => item.port === target.to)) throw new Error(`${target.to} is reached by the disruption itself: divert to a port outside it.`);
+        if (!(target.diverted > 0 && target.diverted <= 1)) throw new Error('Divert more than 0% and at most 100% of the cargo kept out.');
+        if (target.berths !== null && !(target.berths > 0)) throw new Error(`The berths at ${target.to} handle more than 0 TEU a day.`);
+    }
+    if (targets.reduce((sum, target) => sum + target.diverted, 0) > 1 + 1e-9) throw new Error('The cargo diverted adds up to at most 100% of what is kept out.');
     if (!(trucksFound >= 0 && trucksFound <= 1)) throw new Error('The trucks found for the diversion are from 0% to 100% of what it needs.');
-    if (berths !== null && !(berths > 0)) throw new Error(`The berths at ${to} handle more than 0 TEU a day.`);
     const end = Math.min(start + duration, runTime);
     const inside = (time) => time >= start && time < end;
-    const moved = new Map(); // warehouse -> TEU a day of orders moved to its lane from `to`
-    const unreachable = new Set();
-    const reach = new Map(); // affected port -> share of its flow bound for warehouses with a lane from `to`
+    const moved = new Map(); // warehouse -> target port -> TEU a day of orders moved to its lane from that port
+    const unreachable = new Map(targets.map((target) => [target.to, new Set()]));
+    const reach = new Map(); // `${affected port}|${target}` -> share of its flow bound for warehouses with a lane from the target
     for (const { port, share } of affected) {
         const outbound = lanes.filter((lane) => lane.from === port && lane.rate > 0);
         const total = outbound.reduce((sum, lane) => sum + lane.rate, 0);
-        let reachable = 0;
-        for (const lane of outbound) {
-            if (!lanes.some((item) => item.from === to && item.to === lane.to)) { unreachable.add(lane.to); continue; }
-            reachable += lane.rate;
-            moved.set(lane.to, (moved.get(lane.to) ?? 0) + lane.rate * share * cut * diverted);
+        for (const target of targets) {
+            let reachable = 0;
+            for (const lane of outbound) {
+                if (!lanes.some((item) => item.from === target.to && item.to === lane.to)) { unreachable.get(target.to).add(lane.to); continue; }
+                reachable += lane.rate;
+                if (!moved.has(lane.to)) moved.set(lane.to, new Map());
+                moved.get(lane.to).set(target.to, (moved.get(lane.to).get(target.to) ?? 0) + lane.rate * share * cut * target.diverted);
+            }
+            reach.set(`${port}|${target.to}`, total > 0 ? reachable / total : 0);
         }
-        reach.set(port, total > 0 ? reachable / total : 0);
     }
-    // Arrivals at `to`: its own, and from the first day of the disruption the cargo diverted to it, following each
-    // affected port's own arrivals.
+    // Arrivals at each target: its own, and from the first day of the disruption the cargo diverted to it, following
+    // each affected port's own arrivals.
     const bases = new Map(ports.map((port) => [port.name, valueOf(port.schedule ?? port.arrivals)]));
-    const extra = (time) => (inside(time) ? affected.reduce((sum, { port, share }) => sum + bases.get(port)(time) * share * cut * diverted * reach.get(port), 0) : 0);
-    const scheduleTimes = [target, ...ports.filter((port) => affected.some((item) => item.port === port.name))].flatMap((port) => (port.schedule ?? []).map(([time]) => time));
+    const extra = (target) => (time) => (inside(time) ? affected.reduce((sum, { port, share }) => sum + bases.get(port)(time) * share * cut * target.diverted * reach.get(`${port}|${target.to}`), 0) : 0);
+    const portByName = new Map(ports.map((port) => [port.name, port]));
+    const scheduleTimes = [...targets.map((target) => portByName.get(target.to)), ...ports.filter((port) => affected.some((item) => item.port === port.name))].flatMap((port) => (port.schedule ?? []).map(([time]) => time));
     const breaks = [forkAt, start, end, runTime, ...scheduleTimes];
-    const arrivals = pathThrough((time) => bases.get(to)(time) + extra(time), breaks, forkAt, runTime);
-    // TEU diverted in all: the extra arrivals, held between breaks.
     const times = [...new Set(breaks)].sort((a, b) => a - b);
-    const divertedTeu = times.slice(0, -1).reduce((sum, time, index) => sum + extra(time) * (times[index + 1] - time), 0) / 86400;
-    // Orders: a lane from an affected port keeps only the share its port can still supply, the lane from `to` takes the
-    // diverted cargo, and the cargo lost is not ordered at all (the shares then add up to less than 1): an order for cargo
-    // that will not come would sit on the lane as on order, and hold back the warehouse's orders from everywhere else.
-    const orderShare = { entities: [], samples: {} };
-    const fleetSize = { entities: [], samples: {} };
-    let trucks = 0;
     const hold = (outside, during) => heldPath({ outside, inside: during, start, duration, forkAt, runTime });
-    for (const [warehouse, teuPerDay] of moved) {
-        const own = lanes.filter((lane) => lane.to === warehouse);
-        const total = own.reduce((sum, lane) => sum + lane.rate, 0);
-        for (const lane of own) {
-            const share = lane.rate / total;
-            const dependence = affected.find((item) => item.port === lane.from)?.share ?? 0;
-            const during = lane.from === to ? share + teuPerDay / total : share * (1 - dependence * cut);
-            orderShare.entities.push(lane.name);
-            orderShare.samples[lane.name] = hold(share, during);
-            if (lane.from !== to) continue;
+    const orderShare = chokepointOrders({ lanes, affected, cut, moved, hold });
+    const fleetSize = { entities: [], samples: {} };
+    const vesselArrivals = { entities: [], samples: {} };
+    const berthCapacity = { entities: [], samples: {} };
+    const byTarget = [];
+    for (const target of targets) {
+        const more = extra(target);
+        vesselArrivals.entities.push(target.to);
+        vesselArrivals.samples[target.to] = pathThrough((time) => bases.get(target.to)(time) + more(time), breaks, forkAt, runTime);
+        // TEU diverted to it in all: the extra arrivals, held between breaks.
+        const teu = times.slice(0, -1).reduce((sum, time, index) => sum + more(time) * (times[index + 1] - time), 0) / 86400;
+        let trucks = 0;
+        const itsLanes = [];
+        for (const [warehouse, byPort] of moved) {
+            const teuPerDay = byPort.get(target.to) ?? 0;
+            if (!(teuPerDay > 0)) continue;
+            const lane = lanes.find((item) => item.from === target.to && item.to === warehouse);
             // Trucks for the new flow, as the toolbox sizes a lane: loaded and returning, and a reserve of loads.
             const rate = lane.rate + teuPerDay;
             const needed = Math.ceil((2 * rate * lane.leadTime + idleReserve * rate * loadDays) / truckCapacity);
@@ -210,18 +264,23 @@ export function diversionPlan({ lanes, ports, affected, to, cut, diverted, truck
             // the port still waits in its yard, as the berths opened for it do.
             fleetSize.samples[lane.name] = heldPath({ outside: lane.fleet, inside: fleet, start, forkAt, runTime });
             trucks += fleet;
+            itsLanes.push(lane.name);
         }
+        if (!itsLanes.length) throw new Error(`No warehouse that orders from ${affected.map((item) => item.port).join(' or ')} has a lane from ${target.to}: build the model with standby lanes from ${target.to}.`);
+        // Its berths, in and out of the template's outage window alike, from the first day of the disruption to the end
+        // of the run: berths opened for the diverted cargo stay open while the ships it brought still wait.
+        const own = portByName.get(target.to).berths;
+        berthCapacity.entities.push(target.to);
+        berthCapacity.samples[target.to] = heldPath({ outside: own, inside: target.berths ?? own, start, forkAt, runTime });
+        byTarget.push({ to: target.to, diverted: target.diverted, berths: target.berths ?? own, teu, lanes: itsLanes, trucks, unreachable: [...unreachable.get(target.to)] });
     }
-    if (!fleetSize.entities.length) throw new Error(`No warehouse that orders from ${affected.map((item) => item.port).join(' or ')} has a lane from ${to}: build the model with standby lanes from ${to}.`);
-    // Its berths, in and out of the template's outage window alike, from the first day of the disruption to the end of
-    // the run: berths opened for the diverted cargo stay open while the ships it brought still wait.
-    const berthPath = heldPath({ outside: target.berths, inside: berths ?? target.berths, start, forkAt, runTime });
     return {
-        supplied: {
-            vesselArrivals: { entities: [to], samples: { [to]: arrivals } }, orderShare, fleetSize,
-            berthCapacity: { entities: [to], samples: { [to]: berthPath } }, outageCapacity: { entities: [to], samples: { [to]: berthPath } }
-        },
-        // The lanes from `to` that take the diverted orders, and the trucks they have for it.
-        divertedTeu, unreachable: [...unreachable], lanes: fleetSize.entities, trucks
+        supplied: { vesselArrivals, orderShare, fleetSize, berthCapacity, outageCapacity: berthCapacity },
+        // Per target: the TEU diverted to it, its lanes that take the diverted orders and the trucks they have for it.
+        targets: byTarget,
+        divertedTeu: byTarget.reduce((sum, item) => sum + item.teu, 0),
+        unreachable: [...new Set(byTarget.flatMap((item) => item.unreachable))],
+        lanes: byTarget.flatMap((item) => item.lanes),
+        trucks: byTarget.reduce((sum, item) => sum + item.trucks, 0)
     };
 }

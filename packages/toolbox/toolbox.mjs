@@ -10,7 +10,7 @@ import { maximumSplitDepth, overpassRequests, overpassStatusUrl, overpassUrl, re
 import { nominatimSearchUrl, rankPlaces } from './lib/places.mjs';
 import { chokepointById, chokepointDependence, chokepointRecentUrl, chokepoints, chokepointYearlyUrl, disruptionPlan, summariseTransits } from './lib/chokepoints.mjs';
 import { portwatchActivityUrl, portwatchPortsUrl } from './lib/portwatch.mjs';
-import { closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath } from './lib/scenarios.mjs';
+import { closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan } from './lib/scenarios.mjs';
 
 const api = window.konjugateLauncher;
 const $ = (selector) => document.querySelector(selector);
@@ -760,6 +760,9 @@ async function restoreSession() {
             $('#divertBerthsInput').value = saved.disruption.divertBerths ?? '';
             $('#demandDuringInput').value = saved.disruption.demandDuring ?? 0;
             state.savedDivertTo = saved.disruption.divertTo ?? null;
+            $('#divertedInput2').value = saved.disruption.diverted2 ?? 0;
+            $('#divertBerthsInput2').value = saved.disruption.divertBerths2 ?? '';
+            state.savedDivertTo2 = saved.disruption.divertTo2 ?? null;
             state.savedChokepoint = saved.disruption.chokepoint ?? null;
         }
         state.built = null;
@@ -825,7 +828,9 @@ function disruptionSettings() {
         diverted: Number($('#divertedInput').value) || 0, divertTo: $('#divertToSelect').value || null,
         trucksFound: $('#trucksFoundInput').value === '' ? 100 : Number($('#trucksFoundInput').value),
         divertBerths: Number($('#divertBerthsInput').value) > 0 ? Number($('#divertBerthsInput').value) : null,
-        demandDuring: Number($('#demandDuringInput').value) || 0
+        demandDuring: Number($('#demandDuringInput').value) || 0,
+        diverted2: Number($('#divertedInput2').value) || 0, divertTo2: $('#divertToSelect2').value || null,
+        divertBerths2: Number($('#divertBerthsInput2').value) > 0 ? Number($('#divertBerthsInput2').value) : null
     };
 }
 
@@ -858,9 +863,22 @@ function renderDiversion() {
         ? outside.map((port) => `<option value="${escape(port.name)}">${escape(port.name)} (berths for ${number(port.berths ?? port.arrivals * 1.5)} TEU/day)</option>`).join('')
         : '<option value="">no kept port outside it</option>';
     if (previous && outside.some((port) => port.name === previous)) $('#divertToSelect').value = previous;
-    $('#diversionRow').hidden = !(Number($('#divertedInput').value) > 0);
+    // A second port: any other kept port outside the chokepoint.
+    const previous2 = $('#divertToSelect2').value || state.savedDivertTo2;
+    state.savedDivertTo2 = null;
+    const others = outside.filter((port) => port.name !== $('#divertToSelect').value);
+    $('#divertToSelect2').innerHTML = others.map((port) => `<option value="${escape(port.name)}">${escape(port.name)} (berths for ${number(port.berths ?? port.arrivals * 1.5)} TEU/day)</option>`).join('');
+    if (previous2 && others.some((port) => port.name === previous2)) $('#divertToSelect2').value = previous2;
+    showDiversionRows();
 }
-$('#divertedInput').addEventListener('input', () => { $('#diversionRow').hidden = !(Number($('#divertedInput').value) > 0); });
+// The trucks and berths row once anything is diverted; the second port once there is one to choose.
+function showDiversionRows() {
+    const diverting = Number($('#divertedInput').value) > 0;
+    $('#diversionRow').hidden = !diverting;
+    $('#diversionRow2').hidden = !(diverting && $('#divertToSelect2').options.length);
+}
+$('#divertedInput').addEventListener('input', showDiversionRows);
+$('#divertToSelect').addEventListener('change', renderDiversion);
 
 function renderDependence() {
     renderDiversion();
@@ -876,6 +894,8 @@ function renderDependence() {
         state.dependence.set(name, { ...sharesOf(port), [$('#chokepointSelect').value]: value });
         input.value = Math.round(value * 100);
         renderDiversion();
+        // A port's own drop, as a cut, depends on its share through the chokepoint.
+        renderTransits({ fetch: false });
     }));
 }
 
@@ -900,16 +920,28 @@ async function renderTransits({ fetch = true } = {}) {
         }
         if ($('#chokepointSelect').value !== chokepoint) return;
     }
+    // A port's own fall in imports is often the better cut than the strait's: some ships still come, or cargo for it
+    // comes another way. For a port that receives only part of its ships through the chokepoint, the cut that gives
+    // its fall is that fall over its share.
+    const months = (month) => new Date(`${month}-01T00:00:00Z`).toLocaleString('en', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    const own = (state.built?.ports ?? []).map((port) => ({ port, share: sharesOf(port)[chokepoint] ?? 0 }))
+        .filter(({ port, share }) => share > 0 && port.shift?.change < 0)
+        .map(({ port, share }) => ({ name: port.name, fell: Math.round(-port.shift.change * 100), cut: Math.min(100, Math.round(-port.shift.change / share * 100)), month: months(port.shift.month), share }));
+    const ownLinks = own.map((item) => ` ${escape(item.name)}'s own imports fell ${item.fell}% from ${item.month}${item.share < 1 ? ` (${Math.round(item.share * 100)}% of its ships pass here)` : ''}: <button class="link" type="button" data-own-cut="${item.cut}" title="Often the better cut for one port: some ships still come, or cargo comes another way">use ${item.cut}%</button>.`).join('');
+    const listenOwn = () => box.querySelectorAll('[data-own-cut]').forEach((button) => button.addEventListener('click', () => { $('#cutInput').value = button.dataset.ownCut; }));
     const transits = state.transits.get(chokepoint);
     if (!transits || transits.error) {
-        box.textContent = `Its transits could not be fetched from IMF PortWatch${transits?.error ? ` (${transits.error})` : ''}. Set the cut yourself.`;
+        box.innerHTML = `Its transits could not be fetched from IMF PortWatch${transits?.error ? ` (${escape(transits.error)})` : ''}. Set the cut yourself.${ownLinks}`;
+        listenOwn();
         return;
     }
     const percent = Math.round(transits.drop * 100);
     box.innerHTML = `${escape(chokepointById.get(chokepoint).name)}: ${number(transits.recent.containerShips, 1)} container ships a day from ${transits.recent.from} to ${transits.recent.to}, against ${number(transits.usual.containerShips, 1)} in ${transits.usual.year}, its busiest full year`
-        + (percent > 0 ? `: ${percent}% fewer. <button class="link" type="button" id="useDrop">Use ${percent}%</button>` : '.')
+        + (percent > 0 ? `: ${percent}% fewer. <button class="link" type="button" id="useDrop">Use ${percent}%</button>.` : '.')
+        + ownLinks
         + ' <span class="muted">IMF PortWatch (Source: International Monetary Fund).</span>';
     $('#useDrop')?.addEventListener('click', () => { $('#cutInput').value = percent; });
+    listenOwn();
 }
 
 $('#chokepointSelect').addEventListener('change', () => { renderDependence(); renderTransits(); });
@@ -1015,8 +1047,12 @@ function chokepointRun(settings, start, runTime, status) {
     if (!(settings.cut > 0 && settings.cut <= 100)) throw new Error('Cut the transits by more than 0% and at most 100%.');
     if (!(settings.delayed >= 0 && settings.delayed <= 100)) throw new Error('The share of the cargo that arrives later is from 0% to 100%.');
     if (settings.delayed > 0 && !(settings.catchUpDays > 0)) throw new Error('The delayed cargo must arrive over at least a day.');
-    if (!(settings.diverted >= 0 && settings.delayed + settings.diverted <= 100)) throw new Error('The cargo that arrives later and the cargo diverted add up to at most 100% of what is kept out.');
-    if (settings.diverted > 0 && !settings.divertTo) throw new Error('Choose a port outside the chokepoint to divert the cargo to.');
+    // The ports the cargo is diverted to: the first, and a second when it takes a share (only beside a first).
+    const targets = settings.diverted > 0 ? [{ to: settings.divertTo, diverted: settings.diverted, berths: settings.divertBerths }, ...(settings.diverted2 > 0 ? [{ to: settings.divertTo2, diverted: settings.diverted2, berths: settings.divertBerths2 }] : [])] : [];
+    const divertedAll = targets.reduce((sum, target) => sum + target.diverted, 0);
+    if (!(settings.diverted >= 0 && settings.diverted2 >= 0 && settings.delayed + divertedAll <= 100)) throw new Error('The cargo that arrives later and the cargo diverted add up to at most 100% of what is kept out.');
+    if (targets.some((target) => !target.to)) throw new Error('Choose a port outside the chokepoint to divert the cargo to.');
+    if (targets.length === 2 && targets[0].to === targets[1].to) throw new Error('Divert to two different ports, or to one.');
     const affected = state.built.ports.map((port) => ({ port, share: sharesOf(port)[settings.chokepoint] ?? 0 })).filter((item) => item.share > 0);
     if (!affected.length) throw new Error(`None of the ports depends on ${chokepointById.get(settings.chokepoint).name}. Set a port's share through it to run the disruption.`);
     // A period already far below a port's usual traffic may be the disruption itself: cutting it again counts it twice.
@@ -1054,21 +1090,28 @@ function chokepointRun(settings, start, runTime, status) {
         ? demandPlan({ towns, change: settings.demandDuring / 100, start, duration: settings.days * day, forkAt: start, runTime }).supplied.baseDemand
         : { entities: towns.map((town) => town.name), samples: Object.fromEntries(towns.map((town) => [town.name, heldPath({ outside: town.demand, inside: town.demand, start, duration: settings.days * day, forkAt: start, runTime })])) };
     const demandNote = settings.demandDuring ? `; every town's orders ${settings.demandDuring < 0 ? 'fall' : 'rise'} ${Math.abs(settings.demandDuring)}% while it lasts` : '';
-    if (!(settings.diverted > 0)) {
-        return { id: 'chokepointDisruption', supplied: { byParameter: { vesselArrivals: supplied, baseDemand } }, lanes: [], describe: `${reaching}${later || '; the cargo kept out is lost'}${demandNote}.`, extra };
+    const reached = affected.map((item) => ({ port: item.port.name, share: item.share }));
+    if (!targets.length) {
+        // The cargo kept out is lost (or arrives later): the warehouses stop ordering what will not come while the cut lasts.
+        const orders = keptOutPlan({ lanes: state.built.lanes, affected: reached, cut: settings.cut / 100, start, duration: settings.days * day, forkAt: start, runTime });
+        return { id: 'chokepointDisruption', supplied: { byParameter: { vesselArrivals: supplied, orderShare: orders.supplied.orderShare, baseDemand } }, lanes: [], describe: `${reaching}${later || '; the cargo kept out is lost'}${demandNote}.`, extra };
     }
-    // Part of it lands at a port outside the chokepoint and is trucked inland from there.
+    // Part of it lands at ports outside the chokepoint and is trucked inland from there.
     const diversion = diversionPlan({
-        lanes: state.built.lanes, ports: state.built.ports, affected: affected.map((item) => ({ port: item.port.name, share: item.share })), to: settings.divertTo,
-        cut: settings.cut / 100, diverted: settings.diverted / 100, trucksFound: settings.trucksFound / 100, berths: settings.divertBerths,
+        lanes: state.built.lanes, ports: state.built.ports, affected: reached,
+        targets: targets.map((target) => ({ to: target.to, diverted: target.diverted / 100, berths: target.berths })),
+        cut: settings.cut / 100, trucksFound: settings.trucksFound / 100,
         start, duration: settings.days * day, forkAt: start, runTime, ...state.built.trucking
     });
-    const byParameter = { ...diversion.supplied, vesselArrivals: { entities: [...supplied.entities, settings.divertTo], samples: { ...supplied.samples, ...diversion.supplied.vesselArrivals.samples } }, baseDemand };
-    const target = state.built.ports.find((port) => port.name === settings.divertTo);
+    const byParameter = { ...diversion.supplied, vesselArrivals: { entities: [...supplied.entities, ...diversion.supplied.vesselArrivals.entities], samples: { ...supplied.samples, ...diversion.supplied.vesselArrivals.samples } }, baseDemand };
+    const port = (item) => `${item.to} (${number(item.teu)} TEU), whose berths take ${number(item.berths)} TEU/day`;
+    const [first, second] = diversion.targets;
+    const where = `${Math.round(first.diverted * 100)}% of it is diverted to ${port(first)}${second ? `, and ${Math.round(second.diverted * 100)}% to ${port(second)};` : ', and'}`;
+    const unreachable = diversion.unreachable;
     return {
         id: 'chokepointDiversion', supplied: { byParameter }, lanes: diversion.lanes,
-        describe: `${reaching}${later}; ${settings.diverted}% of it is diverted to ${settings.divertTo} (${number(diversion.divertedTeu)} TEU), whose berths take ${number(settings.divertBerths ?? target.berths)} TEU/day, and trucked inland over ${diversion.lanes.length} lane${diversion.lanes.length === 1 ? '' : 's'} with ${number(diversion.trucks)} trucks${settings.trucksFound < 100 ? ` (${settings.trucksFound}% of those needed)` : ''}${diversion.unreachable.length ? `; ${diversion.unreachable.join(', ')} ${diversion.unreachable.length === 1 ? 'has' : 'have'} no lane from it, so ${diversion.unreachable.length === 1 ? 'its' : 'their'} share stays kept out` : ''}${demandNote}.`,
-        extra: { ...extra, diversion: { to: settings.divertTo, teu: diversion.divertedTeu } }
+        describe: `${reaching}${later}; ${where} trucked inland over ${diversion.lanes.length} lane${diversion.lanes.length === 1 ? '' : 's'} with ${number(diversion.trucks)} trucks${settings.trucksFound < 100 ? ` (${settings.trucksFound}% of those needed)` : ''}${unreachable.length ? `; ${unreachable.join(', ')} ${unreachable.length === 1 ? 'has' : 'have'} no lane from ${diversion.targets.length > 1 ? 'one of them' : 'it'}, so ${unreachable.length === 1 ? 'its' : 'their'} share stays kept out` : ''}${demandNote}.`,
+        extra: { ...extra, diversion: { to: diversion.targets.map((item) => item.to), teu: diversion.divertedTeu } }
     };
 }
 
@@ -1117,13 +1160,14 @@ $('#runScenarioButton').addEventListener('click', async () => {
         if (!(Number($('#durationInput').value) > 0)) throw new Error('The scenario must last at least a day.');
         // Cargo diverted to a port needs lanes from it to the warehouses that lose it: build them first, on standby. And a
         // session restored from a saved project has its tables but not yet a model in the host: build it again first.
-        const divertTo = id === 'chokepointDisruption' && Number($('#divertedInput').value) > 0 ? $('#divertToSelect').value : null;
-        const needsStandby = divertTo && !state.built.standbyPorts?.includes(divertTo);
-        if (needsStandby || !state.imported) {
-            if (needsStandby) state.standby.add(divertTo);
-            status.innerHTML = notice('', needsStandby ? `Adding standby lanes from ${divertTo} to the model…` : 'Building the model from the session kept with this project…');
+        const diverting = id === 'chokepointDisruption' && Number($('#divertedInput').value) > 0;
+        const divertTo = diverting ? [$('#divertToSelect').value, ...(Number($('#divertedInput2').value) > 0 ? [$('#divertToSelect2').value] : [])].filter(Boolean) : [];
+        const needsStandby = divertTo.filter((port) => !state.built.standbyPorts?.includes(port));
+        if (needsStandby.length || !state.imported) {
+            for (const port of needsStandby) state.standby.add(port);
+            status.innerHTML = notice('', needsStandby.length ? `Adding standby lanes from ${needsStandby.join(' and ')} to the model…` : 'Building the model from the session kept with this project…');
             await build();
-            if (!state.imported || (needsStandby && !state.built?.standbyPorts?.includes(divertTo))) throw new Error('The model could not be built; see Model above.');
+            if (!state.imported || needsStandby.some((port) => !state.built?.standbyPorts?.includes(port))) throw new Error('The model could not be built; see Model above.');
         }
         const run = scenarioRun(id, start, runTime, status);
         if (!run) return;

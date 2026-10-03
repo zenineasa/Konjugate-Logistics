@@ -204,6 +204,9 @@ try {
     const yardGrew = waited.series(`${closed.from}.stock`)[hour(15)] - withOperator.series(`${closed.from}.stock`)[hour(15)];
     assert.ok(yardGrew > 0.64 * closed.rate * 10, `closure: about ${(closed.rate * 10).toFixed(0)} TEU should wait in ${closed.from}'s yard by day 15 (got ${yardGrew.toFixed(0)} more than the baseline).`);
     assert.ok(carried(waited, closed.name, 15, 20) > 1.05 * closed.rate, `closure: ${closed.name} should catch up after it reopens (got ${carried(waited, closed.name, 15, 20)} against ${closed.rate}).`);
+    // Meanwhile the warehouse, running down, orders more over its open lane, not less: orders it can't place on the
+    // closed road must not count as on their way.
+    assert.ok(carried(waited, sibling.name, 8, 15) > 1.2 * carried(withOperator, sibling.name, 8, 15), `closure: ${sibling.name} should carry more while ${closed.name} is closed (got ${carried(waited, sibling.name, 8, 15)} against ${carried(withOperator, sibling.name, 8, 15)}).`);
     // A detour of 6 hours each way: the lane keeps carrying, with more of its trucks on the road, at a higher cost.
     const detoured = await closure('detour', { detourHours: 6 });
     checkInvariants(detoured);
