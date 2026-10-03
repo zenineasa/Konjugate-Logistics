@@ -55,8 +55,11 @@
                 "description": "Fewer ships come through a strait or canal for a while, and the ports that depend on it receive less. Watch warehouse stock fall and towns' orders wait, then recover.",
                 "forkAt": 864000,
                 "runTime": 7776000,
-                "effects": ["Each port's arrivals fall by its share of ships through the chokepoint times the cut, for the chosen days."],
-                "interventions": [{ "parameter": "vesselArrivals", "target": "supplied", "samples": true }]
+                "effects": ["Each port's arrivals fall by its share of ships through the chokepoint times the cut, for the chosen days.", "Every town's orders change by the share given while the cut lasts (none by default)."],
+                "interventions": [
+                    { "parameter": "vesselArrivals", "target": "supplied", "samples": true },
+                    { "parameter": "baseDemand", "target": "supplied", "samples": true }
+                ]
             },
             {
                 "scenarioId": "chokepointDiversion",
@@ -64,13 +67,14 @@
                 "description": "Fewer ships come through a strait or canal for a while, and part of the cargo kept out lands at a port outside it instead and is trucked inland from there. Watch that port's anchorage and yard, and the trucks on its lanes.",
                 "forkAt": 864000,
                 "runTime": 7776000,
-                "effects": ["Each port's arrivals fall by its share of ships through the chokepoint times the cut.", "The diverted cargo arrives at the chosen port; its warehouses order it from there, and those lanes hire trucks for it.", "The chosen port's berths keep their capacity, or take the capacity given from the disruption's first day to the end of the run."],
+                "effects": ["Each port's arrivals fall by its share of ships through the chokepoint times the cut.", "The diverted cargo arrives at the chosen port; its warehouses order it from there, and those lanes hire trucks for it.", "The chosen port's berths keep their capacity, or take the capacity given from the disruption's first day to the end of the run.", "Every town's orders change by the share given while the cut lasts (none by default)."],
                 "interventions": [
                     { "parameter": "vesselArrivals", "target": "supplied", "samples": true },
                     { "parameter": "orderShare", "target": "supplied", "samples": true },
                     { "parameter": "fleetSize", "target": "supplied", "samples": true },
                     { "parameter": "berthCapacity", "target": "supplied", "samples": true },
-                    { "parameter": "outageCapacity", "target": "supplied", "samples": true }
+                    { "parameter": "outageCapacity", "target": "supplied", "samples": true },
+                    { "parameter": "baseDemand", "target": "supplied", "samples": true }
                 ]
             },
             {

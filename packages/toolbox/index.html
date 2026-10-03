@@ -150,6 +150,9 @@
                             <label title="Of the trucks the diverted cargo needs on its lanes, the share that can be found and hired">trucks found <input type="number" id="trucksFoundInput" min="0" max="100" step="10" value="100"> %</label>
                             <label title="The model sizes a port's berths for the cargo it hands inland. A port that is mostly transhipment may have far more; leave empty to keep its own.">its berths take <input type="number" id="divertBerthsInput" min="1" step="100" placeholder=""> TEU/day</label>
                         </div>
+                        <div class="row small" title="People buy less in a crisis, wait, or get goods another way (by road from a neighbouring country, by air). Every town's orders change by this much while the cut lasts; nothing published says by how much, so the figure is yours.">
+                            <label>Demand while the cut lasts <input type="number" id="demandDuringInput" min="-90" max="100" step="10" value="0"> %</label>
+                        </div>
                         <table class="dependence" id="dependenceTable"></table>
                     </div>
                     <div class="scenarioPanel" data-panel="roadClosure" hidden>
@@ -181,7 +184,7 @@
                         <p class="muted small">Towns order more for a while, as on peak days.</p>
                         <label class="row small">In <select id="demandTownsSelect"></select></label>
                         <div class="row small">
-                            <label>Raise demand by <input type="number" id="demandChangeInput" min="-90" max="300" step="5" value="30"> %</label>
+                            <label>Change demand by <input type="number" id="demandChangeInput" min="-90" max="300" step="5" value="30"> %</label>
                         </div>
                         <div class="muted small" id="demandHint"></div>
                     </div>
@@ -208,6 +211,9 @@
                 <button type="button" class="tool" data-add="zone">Warehouse</button>
                 <button type="button" class="tool" data-add="town">Customer</button>
                 <span class="spacer"></span>
+                <span class="flowView" id="flowView" hidden title="What the lanes carried while the scenario lasted, or the baseline">
+                    <button type="button" class="tool" data-flows="scenario">Scenario</button><button type="button" class="tool" data-flows="baseline">Baseline</button>
+                </span>
                 <button type="button" class="tool" id="zoomInButton" title="Zoom in">+</button>
                 <button type="button" class="tool" id="zoomOutButton" title="Zoom out">−</button>
                 <button type="button" class="tool" id="fitButton">Fit</button>
@@ -223,6 +229,8 @@
                 <span><i class="swatch zone"></i>Logistics zone</span>
                 <span><i class="swatch town"></i>Town</span>
                 <span><i class="swatch lane"></i>Road lane</span>
+                <span id="legendFell" hidden><i class="swatch lane fell"></i>Carried less</span>
+                <span id="legendRose" hidden><i class="swatch lane rose"></i>Carried more</span>
                 <span id="legendBorder" hidden><i class="swatch border"></i>Border</span>
                 <span id="legendUnsettled" hidden title="Disputed, indefinite or a line of control, as Natural Earth classes it"><i class="swatch border unsettled"></i>Disputed or undefined</span>
                 <span class="attribution" id="attribution">Map data © OpenStreetMap contributors</span>

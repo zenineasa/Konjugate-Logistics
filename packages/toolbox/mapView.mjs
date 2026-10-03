@@ -160,6 +160,7 @@ export class MapView {
         this.siteLayer.replaceChildren();
         const order = { town: 0, zone: 1, port: 2 };
         const sorted = [...this.sites].sort((a, b) => (a.kept - b.kept) || (order[a.kind] - order[b.kind]));
+        const labelled = [];
         for (const site of sorted) {
             const { x, y } = this.project(site.lat, site.lon);
             const r = (site.kept ? 5 : 3.5) * unit;
@@ -167,9 +168,34 @@ export class MapView {
             const highlighted = this.highlight === site.id;
             const node = element(name, { ...attributes, class: `site ${site.kind}${site.kept ? '' : ' dropped'}${highlighted ? ' highlight' : ''}`, 'stroke-width': (highlighted ? 2.5 : 1.5) * unit, 'data-id': site.id }, this.siteLayer);
             element('title', {}, node).textContent = `${site.name}${site.kept ? '' : ' (not kept: click to keep)'}`;
-            if (site.kept) {
-                const label = element('text', { x: x + 8 * unit, y: y + 4 * unit, class: 'label', 'font-size': 11 * unit, 'stroke-width': 3 * unit }, this.siteLayer);
-                label.textContent = site.name;
+            if (site.kept) labelled.push({ site, x, y });
+        }
+        this.drawLabels(labelled, unit);
+    }
+
+    // Names beside the kept sites, ports first, then warehouses, then towns: each to the right of its site, else to the
+    // left, else left out where it would overlap a name already written (hovering the site still names it). Where sites
+    // crowd, the map stays readable at this zoom and zooming in brings the names back.
+    drawLabels(labelled, unit) {
+        const order = { port: 0, zone: 1, town: 2 };
+        const placed = [];
+        const overlaps = (box) => placed.some((other) => box.left < other.right && other.left < box.right && box.top < other.bottom && other.top < box.bottom);
+        for (const { site, x, y } of [...labelled].sort((a, b) => order[a.site.kind] - order[b.site.kind])) {
+            const label = element('text', { x: x + 8 * unit, y: y + 4 * unit, class: 'label', 'font-size': 11 * unit, 'stroke-width': 3 * unit }, this.siteLayer);
+            label.textContent = site.name;
+            const width = label.getComputedTextLength?.() || site.name.length * 6 * unit;
+            const top = y - 6 * unit;
+            const bottom = y + 7 * unit;
+            const right = { left: x + 7 * unit, right: x + 9 * unit + width, top, bottom };
+            const left = { left: x - 9 * unit - width, right: x - 7 * unit, top, bottom };
+            if (!overlaps(right)) {
+                placed.push(right);
+            } else if (!overlaps(left)) {
+                label.setAttribute('x', x - 8 * unit);
+                label.setAttribute('text-anchor', 'end');
+                placed.push(left);
+            } else {
+                label.remove();
             }
         }
     }
@@ -180,9 +206,10 @@ export class MapView {
         const at = (point) => this.project(point.lat, point.lon);
         // Corridors: each lane along the roads it was routed over, a road several lanes share drawn once, as thick as
         // what it carries. A lane estimated rather than routed is straight and dashed; one on standby (no flow yet) thin
-        // and dotted.
+        // and dotted. After a scenario run a corridor also carries its baseline and how it changed (fell, rose or
+        // stopped), and `scale` keeps the widths those of the model as built.
         if (this.flows.corridors) {
-            const maximum = Math.max(1, ...this.flows.corridors.map((corridor) => corridor.rate));
+            const maximum = this.flows.scale ?? Math.max(1, ...this.flows.corridors.map((corridor) => corridor.rate));
             const number = (value) => Number(value).toLocaleString('en', { maximumFractionDigits: 0 });
             for (const corridor of this.flows.corridors) {
                 const d = corridor.points.map(([lat, lon], index) => {
@@ -190,16 +217,20 @@ export class MapView {
                     return `${index ? 'L' : 'M'}${x.toFixed(3)} ${y.toFixed(3)}`;
                 }).join('');
                 const estimated = corridor.basis === 'straight-line';
+                // A changed corridor stays wide enough to see its colour, however little it carried.
+                const width = Math.max(corridor.change ? 2.5 : 0, 1.5 + 5 * Math.min(1, corridor.rate / maximum));
                 // A dark casing under the corridor lifts it off the road it follows.
-                if (!(corridor.standby && !(corridor.rate > 0))) element('path', { d, class: 'laneCasing', 'stroke-width': (3.5 + 5 * corridor.rate / maximum) * unit }, this.flowLayer);
-                const dash = corridor.standby && !(corridor.rate > 0) ? `${1.5 * unit} ${3 * unit}` : estimated ? `${6 * unit} ${4 * unit}` : null;
+                if (!(corridor.standby && !(corridor.rate > 0))) element('path', { d, class: 'laneCasing', 'stroke-width': (width + 2) * unit }, this.flowLayer);
+                const stopped = corridor.change === 'stopped';
+                const dash = corridor.standby && !(corridor.rate > 0) ? `${1.5 * unit} ${3 * unit}` : stopped ? `${4 * unit} ${3 * unit}` : estimated ? `${6 * unit} ${4 * unit}` : null;
                 const path = element('path', {
-                    d, class: `lane${estimated ? ' estimated' : ''}${corridor.standby && !(corridor.rate > 0) ? ' standby' : ''}`,
-                    'stroke-width': (corridor.standby && !(corridor.rate > 0) ? 1.2 : 1.5 + 5 * corridor.rate / maximum) * unit,
+                    d, class: `lane${estimated ? ' estimated' : ''}${corridor.standby && !(corridor.rate > 0) ? ' standby' : ''}${corridor.change ? ` ${corridor.change}` : ''}`,
+                    'stroke-width': (corridor.standby && !(corridor.rate > 0) ? 1.2 : width) * unit,
                     ...(dash ? { 'stroke-dasharray': dash } : {})
                 }, this.flowLayer);
                 const how = { routed: 'over major roads', local: 'local streets, estimated', 'straight-line': 'no road route found: a straight-line estimate' }[corridor.basis] ?? corridor.basis;
-                element('title', {}, path).textContent = `${number(corridor.rate)} TEU/day (${how})\n${corridor.lanes.map((name) => name.replace(/^Road /, '')).join('\n')}`;
+                const against = corridor.baseline === undefined ? '' : ` while the scenario lasted, ${number(corridor.baseline)} in the baseline`;
+                element('title', {}, path).textContent = `${number(corridor.rate)} TEU/day${against} (${how})\n${corridor.lanes.map((name) => name.replace(/^Road /, '')).join('\n')}`;
             }
         } else {
             this.drawStraightLanes(unit, at);

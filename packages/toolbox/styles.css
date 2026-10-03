@@ -37,6 +37,8 @@ h2 { font-size: 14px; font-weight: 700; color: var(--bright); margin: 0; display
 .step.completed .stepNumber { background: rgba(52, 211, 153, 0.15); color: var(--ok); border-color: rgba(52, 211, 153, 0.4); }
 
 .row { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+/* A select sized by its longest option (a town's full name) would run past the panel: it takes the room there is. */
+.row > select { flex: 1 1 12em; min-width: 0; max-width: 100%; }
 .small { font-size: 12px; }
 .muted { color: var(--muted); }
 input, select { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font: inherit; transition: border-color 0.15s ease, box-shadow 0.15s ease; }
@@ -134,6 +136,8 @@ details summary:hover { text-decoration: underline; }
 #map .laneCasing { fill: none; stroke: #08121a; stroke-opacity: 0.8; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
 #map .lane.estimated { stroke-opacity: 0.6; }
 #map .lane.standby { stroke-opacity: 0.55; }
+#map .lane.fell, #map .lane.stopped { stroke: var(--danger); }
+#map .lane.rose { stroke: var(--warn); }
 #map .serve { stroke: var(--town); stroke-opacity: 0.65; stroke-dasharray: 3 3; fill: none; }
 
 .legend { display: flex; gap: 14px; align-items: center; padding: 6px 12px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); background: var(--surface); }
@@ -144,6 +148,12 @@ details summary:hover { text-decoration: underline; }
 .swatch.zone { background: var(--zone); transform: rotate(45deg); }
 .swatch.town { background: var(--town); border-radius: 50%; }
 .swatch.lane { background: var(--lane); height: 3px; vertical-align: 2px; }
+.swatch.lane.fell { background: var(--danger); }
+.swatch.lane.rose { background: var(--warn); }
+.flowView { display: inline-flex; margin-right: 8px; }
+.flowView .tool { border-radius: 0; }
+.flowView .tool:first-child { border-radius: 6px 0 0 6px; }
+.flowView .tool:last-child { border-radius: 0 6px 6px 0; margin-left: -1px; }
 .swatch.border { background: none; height: 0; width: 14px; border-top: 1.5px solid rgba(222, 205, 180, 0.75); vertical-align: 3px; }
 .swatch.border.unsettled { border-top-style: dashed; }
 .mapEmpty { position: absolute; inset: 45px 0 30px; display: grid; place-items: center; color: var(--muted); pointer-events: none; padding: 40px; text-align: center; }

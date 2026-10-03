@@ -245,6 +245,26 @@ try {
         });
         assert.deepEqual(birchRow.slice(1, 4), [0, 0, 0], 'it kept nothing out');
         assert.ok(Math.abs(birchRow[4] - 168.75) <= 1, `about 169 TEU diverted here (shown ${birchRow[4]})`);
+        // The summary says how long orders waited, not only whether they were delivered.
+        assert.match(await toolbox.textContent('#scenarioResult'), /Days an order waited/);
+        // The map shows what the lanes carried while the cut lasted: Port Alder's less, Birch Harbour's standby lanes more.
+        assert.equal(await toolbox.locator('#flowView').isVisible(), true);
+        assert.match(await toolbox.textContent('#flowView [data-flows="scenario"]'), /^Scenario, day 2 to 5$/);
+        assert.ok(await toolbox.locator('#map .lane.rose').count() > 0, 'the lanes the cargo was diverted to carried more');
+        assert.ok(await toolbox.locator('#map .lane.fell, #map .lane.stopped').count() > 0, 'the lanes from the cut port carried less');
+        await toolbox.click('#flowView [data-flows="baseline"]');
+        assert.equal(await toolbox.locator('#map .lane.rose, #map .lane.fell, #map .lane.stopped').count(), 0, 'the baseline is the model as built');
+        await toolbox.click('#flowView [data-flows="scenario"]');
+        assert.ok(await toolbox.locator('#map .lane.rose').count() > 0);
+        // People buy less while the cut lasts: the same diversion with every town ordering half as much, so less is owed.
+        const backlogCost = () => toolbox.evaluate(() => Number([...document.querySelectorAll('#scenarioResult tr')].find((row) => row.cells[0]?.textContent === 'Backlog cost').cells[1].textContent.replace(/,/g, '')));
+        const backlogBefore = await backlogCost();
+        await toolbox.fill('#demandDuringInput', '-50');
+        await toolbox.click('#runScenarioButton');
+        await toolbox.waitForFunction(() => /every town's orders fall 50% while it lasts/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
+        const backlogAfter = await backlogCost();
+        assert.ok(backlogAfter < backlogBefore, `with half the orders the backlog should cost less (${backlogAfter} against ${backlogBefore})`);
+        await toolbox.fill('#demandDuringInput', '0');
         assert.equal(log.filter((line) => line.startsWith('pageerror') || line.startsWith('error')).length, 0, log.join('\n'));
 
         // 5b'. Two settings changed in quick succession, the second while the first is still building: both reach the model.
