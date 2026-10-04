@@ -1,6 +1,6 @@
 {
   "name": "konjugate-logistics",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "Logistics toolbox for Konjugate.",
