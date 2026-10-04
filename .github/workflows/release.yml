@@ -1,0 +1,93 @@
+# Copyright © 2026 Zenin Easa Panthakkalakath
+
+name: Release
+
+# Deliberately not triggered on every push -- only an explicit version tag (or a manual run)
+# builds a signed release zip. build.yml remains the separate, unsigned verification workflow
+# that runs on every push and PR. Mirrors Konjugate core's own build/release split
+# (crossPlatform.yml vs. release.yml) exactly, including the manual-run-builds-but-does-not-
+# publish behavior below.
+on:
+    push:
+        tags: ['v*']
+    workflow_dispatch:
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Check out this repo
+              uses: actions/checkout@v4
+              with:
+                  path: konjugate-logistics
+            - name: Check out Konjugate core
+              uses: actions/checkout@v4
+              with:
+                  repository: zenineasa/Konjugate
+                  path: konjugate
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 24.19.0
+            - name: Check the tag matches package.json's version
+              if: startsWith(github.ref, 'refs/tags/v')
+              working-directory: konjugate-logistics
+              run: |
+                  version=$(node -p "require('./package.json').version")
+                  if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+                      echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $version."
+                      exit 1
+                  fi
+            - name: Install Konjugate core's dependencies
+              working-directory: konjugate
+              run: npm ci
+            - name: Run unit tests
+              working-directory: konjugate-logistics
+              run: npm test
+            - name: Build the plugin and add-on
+              working-directory: konjugate-logistics
+              run: npm run build
+            # Unlike build.yml, this workflow is never triggered by pull_request (only push:tags
+            # and workflow_dispatch), so GitHub always makes secrets available here -- no fork-PR
+            # exfiltration risk to guard against, so signing runs unconditionally.
+            - name: Sign the built packages
+              working-directory: konjugate-logistics
+              env:
+                  LOGISTICS_SIGNING_PRIVATE_KEY: ${{ secrets.LOGISTICS_SIGNING_PRIVATE_KEY }}
+              run: node scripts/signPackage.mjs
+            - name: Verify the signatures against the registry
+              working-directory: konjugate-logistics
+              run: node scripts/verifySignedPackages.mjs
+            - name: Package the build output as one zip
+              working-directory: konjugate-logistics
+              run: |
+                  mkdir -p dist
+                  cd out
+                  zip -j "../dist/konjugate-logistics-toolbox.zip" *.kjp *.kja
+                  cd ..
+                  unzip -l dist/konjugate-logistics-toolbox.zip
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: release
+                  path: konjugate-logistics/dist/konjugate-logistics-toolbox.zip
+                  if-no-files-found: error
+
+    release:
+        needs: build
+        # A manual (workflow_dispatch) run still builds, signs and uploads the artifact above for
+        # inspection -- only an actual tag push publishes a GitHub Release, same as core's
+        # release.yml.
+        if: startsWith(github.ref, 'refs/tags/v')
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
+        steps:
+            - uses: actions/download-artifact@v4
+              with:
+                  path: dist
+                  merge-multiple: true
+            - uses: softprops/action-gh-release@v2
+              with:
+                  files: dist/*
+                  generate_release_notes: true
+                  body: |
+                      > **Verifying this download:** every package in this zip is signed under the `konjugate.logistics` namespace prefix — see [docs/registry.md](https://github.com/zenineasa/Konjugate/blob/main/docs/registry.md) in the Konjugate core repo for what that means and how `verifyPackageArchive` checks it. This is a trust signal, not a requirement: installing an unsigned or unverified package works exactly the same.

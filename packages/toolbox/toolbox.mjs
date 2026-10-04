@@ -1168,7 +1168,15 @@ $('#runScenarioButton').addEventListener('click', async () => {
         if (needsStandby.length || !state.imported) {
             for (const port of needsStandby) state.standby.add(port);
             status.innerHTML = notice('', needsStandby.length ? `Adding standby lanes from ${needsStandby.join(' and ')} to the model…` : 'Building the model from the session kept with this project…');
-            await build();
+            // A build already under way (Keep the canvas in step, after the last change) would make this one wait its
+            // turn and return at once, before the standby lanes exist: let it finish, then build, and once more if a
+            // change queued another build in between.
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+                while (state.busy) await new Promise((resolve) => setTimeout(resolve, 100));
+                clearTimeout(state.rebuildTimer);
+                await build();
+                if (state.imported && !needsStandby.some((port) => !state.built?.standbyPorts?.includes(port))) break;
+            }
             if (!state.imported || needsStandby.some((port) => !state.built?.standbyPorts?.includes(port))) throw new Error('The model could not be built; see Model above.');
         }
         const run = scenarioRun(id, start, runTime, status);

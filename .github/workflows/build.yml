@@ -1,0 +1,73 @@
+# Copyright © 2026 Zenin Easa Panthakkalakath
+
+name: Build
+
+# Cheap, broad verification -- every push and PR gets an unsigned build, proving the code and
+# packaging still work. Mirrors Konjugate core's crossPlatform.yml/release.yml split: this is the
+# crossPlatform.yml role (build + test, no signing, no publish); release.yml is the tag-triggered
+# signed-release counterpart to core's release.yml. Building here needs no C++ compilation today
+# (packages/engine/plugin.json contributes only JSON component templates and example .kjt files,
+# no native provider) -- scripts/build.mjs only imports Konjugate core's pure-JS package/model-
+# encoding modules, so this is a plain Node job on a single platform, not the native build/vcpkg
+# matrix core's own CI needs.
+on:
+    push:
+        branches: [main]
+    pull_request:
+    workflow_dispatch:
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Check out this repo
+              uses: actions/checkout@v4
+              with:
+                  path: konjugate-logistics
+            # Checked out as a sibling directory, matching scripts/konjugatePaths.mjs's default
+            # konjugateDir resolution (../konjugate relative to this repo) -- no KONJUGATE_DIR
+            # override needed. Always the public repo's default branch: this toolbox builds
+            # against whatever core currently ships, the same as any other third-party plugin
+            # author would.
+            - name: Check out Konjugate core
+              uses: actions/checkout@v4
+              with:
+                  repository: zenineasa/Konjugate
+                  path: konjugate
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 24.19.0
+            # Only core needs installing: scripts/build.mjs dynamically imports core's own
+            # src/packageArchive.mjs etc., which resolve their own npm dependencies (fflate)
+            # starting from core's node_modules. This repo declares no dependencies of its own.
+            - name: Install Konjugate core's dependencies
+              working-directory: konjugate
+              run: npm ci
+            # Includes tests/unit/archiveImports.test.mjs, which builds both packages itself and
+            # statically checks every relative import/script/stylesheet reference inside them
+            # resolves to a file actually present -- the guard that would have caught the sibling
+            # Konjugate-PoseVisualizer repo's missing-vendor-file bug.
+            - name: Run unit tests
+              working-directory: konjugate-logistics
+              run: npm test
+            - name: Build the plugin and add-on
+              working-directory: konjugate-logistics
+              run: npm run build
+            # Deliberately unsigned: signing is release.yml's job, gated to an actual version tag,
+            # not something every push/PR build should do (see docs/registry.md in core -- an
+            # unsigned package here is no different from one built any other way, so there's
+            # nothing this verification build loses by skipping it).
+            - name: Package the build output as one zip
+              working-directory: konjugate-logistics
+              run: |
+                  mkdir -p dist
+                  cd out
+                  zip -j "../dist/konjugate-logistics-toolbox.zip" *.kjp *.kja
+                  cd ..
+                  unzip -l dist/konjugate-logistics-toolbox.zip
+            - name: Upload build artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: konjugate-logistics-toolbox
+                  path: konjugate-logistics/dist/konjugate-logistics-toolbox.zip
+                  if-no-files-found: error
