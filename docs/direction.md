@@ -10,13 +10,76 @@ Build it as if it were the final version; present it as if it were the first. Ev
 
 ## Where we are
 
-A modelling layer, without a product on top:
+A port-to-hinterland planning tool, shown on a real region (October 2026):
 
-- **Engine features** the models needed: piecewise ("if") equations, simulation time `t`, parameters on node templates, and algebraic states that conserve across edges.
-- **A component library:** Port (anchorage queue, berth capacity, outage window, waiting time), Road lane (a truck fleet that loads, travels and returns, hired towards a target size), Rail lane, Warehouse and Demand zone nodes, with transport, holding and backlog costs; Road shipment, Rail shipment and Delivery bundles, tested to conserve containers and trucks.
-- **One generic example:** a port feeding two warehouses over two road lanes and three zones, forked for a berth outage and a demand surge that the fleet can't keep up with until it grows.
+- **A component library:** Port (anchorage queue, berths, yard), Road lane (two truck sizes that load, travel and return), Rail lane, Warehouse and Demand zone, with transport, fleet, holding and backlog costs; bundles that conserve containers and trucks.
+- **The Logistics Toolbox window:** a region from one search (OpenStreetMap and IMF PortWatch, with a coverage report), curation on a map, a model built over the real roads, and scenarios forked from the baseline: a chokepoint (cargo lost, delayed, or diverted to one or two other ports), a road closure, a fleet change and a demand change, with results on the map and in a summary. Every input says where it came from.
+- **A showcase and a video** on Dubai during the 2026 closure of the Strait of Hormuz.
 
-Nothing has a location yet, travel times are typed-in constants, trucks come in one size, and there is no live data.
+Its shape is fixed: supply starts at ports, flows through warehouses and ends at towns. That fits a port authority's question. It does not fit most supply chains, which is where the toolbox goes next.
+
+## Next: a general supply network (proposal)
+
+A supply chain manager at a regional retail chain watched the showcase video and said: *"I didn't understand anything. It's boring. In the first minute, tell me why I should spend 30 minutes. I gathered it configures a logistics network, mostly about ports and ships. Why I should use it, I don't understand."* The video was too long and dense, but the deeper point is about the toolbox: it speaks a port's language (TEU, berths, chokepoints) to people whose network is suppliers, warehouses and stores, and it can't hold the network they actually run.
+
+The toolbox becomes a general supply network modeller. A redesign is acceptable where the current one gets in the way.
+
+### What a user does
+
+1. **Load a map.** A city or region from a search, as today, but as a light fetch (roads and towns) when the user brings their own sites. Today's discovery (ports, industrial land, warehouses) becomes optional suggestions on the map, not the starting point.
+2. **Place sites, each with a role.** Pick a role from a palette, click the map, name it:
+
+    | Role | Behaviour |
+    |---|---|
+    | Supplier or factory | A source: what it supplies, its capacity, lead time and reliability |
+    | Port | A supplier whose arrivals follow ships (today's port, kept) |
+    | Warehouse or distribution centre | Holds stock, orders by a rule, has a capacity and a fixed cost |
+    | Store | Holds stock and sells to walk-in demand; runs out |
+    | Dark store | Holds stock and delivers online orders within a radius |
+    | Customer area | Demand only (today's town) |
+
+    A small form per site, with defaults labelled assumed until the user changes them. A spreadsheet of sites loads and saves the same network.
+3. **Links, suggested then edited.** Each store from its nearest warehouse, each warehouse from the suppliers of each category; drag from one site to another to add or change a link. Every link is routed over the roads.
+4. **Choose the vehicles.** A small catalogue of vehicle types (four or five), each with its capacity in the units the categories use (cases or pallets), cost per kilometre and per day, speed and loading time, what it can carry (refrigerated or ambient) and where it may go (road classes, city-centre bans). Fleets are based at sites, and each link draws on the types allowed on it: heavy trucks from supplier to warehouse, small trucks or vans to stores, riders or vans from a dark store. Vehicles stay counted and conserved per type, as the two truck sizes are today.
+5. **Set the calendars.** When each site works: a store's opening hours and its receiving window (often early morning only), a warehouse's shifts and receiving hours, a dark store's late or round-the-clock hours, a supplier's dispatch days and cut-off. How many drivers are on shift at each site, and their daily driving limit. Vehicle time rules (daytime bans on heavy trucks, night-only city deliveries). Weekly patterns. A **holiday calendar**: public and regional holidays, festivals and seasonal peaks, each a dated event with its effects: demand by category before, during and after it (the stock-up ramp, the peak, the dip after), sites closed or on short hours, fewer drivers, suppliers dispatching less or not at all. Dates move from year to year and differ by region and religion, so the calendar is the region's, loaded from a public holiday source where one covers it and completed by the user; the size of each effect is the user's figure or a range to test, labelled as such. Each calendar is an on or off pattern by hour and day, applied to the flows it governs: deliveries only within a receiving window, dispatch only during shifts, sales only while open. Drivers are counted and conserved per site, like vehicles, and a link moves no faster than its vehicles and the drivers on shift allow; a daily limit caps trips per driver. Individual duty rosters stay out (see Out of scope).
+6. **Simulate and compare.** Disruptions and peaks as scenarios, and network changes (open, close or move a site, change the fleet mix) as scenarios too, compared side by side in business terms.
+
+### What it answers
+
+In the user's words, not ours:
+
+- If this supplier is late, or this road closes, which stores run out of what, and when?
+- What is the cheapest fix: buffer stock, moving stock between warehouses, another supplier, more trucks?
+- How much to hold before a festival or peak?
+- Which supplier, site or route is the weakest link?
+- Would a new warehouse or dark store here help, overall, and when does it pay back? Under normal weeks and under stress.
+
+### Results in business terms
+
+Days out of stock per store and category, sales lost, service level, delivery time, and cost (transport, holding, fixed), each against the baseline, two options side by side. TEU and anchorage waits stay available for port users, not in front of everyone.
+
+### Network what-ifs
+
+A candidate site sits on the map on standby (routed, no stock, no orders, no trucks), as standby lanes do for diverted cargo today. Opening it is a scenario: from a chosen day, chosen stores order from it and it gets stock and trucks. The fork and comparison machinery is reused, and a site can open in the middle of a peak or a disruption. Several candidates run one after another and are ranked in one table: net cost, stock-out days and months to pay back, under normal and stressed weeks. Fixed costs (rent, staff) are the user's figures. A dark store's extra customers are a guess, so they are a range the user sets, with a check on whether the decision holds across it.
+
+### What to keep, what to rebuild
+
+- **Keep:** the engine templates (Warehouse becomes Store and Distribution centre; Port becomes one kind of Supplier), the road graph and routing, the map view (corridors, geography, scenario colours), provenance labelling, the coverage report, scenarios as forks with supplied schedules, standby sites, sessions saved with the project and working offline.
+- **Rebuild:** the model builder (`regionModel.mjs` assumes port to zone to town; it becomes a builder from placed sites with roles and links), the window's steps (Map, Sites, Links, Model, Scenarios, Compare), the summary (business terms), and discovery (from the source of the network to a layer of suggestions).
+- **New:** a Supplier source; stock at stores; product categories; a vehicle catalogue with fleets based at sites (generalising today's two truck sizes per lane); links the user edits; fixed costs; a last-mile delivery block for dark stores; incremental routing (moving one site re-routes only its links), since building a 30-site region already takes over 30 seconds.
+
+### Questions for the people it is for
+
+Asked of two or three supply chain practitioners before building, because everything above depends on the answers:
+
+1. What does your network look like: how many suppliers, warehouses and stores; where do ports come in, if at all?
+2. Which decisions do you lose sleep over, and how often do you make them?
+3. What went wrong in your worst week last year, and what would you have wanted to know a week before?
+4. What data do you have (sales by store and product, purchase orders and receipts, transport bills, site lists), and in what form?
+5. Do you think in products, categories or total volume?
+6. Is a new warehouse or dark store something you are weighing now?
+7. Would your data be allowed to leave your laptop?
+8. Which holidays and festivals move your demand, by how much and in which categories, and how early do you start stocking up?
 
 ## Who it is for
 
@@ -28,7 +91,9 @@ Nothing has a location yet, travel times are typed-in constants, trucks come in 
 | **Model detail** | Corridors, modes, congestion | Fleets as counts per depot and lane, loaded and empty | Many sites, high and uncertain volume |
 | **Data they hold** | Traffic counts, port throughput, masterplans | GPS trackers, trip logs, orders | Everything, in-house |
 
-**First audience: fleet operators.** Their pain is concrete and costed per kilometre, they can decide quickly, and they already hold the data a calibrated model needs. **Long-term: infrastructure owners,** where Konjugate's strength in network flow and congestion matters most, but sales cycles are long and a working reference helps. **E-commerce:** the large platforms build their own tools; their delivery and warehousing partners look like fleet operators and are reachable.
+**Retail and distribution chains** (added October 2026): regional grocers and retailers with suppliers, a few distribution centres and tens of stores. Their question is which stores run out when something breaks, what the cheapest fix is, and whether a new warehouse or dark store pays. They decide over weeks to months, think in categories and stores, and hold sales and purchasing data in spreadsheets and their point-of-sale system. The general supply network is built for them first.
+
+**Fleet operators** (the first audience until October 2026). Their pain is concrete and costed per kilometre, they can decide quickly, and they already hold the data a calibrated model needs. **Long-term: infrastructure owners,** where Konjugate's strength in network flow and congestion matters most, but sales cycles are long and a working reference helps. **E-commerce:** the large platforms build their own tools; their delivery and warehousing partners look like fleet operators and are reachable.
 
 ## The product: plan, calibrate, twin
 
@@ -102,14 +167,28 @@ Every number says whether it is sourced, assumed or synthetic, and every sourced
 | Costs and service KPIs | Yes, new | Accumulator states: transport, holding, idle trucks, late or lost orders; fill rate. |
 | Congestion on shared roads | Partly | Mesoscopic road cells, as in Konjugate's OpenStreetMap traffic proposal; travel time rises with flow. |
 | Traffic by time of day | Partly | Piecewise rates on `t`; meaningful with sub-hourly steps. |
+| Calendars and shifts | Yes, new | On or off patterns by hour and day (stored schedules or piecewise rates on `t`) multiplying the flows they govern; drivers as conserved counts per site beside vehicles. Fits the 15-minute step. |
 | Keeping the model in step with live data | No, engine work | State estimation: pull model states towards observations as they arrive. |
 | Individual vehicles in the twin | Partly | Positions are aggregated into lane stages for the model; the dashboard shows each vehicle from the feed. |
 | Choosing the best sites or fleet mix | No | Konjugate simulates; it doesn't search. Guided searches over many runs (see working answers), or an external optimiser proposing designs that Konjugate stress-tests. |
 | Running as a service | Partly | A control centre wants a server and a browser dashboard; Konjugate's web edition is a starting point. |
 
-## Roadmap to the showcase
+## Roadmap
 
-Each milestone ends with something that can be shown.
+Each milestone ends with something that can be shown. Milestones A to H make the general supply network and come first; the numbered milestones after them are the original roadmap, kept for port and infrastructure users and for the twin.
+
+- **A. Sites with roles on a map.** The role palette, placing and moving sites with their forms, a light map fetch, a spreadsheet in and out, discovery as suggestions. *Done when* a user builds a network of three suppliers, two warehouses and twenty stores on a city map in ten minutes, saves it, and reopens it offline.
+- **B. Links and fast routing.** Suggested links, links edited by dragging, incremental routing. *Done when* moving one site re-routes only its links in under a second, and every link says how it was routed.
+- **C. Stock where it is held, by category and vehicle.** Suppliers as sources, stores that hold stock and run out, a handful of product categories with their own suppliers and lead times, and the vehicle catalogue with fleets at sites. *Done when* a store runs out of one category while another stays in stock, a chilled category runs short on a link with too few refrigerated vehicles, and the model still conserves goods and vehicles.
+- **D. Results in business terms.** Stock-out days per store and category, sales lost, service level, delivery time and cost, two runs side by side. *Done when* a supply chain manager reads the comparison without help.
+- **E. Scenarios for a supply network.** A supplier late or short, a site down, a demand peak (one-off, or a holiday from the calendar in F), a road closed, trucks short; most exist and are generalised. *Done when* each runs on a network built in A to C and reports in D's terms.
+- **F. Calendars and shifts.** Opening hours, receiving windows, warehouse shifts, supplier dispatch days, drivers on shift with a daily limit, vehicle time rules (daytime bans, night-only delivery), weekly patterns, and the holiday calendar (dated holidays, festivals and peaks with their effects on demand, sites, drivers and suppliers). *Done when* a store that can receive only before 9 am runs out when its delivery reaches it at noon, and a second warehouse shift fixes it; and a festival in the holiday calendar shows which stores run out of which categories unless stock is built up the weeks before.
+- **G. Network what-ifs.** Opening, closing or moving a site as a scenario, changing the fleet mix (more vans and fewer trucks, more refrigerated capacity) or the shifts, fixed costs, payback, candidates ranked. Judged with the calendars in place, since a site's value depends on when it works. *Done when* three candidate warehouse sites are ranked on net cost and stock-out days under a normal and a peak week, and a change of fleet mix is compared the same way.
+- **H. Dark stores and the last mile.** Online orders within a radius, delivered by riders or vans (vehicle types from C) against a time promise, beside walk-in sales, within the dark store's hours (F). *Done when* adding a dark store changes delivery times and stock-outs for the areas it serves.
+
+A short video (three to five minutes, one question in the viewer's terms, answered in the first minute) follows D; a longer tutorial follows G.
+
+The original roadmap:
 
 1. **Lanes, fleets, ports and costs.** (Done: two truck sizes per lane, each with its cost per kilometre and per day; fill rate is worked out from the zones' running totals rather than kept as a state.) Road and rail lane bundles, fleet stocks by truck size, anchorage queues with berth capacity, cost and KPI accumulators. *Done when* the example reports vessel waiting time, cost, fill rate and truck utilisation, and adding berths, trains or trucks changes them.
 2. **Region import.** (Mostly done: the Logistics Toolbox window searches a place, fetches its OpenStreetMap data, reports coverage, lets the user curate on a map and in lists (tick, top N, drag, add, CSV), and builds a steady model into the canvas. Tried on a real region (the Gulf coast around Jebel Ali): tiled and retried fetches, English names, filtering of passenger harbours and non-logistics industry, port volumes shared by port land, towns served by several zones, cities split into demand areas by their suburbs, and the session saved with the project. Still to do: merging two candidates, rail lanes, and a threshold per kind.) Region search, discovery from OpenStreetMap, clustering, significance ranking, the curation step with the coverage report, and model generation with in-process routing. A CSV of the user's own sites as an alternative input. *Done when* a region is loaded, curated, reported on and turned into a runnable model, and moving a site changes its lead times and costs.
@@ -136,10 +215,11 @@ Milestones 1 to 5 make the planning showcase. Milestones 6 to 9 make the twin.
 | Port operator releases and press | Monthly throughput and dated events | Secondary and fast-changing: each figure goes in with its date and link, and is refreshed before every showing. The split between transshipment and cargo that goes inland is rarely given, so it is a forkable assumption. |
 | Official fuel prices | Monthly diesel price per country, where published | Enter or fetch monthly; otherwise an assumption. |
 | Population statistics | Demand proxies by town | Check vintage and licence per source. |
+| Public holiday calendars | National and some regional public holidays by date | Several free sources and APIs exist; coverage varies by country and few include regional or religious festivals, so the user completes the calendar. Check coverage and terms per country. |
 
 ## Out of scope for now
 
-- **Solving vehicle routing** (which truck visits which customers in what order). A separate combinatorial problem with good existing solvers; the twin can take a routing plan as input rather than compute one.
+- **Solving vehicle routing and crew rostering** (which truck visits which customers in what order, which driver works which hours). Drivers are modelled as counts on shift with a daily limit, not as named people. A separate combinatorial problem with good existing solvers; the twin can take a routing plan as input rather than compute one.
 - **Transport management features:** bookings, billing, documents, driver payroll. That is operational software around the twin, not the twin.
 - **Guaranteed-optimal designs.** Konjugate compares, searches over runs and stress-tests; an external optimiser can be added if customers need one.
 
