@@ -192,22 +192,29 @@ try {
         const [, nodes, edges] = built.match(/(\d+) nodes and (\d+) relationships/).map(Number);
         await window.waitForFunction(([n, e]) => new RegExp(`${n} nodes`).test(document.querySelector('.modelStatus').textContent) && new RegExp(`${e} relationships`).test(document.querySelector('.modelStatus').textContent), [nodes, edges], { timeout: 30000 });
         // Counted in pallets, ten a container.
-        assert.match(await toolbox.textContent('#buildResult'), /Containers handed inland: 1,500 pallets\/day/);
+        assert.match(await toolbox.textContent('#buildResult'), /Containers handed inland: 1,500\.0 pallets\/day/);
         assert.ok(await toolbox.locator('#map .lane').count() > 0, 'The lanes are drawn on the map.');
 
         // 5. Drag Alder Industrial Park a little north: the model is rebuilt with new distances to it.
-        const laneKilometres = () => toolbox.evaluate(() => [...document.querySelector('#buildResult table').tBodies[0].rows].filter((row) => /Port Alder → Alder Industrial Park/.test(row.textContent)).map((row) => row.cells[2].textContent)[0]);
+        // Its distance and hours, as the table shows them (to a tenth): a small move can leave the distance to a tenth as it was.
+        const laneKilometres = () => toolbox.evaluate(() => [...document.querySelector('#buildResult table').tBodies[0].rows].filter((row) => /Port Alder → Alder Industrial Park/.test(row.textContent)).map((row) => `${row.cells[2].textContent} km, ${row.cells[3].textContent} h`)[0]);
         const before = await laneKilometres();
         assert.ok(before, 'Port Alder supplies Alder Industrial Park.');
+        // Nothing selected first: the bar beside a selected site (Port Alder, from step 4) can sit over the park.
+        await toolbox.evaluate(() => document.activeElement?.blur());
+        await toolbox.keyboard.press('Escape');
+        await toolbox.waitForFunction(() => document.querySelector('#pinPopover').hidden, null, { timeout: 5000 }).catch(fail);
         const park = toolbox.locator('#map .site.warehouse.pin').filter({ has: toolbox.locator('title', { hasText: 'Alder Industrial Park' }) });
         const box = await park.boundingBox();
         await toolbox.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
         await toolbox.mouse.down();
-        await toolbox.mouse.move(box.x + box.width / 2, box.y + box.height / 2 - 8, { steps: 4 });
+        await toolbox.mouse.move(box.x + box.width / 2, box.y + box.height / 2 - 40, { steps: 8 });
         await toolbox.mouse.up();
+        const moved = await park.boundingBox();
+        assert.ok(moved.y < box.y - 20, `The park moved north on the map (from ${box.y} to ${moved.y}).`);
         await toolbox.waitForFunction((previous) => {
             const row = [...document.querySelector('#buildResult table').tBodies[0].rows].find((item) => /Port Alder → Alder Industrial Park/.test(item.textContent));
-            return row && row.cells[2].textContent !== previous && !document.querySelector('#buildStatus .notice.warning');
+            return row && `${row.cells[2].textContent} km, ${row.cells[3].textContent} h` !== previous && !document.querySelector('#buildStatus .notice.warning');
         }, before, { timeout: 30000 }).catch(fail);
         const after = await laneKilometres();
         assert.notEqual(after, before);
@@ -298,10 +305,10 @@ try {
         await toolbox.fill('#tonnesPerTeuInput', '12'); await toolbox.dispatchEvent('#tonnesPerTeuInput', 'change');
         await toolbox.waitForFunction(() => /Building the model/.test(document.querySelector('#buildStatus').textContent), null, { timeout: 10000 }).catch(() => {});
         await toolbox.fill('#portVolume', '80'); await toolbox.dispatchEvent('#portVolume', 'change');
-        await toolbox.waitForFunction((volume) => [...document.querySelectorAll('#buildResult details tr')].some((row) => row.cells[0]?.textContent === 'Birch Harbour' && row.cells[1]?.textContent.startsWith(`Containers handed inland: ${volume}`)) && document.querySelector('#buildStatus .notice.ok'), '800 pallets', { timeout: 120000 }).catch(fail);
+        await toolbox.waitForFunction((volume) => [...document.querySelectorAll('#buildResult details tr')].some((row) => row.cells[0]?.textContent === 'Birch Harbour' && row.cells[1]?.textContent.startsWith(`Containers handed inland: ${volume}`)) && document.querySelector('#buildStatus .notice.ok'), '800.0 pallets', { timeout: 120000 }).catch(fail);
         await toolbox.fill('#tonnesPerTeuInput', '10'); await toolbox.dispatchEvent('#tonnesPerTeuInput', 'change');
         await toolbox.fill('#portVolume', '100'); await toolbox.dispatchEvent('#portVolume', 'change');
-        await toolbox.waitForFunction((volume) => [...document.querySelectorAll('#buildResult details tr')].some((row) => row.cells[0]?.textContent === 'Birch Harbour' && row.cells[1]?.textContent.startsWith(`Containers handed inland: ${volume}`)) && document.querySelector('#buildStatus .notice.ok'), '1,000 pallets', { timeout: 120000 }).catch(fail);
+        await toolbox.waitForFunction((volume) => [...document.querySelectorAll('#buildResult details tr')].some((row) => row.cells[0]?.textContent === 'Birch Harbour' && row.cells[1]?.textContent.startsWith(`Containers handed inland: ${volume}`)) && document.querySelector('#buildStatus .notice.ok'), '1,000.0 pallets', { timeout: 120000 }).catch(fail);
 
         // 5c. The network runs on its vehicle types: heavy trucks from the ports (no fleet operator in a network of its own).
         assert.equal(await toolbox.locator('#operatorRow').isVisible(), false);
@@ -403,11 +410,14 @@ try {
             assert.deepEqual(await pinNames(reopened), curated);
             assert.match(await reopened.textContent('#buildResult'), /Harbour customers/);
             assert.ok(await reopened.locator('#map .lane').count() > 0, 'The built lanes are drawn again.');
-            assert.deepEqual(await offline.evaluate(() => globalThis.logisticsRequests), [], 'Nothing was fetched.');
+            // Nothing of the toolbox's was fetched. (Konjugate itself may ask for its own news, which is not this test's business.)
+            const toolboxHosts = ['nominatim.openstreetmap.org', 'overpass-api.de', 'services9.arcgis.com'];
+            const fetched = (await offline.evaluate(() => globalThis.logisticsRequests)).filter((url) => toolboxHosts.includes(new URL(url).hostname));
+            assert.deepEqual(fetched, [], 'Nothing was fetched.');
         } finally {
             await offline.close().catch(() => {});
         }
-        console.log(`✓ logistics region window: the sample region and a searched region load their roads alone; ports, warehouses and towns are fetched and suggested only when asked for, and adopted; the model (${nodes} nodes, ${edges} relationships) is built from the pins and links and opens in the canvas; dragging Alder Industrial Park moves its lane from ${before} to ${after} km; a customer area placed on the map is served; a chokepoint's cargo is diverted to Birch Harbour; the lanes run on heavy trucks, counted in pallets; a road closure, a detour, a cut in heavy trucks and a demand surge run from their tabs; the session is kept with the project (and a scenario runs straight after it is restored), saved with it, and restored from it with no network.`);
+        console.log(`✓ logistics region window: the sample region and a searched region load their roads alone; ports, warehouses and towns are fetched and suggested only when asked for, and adopted; the model (${nodes} nodes, ${edges} relationships) is built from the pins and links and opens in the canvas; dragging Alder Industrial Park moves its lane from ${before} to ${after}; a customer area placed on the map is served; a chokepoint's cargo is diverted to Birch Harbour; the lanes run on heavy trucks, counted in pallets; a road closure, a detour, a cut in heavy trucks and a demand surge run from their tabs; the session is kept with the project (and a scenario runs straight after it is restored), saved with it, and restored from it with no network.`);
     } finally {
         await app?.close().catch(() => {});
     }

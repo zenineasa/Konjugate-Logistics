@@ -152,7 +152,11 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
     const catalogue = links && settings.vehicles?.length ? settings.vehicles : null;
     const unit = settings.unit === 'pallets' ? 'pallets' : 'TEU';
     const perTeu = unit === 'pallets' ? settings.palletsPerTeu : 1;
-    if (unit === 'pallets') builder.unitNames = { TEU: 'pallets', ...(catalogue ? { truck: 'vehicle', trucks: 'vehicles' } : {}) };
+    if (unit === 'pallets') {
+        // A cost per pallet, a stock in pallets; and with vehicle types, vehicles where the templates say trucks.
+        builder.unitNames = { 'cost/TEU': 'cost/pallet', TEU: 'pallets', ...(catalogue ? { truck: 'vehicle', trucks: 'vehicles' } : {}) };
+        builder.nameNames = { 'TEU-day': 'pallet-day', TEU: 'pallets', ...(catalogue ? { trucks: 'vehicles', truck: 'vehicle', Truck: 'Vehicle' } : {}) };
+    }
     // A fleet operator, the user's own or a synthetic one: its truck sizes and costs become the region's, and its
     // contracted lanes run on its trucks. Not with vehicle types of the network's own.
     const operator = settings.operator && !catalogue ? parseOperator(settings.operator) : null;
@@ -824,7 +828,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
             }
         }
     }
-    if (catalogue) note('Every store', 'Sale time and shelf draw-down time', settings.saleDays, 'day', 'assumed', `A shopper buys what is on the shelf within ${number(settings.saleDays * 24, 1)} hours, and the shelves can be emptied in as long: a store sells what it has, and its shoppers wait for what it has not.`);
+    if (stores.length) note('Every store', 'Sale time and shelf draw-down time', settings.saleDays, 'day', 'assumed', `A shopper buys what is on the shelf within ${number(settings.saleDays * 24, 1)} hours, and the shelves can be emptied in as long: a store sells what it has, and its shoppers wait for what it has not.`);
 
     if (operator && lanes.length) {
         const [first, second] = operator.trucks;

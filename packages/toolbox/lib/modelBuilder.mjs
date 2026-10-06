@@ -40,9 +40,14 @@ export class ModelBuilder {
     // Unit words to say otherwise in every unit the model shows: { TEU: 'pallets', trucks: 'vehicles' } for a network
     // that counts pallets and runs on vehicles of several kinds. The templates' equations do not change.
     unitNames = {};
+    // And words to say otherwise in the names of states and shared parameters: { 'TEU-day': 'pallet-day', trucks: 'vehicles' }.
+    nameNames = {};
 
-    relabel(unit = '') {
-        return Object.entries(this.unitNames).reduce((text, [word, said]) => text.replace(new RegExp(`\\b${word}\\b`, 'g'), said), unit);
+    relabel(unit = '', words = this.unitNames) {
+        return Object.entries(words).reduce((text, [word, said]) => text.replace(new RegExp(`\\b${word}\\b`, 'g'), said), unit);
+    }
+    rename(name = '') {
+        return this.relabel(name, this.nameNames);
     }
 
     // `values` overrides the value of a shared parameter this placement creates, by key -- what a
@@ -66,7 +71,7 @@ export class ModelBuilder {
             let symbol = symbolWanted;
             for (let suffix = 2; this.sharedParameters.some((shared) => shared.symbol === symbol); suffix += 1) symbol = `${symbolWanted}${suffix}`;
             const created = {
-                id: this.id(), name: alias?.name ?? declared.name, symbol, value: alias?.value ?? values[declared.key] ?? declared.value,
+                id: this.id(), name: alias?.name ?? this.rename(declared.name), symbol, value: alias?.value ?? values[declared.key] ?? declared.value,
                 unit: this.relabel(alias?.unit ?? declared.unit ?? ''), mode: declared.mode ?? 'constant'
             };
             this.sharedParameters.push(created);
@@ -124,7 +129,7 @@ export class ModelBuilder {
         const node = {
             id: this.id(), name: name ?? template.name, type: template.name, position, sourceTerms: [],
             states: template.states.map((state) => ({
-                id: this.id(), name: state.label, symbol: state.symbol,
+                id: this.id(), name: this.rename(state.label), symbol: state.symbol,
                 initialValue: initialValues[state.symbol] ?? state.initialValue, unit: this.relabel(state.unit ?? '')
             })),
             appearance: { type: 'primitive', shape: template.shape ?? 'box', color: template.color ?? '#34727a' }

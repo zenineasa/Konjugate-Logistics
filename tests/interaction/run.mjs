@@ -152,7 +152,7 @@ try {
         const kinds = Object.fromEntries(components.map((component) => [component.id, component.kind]));
         assert.deepEqual(kinds, {
             port: 'node', roadLane: 'node', railLane: 'node', warehouse: 'node', demandZone: 'node',
-            roadShipment: 'bundle', railShipment: 'bundle', delivery: 'bundle'
+            roadShipment: 'bundle', railShipment: 'bundle', delivery: 'bundle', storeShipment: 'bundle'
         });
 
         // Place the nodes from the component library, in the script's order.

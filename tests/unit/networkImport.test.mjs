@@ -183,6 +183,10 @@ test('a network with vehicles builds stores that hold stock, restocked over lane
     assert.equal(shared('heavyTruckCapacity').length, 1);
     assert.deepEqual([shared('miniVanCapacity')[0].value, shared('miniVanCapacity')[0].unit], [2.5, 'pallets/vehicle']);
     assert.equal(shared('truckCapacity').length, 0, 'no two-size truck capacity');
+    // Said in pallets and vehicles, in names and units alike.
+    assert.deepEqual([shared('holdingCostPerDay')[0].name, shared('holdingCostPerDay')[0].unit], ['Holding cost per pallet-day', 'cost/pallet/day']);
+    assert.ok(document.nodes.find((item) => item.type === 'Road lane').states.some((state) => state.name === 'Idle vehicles at origin' && state.unit === 'vehicles'));
+    assert.ok(!data.provenance.some((entry) => entry.entity === 'Every store') || data.stores.length, 'the sale time is noted only where there are stores');
     const node = (name) => document.nodes.find((item) => item.name === name);
     assert.equal(node('Central depot').states.find((state) => state.symbol === 'stock').unit, 'pallets');
     assert.equal(node('Harbour shop stock').type, 'Warehouse');
