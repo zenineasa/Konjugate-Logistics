@@ -5,11 +5,13 @@
 // host runs it (with the host's limits on what goes in and comes out), and the network is answered from the synthetic
 // region. No engine: a scenario cannot run here (the Electron interaction test runs them).
 
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import importRegion from '../../packages/toolbox/importers/region.mjs';
-import { konjugateDir, logisticsRoot } from '../../scripts/konjugatePaths.mjs';
+import { konjugateDir, konjugateModule, logisticsRoot } from '../../scripts/konjugatePaths.mjs';
 import { equationHelpers } from '../../scripts/templatePlacement.mjs';
 import { syntheticPortwatch, syntheticRegion } from '../fixtures/syntheticRegion.mjs';
 
@@ -37,9 +39,13 @@ const helpers = {
 // The host's limits (Konjugate's launcherHost.mjs).
 export const limits = { options: 2 * 1024 * 1024, importerData: 8 * 1024 * 1024, sessionWindow: 2 * 1024 * 1024 };
 
+// Konjugate's own cache of what an add-on fetched, in a scratch folder: the window test exercises the real one.
+const { createAddonCache } = await import(pathToFileURL(konjugateModule('src/addonCache.mjs')));
+
 export const placeAnswer = [{ display_name: 'Port Alder, Synthetic Coast', type: 'harbour', lat: '-29.99', lon: '-19.9', boundingbox: ['-29.9', '-29.8', '-19.75', '-19.6'] }];
 
-export function createHost() {
+export async function createHost() {
+    const cache = createAddonCache({ directory: join(await mkdtemp(join(tmpdir(), 'konjugate-window-cache-')), 'cache') });
     const region = syntheticRegion();
     const portwatch = syntheticPortwatch();
     const files = new Map(); // `${role}/${name}` -> { role, name, text, retrievedAt }
@@ -72,12 +78,33 @@ export function createHost() {
             if (address.href === 'https://overpass-api.de/api/status') return { text: 'Rate limit: 2\n2 slots available now.\n' };
             throw new Error(`${address.hostname} answered 404.`);
         },
-        async fetchFile({ role, url, name }) {
-            requests.push(url);
-            const text = answerFor(url);
-            if (text === null) throw new Error(`${new URL(url).hostname} answered 404.`);
-            files.set(`${role}/${name}`, { role, name, text, url, retrievedAt: new Date().toISOString() });
-            return { bytes: Buffer.byteLength(text) };
+        // As Konjugate's host does: from the cache when asked to use it and it holds the address, else fetched (and kept).
+        async fetchFile({ role, url, name, cache: mode = 'off', maximumAgeDays }) {
+            const hit = mode === 'use' ? await cache.get(url, { maximumAgeDays: maximumAgeDays ?? undefined }) : null;
+            let text;
+            let retrievedAt;
+            if (hit) {
+                text = hit.bytes.toString('utf8');
+                retrievedAt = hit.retrievedAt;
+            } else {
+                requests.push(url);
+                text = answerFor(url);
+                if (text === null) throw new Error(`${new URL(url).hostname} answered 404.`);
+                retrievedAt = new Date().toISOString();
+                if (mode !== 'off') await cache.put(url, Buffer.from(text), { retrievedAt });
+            }
+            files.set(`${role}/${name}`, { role, name, text, url, retrievedAt });
+            return { bytes: Buffer.byteLength(text), cached: Boolean(hit), retrievedAt };
+        },
+        async cacheInfo() { return cache.info(); },
+        async clearCache() { await cache.clear(); return {}; },
+        // Kept with the project without a model: as openInCanvas keeps it.
+        async keepSession({ session: kept }) {
+            const text = JSON.stringify(kept);
+            if (text.length > limits.sessionWindow) throw new Error('The window\'s session is larger than the host keeps.');
+            session = JSON.parse(text);
+            host.kept += 1;
+            return {};
         },
         async chooseFile({ role }) {
             if (chosen[role] === undefined) return { chosen: false };
@@ -105,8 +132,8 @@ export function createHost() {
         },
         async runScenario() { throw new Error('No engine in the window test.'); }
     };
-    return {
-        files, requests, chosen,
+    const host = {
+        files, requests, chosen, cache, kept: 0,
         get session() { return session; },
         set session(value) { session = value; },
         async call(name, args) {
@@ -117,6 +144,7 @@ export function createHost() {
             }
         }
     };
+    return host;
 }
 
 const types = { '.html': 'text/html', '.mjs': 'text/javascript', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json' };
@@ -140,7 +168,10 @@ export async function openWindow(page, host, { inspect = true } = {}) {
                 chooseFile: (importerId, role) => window.logisticsHost('chooseFile', { importerId, role }),
                 clearFile: (importerId, role, name) => window.logisticsHost('clearFile', { importerId, role, name }),
                 fetchText: (url) => window.logisticsHost('fetchText', { url }),
-                fetchFile: (importerId, role, url, name) => window.logisticsHost('fetchFile', { importerId, role, url, name }),
+                fetchFile: (importerId, role, url, name, options = {}) => window.logisticsHost('fetchFile', { importerId, role, url, name, cache: options.cache, maximumAgeDays: options.maximumAgeDays }),
+                cacheInfo: () => window.logisticsHost('cacheInfo', {}),
+                clearCache: () => window.logisticsHost('clearCache', {}),
+                keepSession: (session) => window.logisticsHost('keepSession', { session }),
                 useSample: (importerId) => window.logisticsHost('useSample', { importerId }),
                 runImport: (importerId, options) => window.logisticsHost('runImport', { importerId, options }),
                 runScenario: (scenarioId, options) => window.logisticsHost('runScenario', { scenarioId, ...options }),

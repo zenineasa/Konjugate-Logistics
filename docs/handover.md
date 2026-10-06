@@ -40,6 +40,7 @@ The window computes, for each parameter a scenario changes, a held path of value
 - **Suggested supply links and balance.** A source ships a fixed amount; with too few links it may have nowhere to send it, and the build fails. That is why a small network suggests every source to every warehouse. Links the user draws are built as drawn, so a user can still draw a network that cannot balance; the error says so.
 - **The window's Run after a change.** With "Keep the canvas in step" on, a rebuild can be under way when Run needs its own build; Run waits for it (fixed). Keep that in mind when adding steps that build.
 - **Caches live in `out/`,** which is git-ignored and cleared by a clean. Region caches (`out/regionCache/`) must be fetched again after one.
+- **Two caches of map data.** The app's: Konjugate keeps what the window fetches (with `cache: 'use'`) in `<userData>/addonCache/konjugate.logistics.toolbox/`, up to 512 MB, 30 days, kept across reinstalls, removed with the add-on, cleared from the Map step; the window never sees the files (`src/addonCache.mjs` in Konjugate). The live region check's: `out/regionCache/`, for the scripts only.
 - **Region boxes.** A city's search result can stop short of its port (Rotterdam); the window warns when a busy PortWatch port lies just outside. Town populations in OpenStreetMap can be a district's (set aside above 250,000 for a town).
 
 ## Known open items

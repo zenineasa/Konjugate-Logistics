@@ -32,7 +32,7 @@ try {
     const page = await context.newPage();
     page.on('console', (message) => log.push(`${message.type()}: ${message.text().slice(0, 300)}`));
     page.on('pageerror', (error) => log.push(`pageerror: ${error.message}`));
-    const host = createHost();
+    const host = await createHost();
     const fail = (error) => { throw new Error(`${error.message}\nWindow log:\n${log.join('\n')}`); };
     const noErrors = () => assert.deepEqual(log.filter((line) => /^(pageerror|error)/.test(line)), [], log.join('\n'));
     const stateOf = (pick) => page.evaluate(pick);
@@ -108,6 +108,11 @@ try {
     assert.equal(await page.textContent('#networkStatus'), '', 'nothing stops a build');
     assert.equal(await page.isDisabled('#buildButton'), false);
     assert.match(await page.textContent('#stepNetworkSummary'), /2 sources · 2 warehouses · 6 demand · 10 links/);
+    // Kept with the project already, though nothing is built: closing the window now would lose nothing.
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    assert.equal(host.session?.version, 2);
+    assert.equal(host.session.pins.length, placements.length, 'the network placed, kept before any build');
+    assert.equal(host.session.built, null);
     noErrors();
 
     // 3. A pin's card: a store renamed and given its own demand.
@@ -421,12 +426,47 @@ try {
     assert.match(await page.textContent('#attribution'), /IMF PortWatch/);
     noErrors();
 
+    // 13b. What was fetched is kept on this computer: the same area loads again with nothing fetched, and says when it
+    // was fetched; Load fresh fetches it again; Clear empties the cache.
+    const interpreter = () => host.requests.filter((url) => url.includes('/api/interpreter')).length;
+    assert.match(await page.textContent('#cacheSummary'), /Maps kept on this computer: [\d.]+ MB/);
+    assert.match(await page.textContent('#dataAgeText'), /^Roads fetched on .+\.$/);
+    assert.ok(!/from the cache/.test(await page.textContent('#dataAgeText')), 'fetched from the servers the first time');
+    const fetchedBefore = interpreter();
+    const statusBefore = host.requests.filter((url) => url.endsWith('/api/status')).length;
+    await page.click('#fetchButton');
+    await page.waitForFunction(() => document.querySelectorAll('#fetchProgress li.done').length === 2, null, { timeout: 30000 }).catch(fail);
+    await settled();
+    assert.equal(interpreter(), fetchedBefore, 'nothing fetched: the roads and place names came from the cache');
+    assert.equal(host.requests.filter((url) => url.endsWith('/api/status')).length, statusBefore, 'and the server was not even asked whether it is busy');
+    assert.match(await page.textContent('#fetchProgress'), /from the cache, fetched/);
+    assert.match(await page.textContent('#dataAgeText'), /from the cache\.$/);
+    // Ports asked for again: their answers, and PortWatch's, come from the cache too.
+    const arcgisBefore = host.requests.filter((url) => url.includes('arcgis')).length;
+    await page.click('[data-fetch-source="ports"]');
+    await page.waitForFunction(() => window.logisticsToolboxState.suggestions.ports, null, { timeout: 30000 }).catch(fail);
+    assert.equal(interpreter(), fetchedBefore);
+    assert.equal(host.requests.filter((url) => url.includes('arcgis')).length, arcgisBefore);
+    assert.match(await page.textContent('[data-source-state="ports"]'), /found, fetched .+ \(kept\)/);
+    // Load fresh: everything fetched again from the servers, and kept again.
+    await page.click('#dataAgeFresh');
+    await page.waitForFunction(() => document.querySelectorAll('#fetchProgress li.done').length === 2, null, { timeout: 30000 }).catch(fail);
+    await settled();
+    assert.ok(interpreter() > fetchedBefore, 'fetched again');
+    assert.ok(!/from the cache/.test(await page.textContent('#dataAgeText')));
+    // Clear: the cache is emptied, and says so.
+    await page.click('#clearCacheButton');
+    await page.waitForFunction(() => /No maps kept on this computer yet/.test(document.querySelector('#cacheSummary').textContent), null, { timeout: 10000 }).catch(fail);
+    assert.match(await page.textContent('#undoText'), /^Cleared [\d.]+ MB of kept maps\./);
+    assert.equal((await host.cache.info()).entries, 0);
+    noErrors();
+
     // 14. On a Mac: ⌘ and ⌫ in every label, ⌘Z to undo (Control+Z does nothing), ⌘-click to add to the selection, and
     // Control-click opens the menu without selecting.
     const macPage = await context.newPage();
     macPage.on('pageerror', (error) => log.push(`pageerror: ${error.message}`));
     await macPage.addInitScript(() => Object.defineProperty(Navigator.prototype, 'platform', { get: () => 'MacIntel' }));
-    const macHost = createHost();
+    const macHost = await createHost();
     await openWindow(macPage, macHost);
     await macPage.click('#sampleButton');
     await macPage.waitForSelector('#stepNetwork:not([hidden])', { timeout: 30000 }).catch(fail);
@@ -477,7 +517,7 @@ try {
     await macPage.close();
     noErrors();
 
-    console.log(`✓ logistics network window: the sample region loads its roads alone; ${placements.length} pins placed from the palette are linked and routed as suggested; every action works from a button or menu, a drag or a right click, and the keyboard, and undoes; a moved store re-routes its one link in ${routing.milliseconds < 1 ? 'under a millisecond' : `${routing.milliseconds.toFixed(0)} ms`}; links are drawn, refused with a reason, deleted and not suggested again; the model is built from the pins and links (${built.match(/\d+ nodes/)[0]}); ports and towns are suggested only when asked for and adopted; the network saves as a CSV and loads back; the session restores it, and an earlier session is migrated; shortcuts behave and read as Windows and Linux users and Mac users expect; a searched region fetches its roads and place names alone, and ports only when asked for.`);
+    console.log(`✓ logistics network window: the sample region loads its roads alone; ${placements.length} pins placed from the palette are linked and routed as suggested; every action works from a button or menu, a drag or a right click, and the keyboard, and undoes; a moved store re-routes its one link in ${routing.milliseconds < 1 ? 'under a millisecond' : `${routing.milliseconds.toFixed(0)} ms`}; links are drawn, refused with a reason, deleted and not suggested again; the model is built from the pins and links (${built.match(/\d+ nodes/)[0]}); ports and towns are suggested only when asked for and adopted; the network saves as a CSV and loads back; the session restores it, and an earlier session is migrated; shortcuts behave and read as Windows and Linux users and Mac users expect; a network is kept with the project before any build; an area loaded is kept on the computer and loads again with nothing fetched, fresh on request, and the cache clears; a searched region fetches its roads and place names alone, and ports only when asked for.`);
 } finally {
     await browser.close();
     await rm(scratch, { recursive: true, force: true });

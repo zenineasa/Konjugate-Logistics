@@ -38,7 +38,10 @@
                             </select>
                         </label>
                         <div class="muted small" id="areaSize"></div>
-                        <button class="button primary" type="button" id="fetchButton">Load roads</button>
+                        <div class="row">
+                            <button class="button primary" type="button" id="fetchButton" title="Load the roads and place names: from the maps kept on this computer when they hold this area, else from the map servers">Load roads</button>
+                            <button class="link" type="button" id="freshButton" title="Fetch the roads and place names again from the map servers, not from the maps kept on this computer">Load fresh</button>
+                        </div>
                     </div>
                     <ul class="progress" id="fetchProgress" hidden></ul>
                     <div class="row small">
@@ -49,8 +52,10 @@
                         <button class="link" type="button" id="saveSitesButton" disabled>Save your sites (CSV)</button>
                     </div>
                     <div id="regionStatus"></div>
+                    <div class="row small" id="dataAge" hidden><span id="dataAgeText"></span><button class="link" type="button" id="dataAgeFresh">Load fresh</button></div>
                     <div id="coverageSummary" class="coverage" hidden></div>
                     <div id="notices"></div>
+                    <div class="row small muted" id="cacheRow" hidden><span id="cacheSummary"></span><button class="link" type="button" id="clearCacheButton" title="Remove the maps kept on this computer; areas are then fetched again from the map servers">Clear</button></div>
                 </div>
             </section>
 

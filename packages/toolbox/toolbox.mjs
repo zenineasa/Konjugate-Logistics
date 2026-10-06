@@ -41,6 +41,8 @@ const state = {
     pins: [], links: [], dismissed: new Set(), selection: [], selected: null, listRole: 'all',
     // Suggestions from public data, by source, once asked for; the roles whose answers the host holds.
     suggestions: {}, available: new Set(), sourceTab: null,
+    // When the data in hand was fetched, by kind ({ at, cached }), and whether this area was loaded fresh.
+    fetchedAt: {}, fresh: false,
     portVolume: null, built: null, busy: false, rebuildTimer: null,
     // The chokepoint disruption: the user's own shares (port name -> { chokepoint id -> share }), the transits
     // fetched per chokepoint, and the last run's summary.
@@ -253,6 +255,7 @@ function showArea() {
         ? `<span style="color:var(--danger)">${number(width)} × ${number(height)} km: too large${city ? ` for city streets, which are loaded for areas up to ${limit} km across; choose major roads, or a smaller place or area` : `. Public map servers answer areas up to ${limit} km across; choose a smaller place or area`}.</span>`
         : `${number(width)} × ${number(height)} km${Math.max(width, height) > (city ? 2 * cityTileKilometres : 120) ? '. A large area: loading may take a minute.' : ''}`;
     $('#fetchButton').disabled = tooLarge || state.busy;
+    $('#freshButton').disabled = tooLarge || state.busy;
 }
 
 $('#searchForm').addEventListener('submit', async (event) => {
@@ -307,23 +310,45 @@ const countdown = async (row, seconds, why) => {
 
 const labels = { ports: 'Ports and anchorages', logistics: 'Warehouses and industrial land', roads: 'Roads', rail: 'Rail', places: 'Place names' };
 
+// Map data is kept in Konjugate's cache of what this add-on fetched (on disk, kept across reinstalls), so an area loaded
+// once loads again at once and offline. Data older than this is fetched again; Load fresh fetches it all again now.
+const cacheDays = 30;
+const fetchMode = (fresh) => ({ cache: fresh ? 'refresh' : 'use', maximumAgeDays: cacheDays });
+const dateOf = (iso) => new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+// When the data in hand was fetched, by kind: the oldest part of each, and whether it came from the cache.
+const fetched = (kind, answer) => {
+    const known = state.fetchedAt[kind];
+    state.fetchedAt[kind] = { at: !known || answer.retrievedAt < known.at ? answer.retrievedAt : known.at, cached: (known?.cached ?? true) && Boolean(answer.cached) };
+};
+
 // Fetches some kinds of OpenStreetMap data for the region, one request at a time (the public server is shared), with
 // a row of `progress` per kind. Tiles too large or too slow are fetched again as quarters; a busy server is waited for.
-async function fetchKinds(kinds, progress) {
+// Answers from the cache need no server: the server's status is asked only once one answer has come from it.
+async function fetchKinds(kinds, progress, { fresh = false } = {}) {
     const requests = overpassRequests(state.bbox, { kinds, roadLevel: state.roadLevel });
     const bytes = {};
+    const fromCache = {};
+    const parts = {};
+    let live = false;
+    for (const kind of kinds) delete state.fetchedAt[kind];
     const queue = [...requests];
     while (queue.length) {
         const request = queue.shift();
         const row = progress.querySelector(`[data-kind="${request.kind}"]`);
         const label = request.parts > 1 || request.depth ? `part ${request.part} of ${request.parts}` : 'fetching';
         for (let attempt = 0; ; attempt += 1) {
-            const before = await serverWait();
-            if (before > 0) await countdown(row, before + 1, 'waiting for a free slot');
+            if (live || attempt > 0) {
+                const before = await serverWait();
+                if (before > 0) await countdown(row, before + 1, 'waiting for a free slot');
+            }
             row.querySelector('.state').textContent = `${label}…`;
             try {
-                const answer = await call(api.fetchFile(importerId, request.kind, overpassUrl(request.query), `${request.kind}-${request.part}.json`));
+                const answer = await call(api.fetchFile(importerId, request.kind, overpassUrl(request.query), `${request.kind}-${request.part}.json`, fetchMode(fresh)));
                 bytes[request.kind] = (bytes[request.kind] ?? 0) + answer.bytes;
+                parts[request.kind] = (parts[request.kind] ?? 0) + 1;
+                if (answer.cached) fromCache[request.kind] = (fromCache[request.kind] ?? 0) + 1;
+                else live = true;
+                fetched(request.kind, answer);
                 break;
             } catch (error) {
                 // Too large to accept, or too slow to answer in time: fetch the tile again as four quarters.
@@ -341,15 +366,59 @@ async function fetchKinds(kinds, progress) {
         }
         if (!queue.some((next) => next.kind === request.kind) && bytes[request.kind] !== undefined) {
             row.classList.add('done');
-            row.querySelector('.state').textContent = `${number(bytes[request.kind] / 1024)} KB`;
+            const kept = fromCache[request.kind] ?? 0;
+            row.querySelector('.state').textContent = kept === parts[request.kind]
+                ? `from the cache, fetched ${dateOf(state.fetchedAt[request.kind].at)}`
+                : `${number(bytes[request.kind] / 1024)} KB${kept ? ` (${kept} of ${parts[request.kind]} parts from the cache)` : ''}`;
             state.available.add(request.kind);
         }
     }
+    renderCacheSummary();
 }
 
-$('#fetchButton').addEventListener('click', async () => {
-    if (!state.bbox) return;
+// When the map data in hand was fetched, and a way to fetch it fresh.
+function renderDataAge() {
+    const roads = state.fetchedAt.roads;
+    $('#dataAge').hidden = !roads;
+    if (!roads) return;
+    $('#dataAgeText').textContent = `Roads fetched on ${dateOf(roads.at)}${roads.cached ? ', from the cache' : ''}.`;
+}
+
+// How much the cache of fetched maps holds, and clearing it.
+async function renderCacheSummary() {
+    if (!api?.cacheInfo) { $('#cacheRow').hidden = true; return; }
+    try {
+        const info = await call(api.cacheInfo());
+        $('#cacheRow').hidden = false;
+        $('#cacheSummary').textContent = info.entries
+            ? `Maps kept on this computer: ${number(info.bytes / 1048576, 1)} MB, fetched from ${dateOf(info.oldest)}${info.newest && dateOf(info.newest) !== dateOf(info.oldest) ? ` to ${dateOf(info.newest)}` : ''}.`
+            : 'No maps kept on this computer yet: an area loaded is kept, to load again at once and offline.';
+        $('#clearCacheButton').hidden = !info.entries;
+    } catch {
+        $('#cacheRow').hidden = true;
+    }
+}
+$('#clearCacheButton').addEventListener('click', async () => {
+    try {
+        const before = await call(api.cacheInfo());
+        await call(api.clearCache());
+        toast(`Cleared ${number(before.bytes / 1048576, 1)} MB of kept maps. What is loaded now stays until you load it again.`);
+    } catch (error) {
+        toast(`The kept maps could not be cleared: ${error.message}`);
+    }
+    renderCacheSummary();
+});
+
+$('#fetchButton').addEventListener('click', () => loadArea({ fresh: false }));
+$('#freshButton').addEventListener('click', () => loadArea({ fresh: true }));
+$('#dataAgeFresh').addEventListener('click', () => loadArea({ fresh: true }));
+
+// Loads the roads and place names of the area chosen: from the cache where it holds them, or (fresh) all from the map
+// servers. Suggestions asked for afterwards follow suit.
+async function loadArea({ fresh }) {
+    if (!state.bbox || state.busy) return;
     setBusy(true);
+    state.fresh = fresh;
     state.roadLevel = $('#roadLevelSelect').value;
     const progress = $('#fetchProgress');
     progress.hidden = false;
@@ -361,14 +430,15 @@ $('#fetchButton').addEventListener('click', async () => {
         state.available.clear();
         state.suggestions = {};
         state.sample = false;
-        await fetchKinds(['roads', 'places'], progress);
+        await fetchKinds(['roads', 'places'], progress, { fresh });
         await loadRoads({ keepNetwork: true });
+        renderDataAge();
     } catch (error) {
         $('#regionStatus').innerHTML = notice('error', error.message);
     } finally {
         setBusy(false);
     }
-});
+}
 
 // The roads step: the map and the road graph the network is routed over. A network already placed is kept where it
 // lies within the new map, so the roads can be loaded again (city streets after major roads, say).
@@ -478,6 +548,7 @@ function networkChanged({ rebuild = true } = {}) {
     }
     renderNetwork();
     updateStepSummaries();
+    keepSessionSoon();
     const errors = networkProblems(state.pins, state.links).filter((problem) => problem.level === 'error');
     $('#buildButton').disabled = state.busy || errors.length > 0 || !state.pins.length;
     $('#buildStatus').innerHTML = errors.length && state.pins.length ? notice('warning', 'Resolve what Network lists to build a model.') : '';
@@ -1147,7 +1218,7 @@ async function fetchSuggestions(source) {
             progress.innerHTML = missing.map((kind) => `<li data-kind="${kind}"><span>${labels[kind]}</span><span class="state">waiting</span></li>`).join('')
                 + (sources[source].portwatch ? '<li data-kind="portwatch"><span>Port activity (IMF PortWatch)</span><span class="state">waiting</span></li>' : '');
             row.textContent = 'fetching…';
-            await fetchKinds(missing, progress);
+            await fetchKinds(missing, progress, { fresh: state.fresh });
             if (sources[source].portwatch) portwatchProblem = await fetchPortActivity(progress.querySelector('[data-kind="portwatch"]'));
         }
         await discoverSuggestions([...new Set([...Object.keys(state.suggestions), source])]);
@@ -1188,7 +1259,9 @@ async function fetchPortActivity(row) {
     const fetchWithRetry = async (role, url, name) => {
         for (let attempt = 0; ; attempt += 1) {
             try {
-                return await call(api.fetchFile(importerId, role, url, name));
+                const answer = await call(api.fetchFile(importerId, role, url, name, fetchMode(state.fresh)));
+                fetched(role, answer);
+                return answer;
             } catch (error) {
                 if (!busy(error.message) || attempt >= 1) throw error;
                 await countdown(row, retryDelaysSeconds[0], 'server busy');
@@ -1240,7 +1313,9 @@ function renderSuggestions() {
         const found = state.suggestions[source];
         if (found) {
             row.className = 'state small done';
-            row.textContent = `${found.candidates[sources[source].group]?.length ?? 0} found`;
+            const kind = sources[source].kinds[0];
+            const when = kind && state.fetchedAt[kind] ? `, fetched ${dateOf(state.fetchedAt[kind].at)}${state.fetchedAt[kind].cached ? ' (kept)' : ''}` : '';
+            row.textContent = `${found.candidates[sources[source].group]?.length ?? 0} found${when}`;
         } else if (!row.classList.contains('failed')) {
             row.className = 'state small';
             row.textContent = '';
@@ -1458,6 +1533,16 @@ $('#showButton').addEventListener('click', async () => {
 });
 
 // ---- the session kept with the project ------------------------------------------------------------------
+// Kept after every change too, not only with a build: a network placed and not yet built is saved with the project.
+function keepSessionSoon() {
+    if (!api?.keepSession || state.restoring) return;
+    clearTimeout(state.keepTimer);
+    state.keepTimer = setTimeout(() => {
+        if (state.restoring || !state.roads) return;
+        api.keepSession(sessionState()).catch?.(() => {});
+    }, 800);
+}
+
 // Everything the window needs to carry on where it was: the place, the network and the last build's tables. The host
 // keeps the fetched map data beside it, so a saved project reopens its region offline.
 function sessionState() {
@@ -1574,6 +1659,13 @@ async function restoreSession() {
             $('#buildStatus').innerHTML = notice('ok', `The model in the canvas is the one this session built: ${saved.built.nodes} nodes and ${saved.built.edges} relationships.`);
         }
         const when = answer.savedAt ? new Date(answer.savedAt).toLocaleString() : 'earlier';
+        // When the map data the session holds was fetched, by kind.
+        state.fetchedAt = {};
+        for (const input of (answer.inputs ?? []).filter((item) => item.retrievedAt)) {
+            const known = state.fetchedAt[input.role];
+            if (!known || input.retrievedAt < known.at) state.fetchedAt[input.role] = { at: input.retrievedAt, cached: false };
+        }
+        renderDataAge();
         const fetched = (answer.inputs ?? []).filter((input) => input.retrievedAt).map((input) => input.retrievedAt).sort()[0];
         $('#regionStatus').innerHTML = notice('ok', `Restored the session kept with this project (saved ${when}).${fetched ? ` Its map data was fetched on ${new Date(fetched).toLocaleDateString()}; load the roads again for newer data.` : ''}`)
             + (saved.version === 1 ? notice('warning', 'This session was kept by the earlier workflow, which kept sites from lists: they are now pins on the map, linked as suggested. The model in the canvas was built the earlier way; build again to build it from the links shown.') : '');
@@ -1602,7 +1694,7 @@ function setBusy(busy) {
 if (new URLSearchParams(location.search).has('inspect')) window.logisticsToolboxState = state;
 
 if (!api) $('#regionStatus').innerHTML = notice('error', 'This window must be opened from Konjugate.');
-else restoreSession();
+else { restoreSession(); renderCacheSummary(); }
 
 // ---- the scenarios: a chokepoint disruption --------------------------------------------------------------------------
 // Fewer ships through a chokepoint for a while: each kept port's arrivals fall by its share of ships through it times

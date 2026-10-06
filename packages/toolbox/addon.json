@@ -17,7 +17,9 @@
         "projectSession",
         "parameterSchedules",
         "scenarioForkTime",
-        "suppliedPerParameter"
+        "suppliedPerParameter",
+        "fetchCache",
+        "keepSession"
     ],
     "contributes": {
         "toolstrip": [

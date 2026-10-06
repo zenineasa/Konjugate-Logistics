@@ -62,6 +62,8 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 | Zoom | + and − above the map | Wheel | `+`, `-` |
 | Adopt a suggestion | Adopt in the list, or Adopt the top N | Click it on the map; its menu | |
 | See the shortcuts | ? above the map | | `?` |
+| Load an area again fresh | Load fresh beside Load roads, or beside the date the roads were fetched | | |
+| Clear the maps kept on this computer | Clear at the foot of the Map step | | |
 
 ## Not yet
 
