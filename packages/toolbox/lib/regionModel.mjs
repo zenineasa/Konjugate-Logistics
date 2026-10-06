@@ -9,6 +9,14 @@
 // Who serves whom comes from `links` when the user's network gives them ({ supply: [{ port, zone, leg }],
 // serve: [{ zone, town, leg }] }, by site id, a leg the window already routed or null to route it here), and
 // otherwise from gravity: each town from its nearest few zones, each zone from its nearest few ports.
+//
+// A network with a vehicle catalogue (`options.vehicles`, as every network placed in the window has) counts pallets,
+// and each of its links runs on the vehicle types it names ({ type, fleet } on the link): every lane's two sizes are
+// two types from the catalogue, each type one set of shared parameters for every lane it runs on. Its stores and dark
+// stores hold stock: each is a Warehouse node (its stock room, "<name> stock") restocked by road from its warehouses,
+// and a Demand zone (its shoppers, "<name>") that buys from that stock. Customer areas are served as towns are, by
+// deliveries with no vehicles. Without a catalogue, the model is as it has been: TEU, two truck sizes for the whole
+// region, and every demand pin a Demand zone served by deliveries.
 
 import { laneCorridors } from './corridors.mjs';
 import { toLocal } from './geo.mjs';
@@ -56,8 +64,26 @@ export const regionModelDefaults = {
     idleReserve: 2,
     // Weight of a town or customer with neither a population nor a demand of its own: a small town.
     assumedPopulation: 20000,
+    // What the model counts: 'TEU', or 'pallets' for a network of suppliers, warehouses and stores; a port's containers
+    // then count as this many pallets each (an assumption to adjust).
+    unit: 'TEU',
+    palletsPerTeu: 10,
+    // The vehicle types a network placed on the map runs on ({ id, name, capacity, costPerKm, costPerDay, speed,
+    // loadingHours, toStores, basis }), or null.
+    vehicles: null,
+    // Hours added to a delivery to a store for loading at the warehouse's dock and unloading at the store's door (a
+    // supply lane adds `gateHours`).
+    storeGateHours: 1,
+    // At a store: how quickly a shopper buys what is on the shelf, and how quickly the shelves can be emptied, in days.
+    saleDays: 0.1,
+    shelfDrawDownDays: 0.1,
+    // The stock cover a store and a dark store aim for, in days of sales, unless the user set their own.
+    storeCoverDays: 2,
+    darkStoreCoverDays: 1,
     days: 90, stepMinutes: 15, outputMinutes: 60
 };
+
+const number = (value, digits = 0) => Number(value).toLocaleString('en', { maximumFractionDigits: digits });
 
 // 1, 2 or 5 times a power of ten, at or above `value`: a round slider limit.
 function niceCeiling(value) {
@@ -120,19 +146,28 @@ export function roadLaneState(rate, leadTime, fleet, { truckCapacity, loadDays, 
 export function buildRegionModel({ builder, selection, route, links = null, options = {} }) {
     const settings = { ...regionModelDefaults, ...options };
     const templates = builder.templates;
+    // A network with vehicle types runs on them; the rest of the region on two truck sizes.
+    const catalogue = links && settings.vehicles?.length ? settings.vehicles : null;
+    const unit = settings.unit === 'pallets' ? 'pallets' : 'TEU';
+    const perTeu = unit === 'pallets' ? settings.palletsPerTeu : 1;
+    if (unit === 'pallets') builder.unitNames = { TEU: 'pallets', ...(catalogue ? { truck: 'vehicle', trucks: 'vehicles' } : {}) };
     // A fleet operator, the user's own or a synthetic one: its truck sizes and costs become the region's, and its
-    // contracted lanes run on its trucks.
-    const operator = settings.operator ? parseOperator(settings.operator) : null;
+    // contracted lanes run on its trucks. Not with vehicle types of the network's own.
+    const operator = settings.operator && !catalogue ? parseOperator(settings.operator) : null;
     const operatorBasis = operator?.synthetic ? 'synthetic' : 'user';
     const truckCapacity = operator ? operator.trucks[0].teu : templateValue(templates, 'roadLane', 'truckCapacity');
     const truckCapacity2 = operator?.trucks[1]?.teu ?? templateValue(templates, 'roadLane', 'truckCapacity2');
     const loadDays = templateValue(templates, 'roadLane', 'loadDays');
     const responseDays = templateValue(templates, 'roadShipment', 'responseDays');
     const coverDays = templateValue(templates, 'warehouse', 'coverDays');
+    const storageCapacity = templateValue(templates, 'warehouse', 'storageCapacity');
+    const drawDownDays = templateValue(templates, 'delivery', 'drawDownDays');
+    const originDrainDays = templateValue(templates, 'roadShipment', 'originDrainDays');
     const berthingDays = templateValue(templates, 'port', 'berthingDays');
 
     const provenance = [];
     const warnings = [];
+    if (settings.operator && catalogue) warnings.push('The fleet operator is not used: this network runs on its own vehicle types.');
     const note = (entity, parameter, value, unit, basis, detail) => provenance.push({ entity, parameter, value, unit, basis, detail });
     const ports = selection.ports ?? [];
     const zones = selection.zones ?? [];
@@ -151,7 +186,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
     // A port's usual arrivals, in TEU a day, when its history has a break: the level before a fall (or after a rise),
     // so a scenario can tell when the period modelled is already far below it.
     const normals = new Map();
-    const normalOf = (activity) => (activity.shift ? Math.max(activity.shift.before, activity.shift.after) / settings.tonnesPerTeu * settings.inlandShare : null);
+    const normalOf = (activity) => (activity.shift ? Math.max(activity.shift.before, activity.shift.after) / settings.tonnesPerTeu * settings.inlandShare * perTeu : null);
     const secondsPerDay = templateValue(templates, 'port', 'secondsPerDay');
     const sourced = (port) => !port.supplier && !(Number(port.teuPerDay) > 0) && port.activity?.importTonnesPerDay > 0;
     const assumedPorts = ports.filter((port) => !port.supplier && !(Number(port.teuPerDay) > 0) && !sourced(port));
@@ -163,10 +198,11 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
     for (const port of ports) {
         if (sourced(port)) {
             const activity = port.activity;
-            const teu = (tonnes) => tonnes / settings.tonnesPerTeu * settings.inlandShare;
+            // In the model's unit: TEU, or pallets at `palletsPerTeu` a TEU.
+            const teu = (tonnes) => tonnes / settings.tonnesPerTeu * settings.inlandShare * perTeu;
             // The defaults are assumptions; a value the user set is theirs (from a figure they trust, which the model cannot see).
             const weight = settings.tonnesPerTeu === tonnesPerTeu ? `an assumed ${settings.tonnesPerTeu} t a TEU` : `${settings.tonnesPerTeu} t a TEU (yours)`;
-            const conversion = `at ${weight}${settings.inlandShare === 1 ? ', counting containers that only change ships there' : `, ${Math.round(settings.inlandShare * 100)}% of them handed inland (yours)`}`;
+            const conversion = `at ${weight}${settings.inlandShare === 1 ? ', counting containers that only change ships there' : `, ${Math.round(settings.inlandShare * 100)}% of them handed inland (yours)`}${perTeu !== 1 ? `, each TEU counted as an assumed ${perTeu} pallets` : ''}`;
             const period = activity.daily?.length ? historyWindow(activity.daily, { from: settings.historyFrom, days: settings.days }) : [];
             if (settings.historyFrom && !period.length) {
                 warnings.push(`${port.name}'s PortWatch history has no days from ${settings.historyFrom}; its latest ${settings.days} days are used instead.`);
@@ -185,7 +221,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
                 supply.set(port.id, value);
                 histories.set(port.id, { samples, from, to });
                 normals.set(port.id, normalOf(activity));
-                note(port.name, 'Containers handed inland', value, 'TEU/day', 'sourced',
+                note(port.name, 'Containers handed inland', value, `${unit}/day`, 'sourced',
                     `IMF PortWatch (Source: International Monetary Fund), ${activity.name}: the arrivals follow each day's container imports from ${from} (model day 0) to ${to} (${samples.length} days), averaging ${Math.round(value * settings.tonnesPerTeu / settings.inlandShare).toLocaleString('en')} t a day, ${conversion}.${shiftNote}`);
                 continue;
             }
@@ -196,7 +232,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
             const value = teu(averaged.tonnes);
             supply.set(port.id, value);
             normals.set(port.id, normalOf(activity));
-            note(port.name, 'Containers handed inland', value, 'TEU/day', 'sourced',
+            note(port.name, 'Containers handed inland', value, `${unit}/day`, 'sourced',
                 `IMF PortWatch (Source: International Monetary Fund), ${activity.name}: container imports averaging ${Math.round(averaged.tonnes).toLocaleString('en')} t a day over ${averaged.from} to ${averaged.to} (${averaged.days} days), ${conversion}.${shiftNote}`);
             continue;
         }
@@ -205,16 +241,17 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
             // A supplier ships what it is set to, whatever is ordered: the user's figure, or the role's default.
             const value = user ? Number(port.teuPerDay) : 0;
             supply.set(port.id, value);
-            note(port.name, 'Supplied', value, 'TEU/day', user ? (port.teuPerDayBasis ?? 'user') : 'user',
+            note(port.name, 'Supplied', value, `${unit}/day`, user ? (port.teuPerDayBasis ?? 'user') : 'user',
                 port.teuPerDaySource ?? (user ? 'Your figure.' : 'Set to nothing: it supplies nothing until you give it a figure.'));
             continue;
         }
-        const value = user ? Number(port.teuPerDay) : settings.portTeuPerDay * assumedPorts.length * portWeight(port) / assumedWeight;
+        const value = (user ? Number(port.teuPerDay) : settings.portTeuPerDay * assumedPorts.length * portWeight(port) / assumedWeight) * perTeu;
         supply.set(port.id, value);
         const assumption = largestLand > 0 && assumedPorts.length > 1
             ? `Assumed, with no port activity matched: ${settings.portTeuPerDay} TEU/day a port on average, shared by port land (${landOf(port).toFixed(1)} km²${landOf(port) < 0.1 * largestLand ? ', counted as a tenth of the largest' : ''}).`
             : 'Assumed, with no port activity matched.';
-        note(port.name, 'Containers handed inland', value, 'TEU/day', user ? (port.teuPerDayBasis ?? 'user') : 'assumed', user ? port.teuPerDaySource : assumption);
+        const counted = perTeu !== 1 ? ` Each TEU counted as an assumed ${perTeu} pallets.` : '';
+        note(port.name, 'Containers handed inland', value, `${unit}/day`, user ? (port.teuPerDayBasis ?? 'user') : 'assumed', `${user ? (port.teuPerDaySource ?? 'Your figure.') : assumption}${counted}`);
     }
     const totalSupply = [...supply.values()].reduce((total, value) => total + value, 0);
 
@@ -228,7 +265,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
     if (remainder < 0 || (remainder > 0 && !weighted.length)) {
         fixedScale = totalSupply / fixedTotal;
         remainder = 0;
-        warnings.push(`The customers' own demand (${fixedTotal.toFixed(0)} TEU/day) differs from what ${supplied} (${totalSupply.toFixed(0)} TEU/day); it was scaled to match so the baseline holds still.`);
+        warnings.push(`The customers' own demand (${fixedTotal.toFixed(0)} ${unit}/day) differs from what ${supplied} (${totalSupply.toFixed(0)} ${unit}/day); it was scaled to match so the baseline holds still.`);
     }
     const weightOf = (town) => Number(town.population) || settings.assumedPopulation;
     const weightTotal = weighted.reduce((total, town) => total + weightOf(town), 0);
@@ -237,11 +274,11 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         demand.set(town.id, Number(town.teuPerDay) * fixedScale);
         const assumed = town.teuPerDayBasis === 'assumed';
         const figure = assumed ? `Assumed: the default for a ${town.role === 'darkStore' ? 'dark store' : town.role === 'customerArea' ? 'customer area' : 'store'}, until you set it` : 'Your figure';
-        note(town.name, 'Demand', demand.get(town.id), 'TEU/day', fixedScale === 1 && !assumed ? 'user' : 'assumed', fixedScale === 1 ? `${figure}.` : `${figure}, scaled by ${fixedScale.toFixed(2)} to match what ${supplied}.`);
+        note(town.name, 'Demand', demand.get(town.id), `${unit}/day`, fixedScale === 1 && !assumed ? 'user' : 'assumed', fixedScale === 1 ? `${figure}.` : `${figure}, scaled by ${fixedScale.toFixed(2)} to match what ${supplied}.`);
     }
     for (const town of weighted) {
         demand.set(town.id, remainder * weightOf(town) / weightTotal);
-        note(town.name, 'Demand', demand.get(town.id), 'TEU/day', 'assumed',
+        note(town.name, 'Demand', demand.get(town.id), `${unit}/day`, 'assumed',
             `Share of the ports' inland volume by population (${{
                 OpenStreetMap: 'population from OpenStreetMap',
                 user: 'your population figure',
@@ -333,7 +370,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
             if (![...support].some((key) => key.startsWith(`${zone.id}|`))) throw new Error(`${zone.name} has no supplier or port linked to it that supplies anything. Drag a link from one to it.`);
         }
         for (const port of supplying) {
-            if (![...support].some((key) => key.endsWith(`|${port.id}`))) throw new Error(`${port.name} supplies ${supply.get(port.id).toFixed(0)} TEU a day, but no warehouse that serves anyone is linked to it. Link it to one, or set it to supply nothing.`);
+            if (![...support].some((key) => key.endsWith(`|${port.id}`))) throw new Error(`${port.name} supplies ${supply.get(port.id).toFixed(0)} ${unit} a day, but no warehouse that serves anyone is linked to it. Link it to one, or set it to supply nothing.`);
         }
         flows = balanceFlows(pairsOf(support), zoneDemand, supplyOf);
         if (!flows) {
@@ -432,7 +469,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
     for (const port of ports) {
         const arrivals = supply.get(port.id);
         const berthCapacity = arrivals * settings.berthHeadroom;
-        note(port.name, port.supplier ? 'Dispatch capacity' : 'Berth capacity', berthCapacity, 'TEU/day', 'assumed', `${settings.berthHeadroom} times its ${port.supplier ? 'supply' : 'arrivals'}${port.supplier ? ': a supplier is modelled as a port whose berths are its loading bays' : ''}.`);
+        note(port.name, port.supplier ? 'Dispatch capacity' : 'Berth capacity', berthCapacity, `${unit}/day`, 'assumed', `${settings.berthHeadroom} times its ${port.supplier ? 'supply' : 'arrivals'}${port.supplier ? ': a supplier is modelled as a port whose berths are its loading bays' : ''}.`);
         portNodes.set(port.id, place('port', port.name, {
             name: port.name, position: position(port),
             // The wait counts at least a TEU a day of berths, as the template does, so a port with none is not 0/0.
@@ -460,12 +497,58 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         makeLive(port.name, 'outageCapacity', berthMaximum);
     }
 
+    // ---- vehicles: each type is one set of shared parameters (capacity, costs, loading time) for every lane and
+    // shipment it runs on, so a change to a type reaches every link it carries; each lane keeps its own fleet of it.
+    const typeById = new Map((catalogue ?? []).map((type) => [type.id, type]));
+    const typesNoted = new Set();
+    const noteType = (type) => {
+        if (typesNoted.has(type.id)) return;
+        typesNoted.add(type.id);
+        const basisOf = (key) => (type.basis?.[key] === 'user' ? 'user' : 'assumed');
+        const said = (key) => (basisOf(key) === 'user' ? 'Your figure.' : 'Assumed: the catalogue\'s default, until you set it.');
+        note(type.name, 'Capacity', type.capacity, `${unit}/vehicle`, basisOf('capacity'), said('capacity'));
+        note(type.name, 'Cost per km', type.costPerKm, 'cost/km', basisOf('costPerKm'), said('costPerKm'));
+        note(type.name, 'Cost per day', type.costPerDay, 'cost/day', basisOf('costPerDay'), said('costPerDay'));
+        note(type.name, 'Top speed', type.speed, 'km/h', basisOf('speed'), `${said('speed')} A link takes at least its length at this speed.`);
+        note(type.name, 'Loading time', type.loadingHours, 'h', basisOf('loadingHours'), `${said('loadingHours')} A lane loads as fast as the slower of its two types.`);
+    };
+    const asType = (type, what, name, typeUnit, value) => ({ symbol: `${type.id}${what}`, name: `${type.name}: ${name}`, unit: typeUnit, value });
+    // How a lane of these types places its shared parameters: its first and second size as the two types (the first
+    // twice, with no fleet of the second, when it has one), and its loading time as the slower type's.
+    const vehicleAs = (types) => {
+        const [first, second = types[0]] = types;
+        const slower = types.reduce((slowest, type) => (type.loadingHours > slowest.loadingHours ? type : slowest));
+        const capacity = (type) => asType(type, 'Capacity', 'capacity', `${unit}/vehicle`, type.capacity);
+        const lane = {
+            truckCapacity: capacity(first), truckCapacity2: capacity(second),
+            costPerKm: asType(first, 'CostPerKm', 'cost per km', 'cost/km', first.costPerKm), costPerKm2: asType(second, 'CostPerKm', 'cost per km', 'cost/km', second.costPerKm),
+            truckDayCost: asType(first, 'DayCost', 'cost per day', 'cost/day', first.costPerDay), truckDayCost2: asType(second, 'DayCost', 'cost per day', 'cost/day', second.costPerDay),
+            loadDays: asType(slower, 'LoadDays', 'loading time', 'day', slower.loadingHours / 24)
+        };
+        return { lane, shipment: { truckCapacity: lane.truckCapacity, truckCapacity2: lane.truckCapacity2 } };
+    };
+    // A link with no vehicles of its own (a standby lane, a link from an older session): its kind's usual type.
+    const usualChoice = (kind) => {
+        const usual = kind === 'store'
+            ? catalogue.find((type) => type.id === 'mediumTruck' && type.toStores) ?? catalogue.find((type) => type.toStores)
+            : catalogue.find((type) => type.id === 'heavyTruck') ?? catalogue[0];
+        return usual ? [{ type: usual.id, fleet: null }] : [];
+    };
+    const choiceOf = (chosen, kind) => (chosen?.length ? chosen : catalogue ? usualChoice(kind) : null);
+    // The types a link names, as the catalogue has them.
+    const typesOf = (chosen, label) => (chosen ?? []).slice(0, 2).map((item) => {
+        const type = typeById.get(item.type);
+        if (!type) throw new Error(`${label} runs on a vehicle type that is not in the catalogue. Choose its vehicles again.`);
+        return type;
+    });
+
     // ---- zones (warehouses), their lanes from ports, and towns
     const flowsByZone = new Map();
+    const supplyLinkOf = new Map((links?.supply ?? []).map((link) => [`${link.zone}|${link.port}`, link]));
     for (const key of support) {
         const [zoneId, portId] = key.split('|');
         if (!flowsByZone.has(zoneId)) flowsByZone.set(zoneId, []);
-        flowsByZone.get(zoneId).push({ port: ports.find((port) => port.id === portId), rate: flows.get(key), leg: legOf(key) });
+        flowsByZone.get(zoneId).push({ port: ports.find((port) => port.id === portId), rate: flows.get(key), leg: legOf(key), link: supplyLinkOf.get(key) ?? null });
     }
     const lanes = [];
     // Each lane's ends and the roads it was routed over, for the map's corridors.
@@ -474,7 +557,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
     const laneTime = (flow) => Number(((flow.leg.hours + settings.gateHours) / 24).toFixed(4));
     // The operator's trucks, shared among its contracted lanes by what each needs on the road: loaded and returning
     // trucks for its flow, plus a reserve of loads, in TEU of capacity.
-    const laneNeed = (rate, leadTime) => 2 * rate * leadTime + settings.idleReserve * rate * loadDays;
+    const laneNeed = (rate, leadTime, laneLoadDays = loadDays) => 2 * rate * leadTime + settings.idleReserve * rate * laneLoadDays;
     const allocation = operator ? allocateFleet(operator, usedZones.flatMap((zone) => flowsByZone.get(zone.id).filter((flow) => flow.rate > 1e-9).map((flow) => ({
         from: flow.port.name, to: zone.name, origin: flow.port, need: laneNeed(flow.rate, laneTime(flow))
     })))) : {};
@@ -482,71 +565,180 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
     const standbyPorts = ports.filter((port) => (settings.standbyPorts ?? []).includes(port.name));
     const unknownStandby = (settings.standbyPorts ?? []).filter((name) => !ports.some((port) => port.name === name));
     if (unknownStandby.length) warnings.push(`No standby lanes from ${unknownStandby.join(', ')}: not a kept port.`);
+
+    // The shortest travel and loading times the model's steps follow faithfully, with vehicle types (whose lanes can be
+    // short city trips): a lane's goods pass three stages, so a trip lasts at least six steps, and its idle vehicles
+    // are loaded over at least two. Lanes without types keep their times as routed, with two hours at the gates.
+    const stepDays = settings.stepMinutes / 1440;
+    const shortestLeadDays = catalogue ? 6 * stepDays : 0;
+    const shortestLoadDays = 2 * stepDays;
+    // A lane's timing over `leg` for its vehicle `types` (or null): at least its length at the slowest type's top speed,
+    // plus the hours at its gates, in days.
+    const laneTiming = (leg, types, kind) => {
+        const kilometres = Number(leg.kilometres.toFixed(1));
+        const slowest = types?.length ? Math.min(...types.map((type) => type.speed)) : Infinity;
+        const roadHours = Math.max(leg.hours, kilometres / slowest);
+        const gate = kind === 'store' ? settings.storeGateHours : settings.gateHours;
+        const exact = Number(((roadHours + gate) / 24).toFixed(4));
+        const leadTime = Math.max(exact, Number(shortestLeadDays.toFixed(4)));
+        return { kilometres, slowest, roadHours, gate, leadTime, raised: leadTime > exact };
+    };
+
+    // A road lane and the shipment over it, from `origin` to `destination` (nodes), carrying `rate` a day at `share` of
+    // what the destination orders. `kind` is 'supply' (from a port or supplier to a warehouse) or 'store' (from a
+    // warehouse to a store's stock); `chosen` the link's vehicles ({ type, fleet }), with a catalogue.
+    const placeLane = ({ name, kind, origin, destination, originSite, destinationSite, rate, share, leg, chosen: given = null, standby = false, offset = 0 }) => {
+        const chosen = choiceOf(given, kind);
+        const types = catalogue ? typesOf(chosen, name.replace(/^Road /, '')) : null;
+        if (types && !types.length) throw new Error(`${name.replace(/^Road /, '')} has no vehicles. Choose a vehicle for it.`);
+        types?.forEach(noteType);
+        const { kilometres, slowest, roadHours, gate, leadTime, raised } = laneTiming(leg, types, kind);
+        const capacity1 = types ? types[0].capacity : truckCapacity;
+        const capacity2 = types ? (types[1] ?? types[0]).capacity : truckCapacity2;
+        const loading = types ? Math.max(...types.map((type) => type.loadingHours)) / 24 : loadDays;
+        const laneLoadDays = types ? Math.max(loading, shortestLoadDays) : loadDays;
+        const need = laneNeed(rate, leadTime, laneLoadDays);
+        const contract = kind === 'supply' ? allocation[`${originSite.name}|${destinationSite.name}`] : null;
+        let fleet;
+        let fleet2;
+        if (contract) [fleet, fleet2] = [contract.counts[0] ?? 0, contract.counts[1] ?? 0];
+        else if (types) {
+            // Sized as the toolbox sizes a lane, half of what it needs from each type when it has two, unless the user set it.
+            const sized = types.length === 2 ? [Math.ceil(need / 2 / capacity1), Math.ceil(need / 2 / capacity2)] : [Math.ceil(need / capacity1), 0];
+            fleet = chosen[0].fleet ?? sized[0];
+            fleet2 = types.length === 2 ? (chosen[1].fleet ?? sized[1]) : 0;
+        } else [fleet, fleet2] = [Math.ceil(need / capacity1), 0];
+        const placedAs = types ? vehicleAs(types) : null;
+        const node = place('roadLane', name, {
+            name, position: between(originSite, destinationSite, offset),
+            initialValues: roadLaneState(rate, leadTime, fleet, { truckCapacity: capacity1, loadDays: laneLoadDays, responseDays, fleet2, truckCapacity2: capacity2 }),
+            shared: { leadTime, distance: kilometres, fleetSize: fleet, fleetSize2: fleet2 }, ...(placedAs ? { as: placedAs.lane } : {})
+        });
+        // To keep up, a lane needs its loaded and returning vehicles and a loading period's flow idle at the origin.
+        const minimum = 2 * rate * leadTime + rate * laneLoadDays;
+        const fleetCapacity = fleet * capacity1 + fleet2 * capacity2;
+        if (contract) {
+            operatorLanes.push({ name, depot: contract.depot, fleet, fleet2, capacity: fleetCapacity, need: minimum });
+            if (fleetCapacity < minimum - 1e-9) warnings.push(`${operator.name} has ${fleetCapacity.toFixed(0)} TEU of trucks on ${name}, but its flow needs ${minimum.toFixed(0)} (on the road and loading): the lane will fall behind from the start.`);
+        }
+        const ownFleet = types && chosen.some((item, index) => index < types.length && item.fleet !== null);
+        if (ownFleet && fleetCapacity < minimum - 1e-9) {
+            warnings.push(`${name.replace(/^Road /, '')} has room for ${fleetCapacity.toFixed(0)} ${unit} in its vehicles, but its flow needs ${minimum.toFixed(0)} (on the road and loading): it will fall behind from the start.`);
+        }
+        bundle(kind === 'store' ? 'storeShipment' : 'roadShipment', name, { origin, lane: node, destination }, {
+            shared: { orderShare: share }, ...(placedAs ? { as: placedAs.shipment } : {})
+        });
+        // Live, so a scenario can close the road, send vehicles on a detour, move its orders to the destination's
+        // other lanes, or change its fleet: up to three times the vehicles it starts with.
+        makeLive(name, 'laneOpen', 1);
+        makeLive(name, 'orderShare', 1);
+        // A detour may add up to the window's 72 hours each way, over proportionally more kilometres.
+        const detourFactor = Math.max(4, (leadTime + 3) / leadTime);
+        makeLive(name, 'leadTime', niceCeiling(Math.max(4 * leadTime, leadTime + 3)));
+        makeLive(name, 'distance', niceCeiling(detourFactor * Math.max(kilometres, 1)));
+        // Any lane may come to carry all its destination's orders (a diversion to its port, a closure of the others).
+        const destinationTotal = rate / Math.max(share, 1e-9);
+        const fleetMaximum = niceCeiling(Math.max(10, 3 * Math.max(fleet, fleet2), 3 * Math.ceil(laneNeed(destinationTotal, leadTime, laneLoadDays) / Math.min(capacity1, capacity2))));
+        makeLive(name, 'fleetSize', fleetMaximum, 1);
+        makeLive(name, 'fleetSize2', fleetMaximum, 1);
+        const how = {
+            routed: [`${leg.hours.toFixed(1)} h over major roads`, 'Over major roads.'],
+            local: [`${leg.hours.toFixed(1)} h estimated over local streets (the sites are close)`, 'Straight line lengthened for local streets.'],
+            'straight-line': [`${leg.hours.toFixed(1)} h, a straight-line estimate (no road route was found)`, 'Straight line lengthened for detours.']
+        }[leg.basis];
+        const slowed = roadHours > leg.hours + 1e-9 ? `; ${roadHours.toFixed(1)} h at the ${slowest} km/h a ${types.find((type) => type.speed === slowest).name.toLowerCase()} can go` : '';
+        const floor = raised ? ` Raised to ${number(leadTime * 24, 1)} h, the shortest trip the model's ${settings.stepMinutes}-minute steps follow faithfully.` : '';
+        note(name, 'Travel time', leadTime, 'day', leg.basis === 'routed' ? 'routed' : 'assumed', `${how[0]}${slowed}, plus ${gate} h ${kind === 'store' ? 'at the dock and the store\'s door' : 'at the gates'}.${floor}`);
+        if (laneLoadDays > loading + 1e-12) note(name, 'Loading time', laneLoadDays * 24, 'h', 'assumed', `Its vehicles load in ${number(loading * 24, 2)} h; raised to ${number(laneLoadDays * 24, 2)} h, the shortest the model's ${settings.stepMinutes}-minute steps follow faithfully.`);
+        note(name, 'Distance', kilometres, 'km', leg.basis === 'routed' ? 'routed' : 'assumed', how[1]);
+        const vehicleWord = catalogue ? 'vehicles' : 'trucks';
+        if (contract) {
+            note(name, 'Fleet', fleet, 'trucks', operatorBasis, `${operator.name}'s ${operator.trucks[0].label} trucks from its ${contract.depot}, shared among its contracted lanes by what each needs${operator.synthetic ? ' (invented)' : ''}.`);
+            if (operator.trucks[1]) note(name, 'Fleet, second size', fleet2, 'trucks', operatorBasis, `${operator.name}'s ${operator.trucks[1].label} trucks from its ${contract.depot}${operator.synthetic ? ' (invented)' : ''}.`);
+        } else if (standby) {
+            note(name, 'Fleet', fleet, vehicleWord, 'assumed', 'On standby: it carries nothing, and has no vehicles, until a scenario diverts cargo to its port.');
+        } else if (types) {
+            types.forEach((type, index) => {
+                const count = index ? fleet2 : fleet;
+                const own = chosen[index].fleet !== null;
+                note(name, `Fleet of ${type.name.toLowerCase()}s`, count, 'vehicles', own ? 'user' : 'assumed', own ? 'Your figure.' : `Enough for ${types.length === 2 ? 'half of ' : ''}the baseline flow of ${rate.toFixed(1)} ${unit}/day, plus a reserve.`);
+            });
+        } else {
+            note(name, 'Fleet', fleet, 'trucks', 'assumed', `Enough for the baseline flow of ${rate.toFixed(1)} ${unit}/day, plus a reserve.`);
+        }
+        lanes.push({
+            name, kind, from: originSite.name, to: destination.name, site: destinationSite.name, rate, leadTime, kilometres, fleet, fleet2,
+            operator: Boolean(contract), standby, basis: leg.basis, truckCapacity: capacity1, truckCapacity2: capacity2, loadDays: laneLoadDays,
+            ...(types ? { vehicles: types.map((type, index) => ({ type: type.id, name: type.name, fleet: index ? fleet2 : fleet, user: chosen[index].fleet !== null })) } : {})
+        });
+        if (kind === 'supply') laneGeometry.push({ name, rate, standby, basis: leg.basis, origin: originSite, destination: destinationSite, path: leg.path ?? null });
+        return node;
+    };
+
+    // A Warehouse node holding stock for `total` a day, ordering over lanes ({ rate, leadTime }): its stock what its cover
+    // and its storage capacity allow, and the steady state of its order rule. `cover` and `capacity` are the site's own
+    // (with their bases) or null for the defaults; `coverAs` places its cover as a shared parameter of stores.
+    const placeStock = ({ entity, site, total, laneSpecs, minimumDays, defaultCover, coverAs = null, what }) => {
+        // A figure of the site's own: one the user set (an assumed one is the role's default, which the model has too).
+        const own = (key) => Number(site[key]) > 0 && site[`${key}Basis`] !== 'assumed';
+        const cover = own('coverDays') ? Number(site.coverDays) : defaultCover;
+        const capacity = own('capacity') ? Number(site.capacity) : storageCapacity;
+        const target = total * cover;
+        const stock = Math.min(target, capacity);
+        const onOrder = laneSpecs.reduce((sum, lane) => sum + lane.rate * (responseDays + lane.leadTime), 0);
+        const planningLeadTime = onOrder / total;
+        // It must hold what it hands on before its stock runs down: else the baseline cannot hold still.
+        const minimum = total * minimumDays;
+        if (stock < minimum - 1e-9) {
+            const hours = `${number(minimumDays * 24, 1)} hours`;
+            throw new Error(capacity < target
+                ? `${site.name} can hold ${number(capacity, 2)} ${unit}, less than the ${number(minimum, 2)} it ${what} in ${hours}. Give it more storage capacity, or move some of its demand elsewhere.`
+                : `${site.name}'s stock cover of ${number(cover, 2)} days is less than the ${number(minimumDays, 2)} it needs to ${what === 'sells' ? 'sell' : 'send out'} what it does. Give it a cover of at least ${number(minimumDays, 2)} days.`);
+        }
+        if (capacity < target - 1e-9) warnings.push(`${site.name} has room for ${number(capacity, 2)} ${unit}, less than its ${number(cover, 2)} days of cover (${number(target, 1)}): it holds ${number(capacity, 2)}, ${number(capacity / total, 2)} days of what it ${what}.`);
+        const as = {
+            ...(own('coverDays') ? { coverDays: { own: true, value: cover } } : coverAs ? { coverDays: coverAs } : {}),
+            ...(own('holdingCost') ? { holdingCostPerDay: { own: true, value: Number(site.holdingCost) } } : {})
+        };
+        // A store's stock room sits just above its shoppers on the canvas.
+        const at = position(site);
+        if (what === 'sells') at[1] = Number((at[1] + 0.6).toFixed(3));
+        const node = place('warehouse', entity, {
+            name: entity, position: at,
+            initialValues: { stock, onOrder, forecast: total, orderRate: total, spaceUsed: stock / capacity },
+            shared: { planningLeadTime, storageCapacity: capacity }, as
+        });
+        note(site.name, 'Planned replenishment time', planningLeadTime, 'day', 'routed', 'Average order-to-arrival time over its lanes.');
+        if (own('coverDays') || coverAs) note(site.name, 'Stock cover target', cover, 'day', own('coverDays') ? (site.coverDaysBasis ?? 'user') : 'assumed', own('coverDays') ? 'Your figure.' : `Assumed: the default for a ${what === 'sells' ? 'store' : 'warehouse'}, until you set it.`);
+        if (own('capacity')) note(site.name, 'Storage capacity', capacity, unit, site.capacityBasis ?? 'user', 'Your figure.');
+        if (own('holdingCost')) note(site.name, 'Holding cost', Number(site.holdingCost), `cost/${unit}/day`, site.holdingCostBasis ?? 'user', 'Your figure.');
+        return node;
+    };
+
+    // Which zones serve customer areas (deliveries draw on a day's stock) and which only restock stores (shipments draw
+    // on half a day's).
+    const stocked = (town) => Boolean(catalogue) && (town.role === 'store' || town.role === 'darkStore');
+    const deliversTo = new Set(allocations.filter((item) => !stocked(item.town)).map((item) => item.zone.id));
     for (const zone of usedZones) {
         const zoneFlows = flowsByZone.get(zone.id).filter((flow) => flow.rate > 1e-9);
         const total = zoneDemand.get(zone.id);
         const standby = standbyPorts.filter((port) => !zoneFlows.some((flow) => flow.port === port))
-            .map((port) => ({ port, rate: 0, leg: legOf(`${zone.id}|${port.id}`), standby: true }));
-        const laneSpecs = [...zoneFlows, ...standby].map((flow) => ({ ...flow, leadTime: laneTime(flow) }));
-        const onOrder = laneSpecs.reduce((sum, lane) => sum + lane.rate * (responseDays + lane.leadTime), 0);
-        const planningLeadTime = onOrder / total;
-        const warehouse = place('warehouse', zone.name, {
-            name: zone.name, position: position(zone),
-            initialValues: { stock: total * coverDays, onOrder, forecast: total, orderRate: total },
-            shared: { planningLeadTime }
+            .map((port) => ({ port, rate: 0, leg: legOf(`${zone.id}|${port.id}`), standby: true, link: null }));
+        const laneSpecs = [...zoneFlows, ...standby].map((flow) => {
+            // The lane's travel time as placeLane works it out: at least the slowest of its vehicles' speeds allows.
+            const types = catalogue ? typesOf(choiceOf(flow.link?.vehicles, 'supply'), `${flow.port.name} → ${zone.name}`) : null;
+            return { ...flow, leadTime: laneTiming(flow.leg, types, 'supply').leadTime };
         });
-        note(zone.name, 'Planned replenishment time', planningLeadTime, 'day', 'routed', 'Average order-to-arrival time over its lanes.');
+        const warehouse = placeStock({
+            entity: zone.name, site: zone, total, laneSpecs, defaultCover: coverDays, what: 'sends out',
+            minimumDays: deliversTo.has(zone.id) ? drawDownDays : originDrainDays
+        });
         for (const [laneIndex, lane] of laneSpecs.entries()) {
-            const laneName = `Road ${lane.port.name} → ${zone.name}`;
-            const kilometres = Number(lane.leg.kilometres.toFixed(1));
-            const leadTime = lane.leadTime;
-            const contract = allocation[`${lane.port.name}|${zone.name}`];
-            const [fleet, fleet2] = contract ? [contract.counts[0] ?? 0, contract.counts[1] ?? 0] : [Math.ceil(laneNeed(lane.rate, leadTime) / truckCapacity), 0];
-            const node = place('roadLane', laneName, {
-                name: laneName, position: between(lane.port, zone, laneIndex * 0.8),
-                initialValues: roadLaneState(lane.rate, leadTime, fleet, { truckCapacity, loadDays, responseDays, fleet2, truckCapacity2 }),
-                shared: { leadTime, distance: kilometres, fleetSize: fleet, fleetSize2: fleet2 }
+            placeLane({
+                name: `Road ${lane.port.name} → ${zone.name}`, kind: 'supply', origin: portNodes.get(lane.port.id), destination: warehouse,
+                originSite: lane.port, destinationSite: zone, rate: lane.rate, share: Math.min(1, lane.rate / total), leg: lane.leg,
+                chosen: lane.link?.vehicles ?? null, standby: Boolean(lane.standby), offset: laneIndex * 0.8
             });
-            if (contract) {
-                const capacity = fleet * truckCapacity + fleet2 * truckCapacity2;
-                // To keep up, a lane needs its loaded and returning trucks and a loading period's flow idle at the origin:
-                // that is its need. (A lane the toolbox sizes itself gets two loading periods, to spare.)
-                const minimum = 2 * lane.rate * leadTime + lane.rate * loadDays;
-                operatorLanes.push({ name: laneName, depot: contract.depot, fleet, fleet2, capacity, need: minimum });
-                if (capacity < minimum - 1e-9) {
-                    warnings.push(`${operator.name} has ${capacity.toFixed(0)} TEU of trucks on ${laneName}, but its flow needs ${minimum.toFixed(0)} (on the road and loading): the lane will fall behind from the start.`);
-                }
-            }
-            bundle('roadShipment', laneName, { origin: portNodes.get(lane.port.id), lane: node, destination: warehouse }, { shared: { orderShare: Math.min(1, lane.rate / total) } });
-            // Live, so a scenario can close the road, send trucks on a detour, move its orders to the warehouse's other lanes, or change its fleet: up to three times the trucks
-            // it starts with.
-            makeLive(laneName, 'laneOpen', 1);
-            makeLive(laneName, 'orderShare', 1);
-            // A detour may add up to the window's 72 hours each way, over proportionally more kilometres.
-            const detourFactor = Math.max(4, (leadTime + 3) / leadTime);
-            makeLive(laneName, 'leadTime', niceCeiling(Math.max(4 * leadTime, leadTime + 3)));
-            makeLive(laneName, 'distance', niceCeiling(detourFactor * Math.max(kilometres, 1)));
-            // Any lane may come to carry all its zone's orders (a diversion to its port, a closure of the others).
-            const fleetMaximum = niceCeiling(Math.max(10, 3 * Math.max(fleet, fleet2), 3 * Math.ceil(laneNeed(total, leadTime) / truckCapacity)));
-            makeLive(laneName, 'fleetSize', fleetMaximum, 1);
-            makeLive(laneName, 'fleetSize2', fleetMaximum, 1);
-            const how = {
-                routed: [`${lane.leg.hours.toFixed(1)} h over major roads`, 'Over major roads.'],
-                local: [`${lane.leg.hours.toFixed(1)} h estimated over local streets (the sites are close)`, 'Straight line lengthened for local streets.'],
-                'straight-line': [`${lane.leg.hours.toFixed(1)} h, a straight-line estimate (no road route was found)`, 'Straight line lengthened for detours.']
-            }[lane.leg.basis];
-            note(laneName, 'Travel time', leadTime, 'day', lane.leg.basis === 'routed' ? 'routed' : 'assumed', `${how[0]}, plus ${settings.gateHours} h at the gates.`);
-            note(laneName, 'Distance', kilometres, 'km', lane.leg.basis === 'routed' ? 'routed' : 'assumed', how[1]);
-            if (contract) {
-                note(laneName, 'Fleet', fleet, 'trucks', operatorBasis, `${operator.name}'s ${operator.trucks[0].label} trucks from its ${contract.depot}, shared among its contracted lanes by what each needs${operator.synthetic ? ' (invented)' : ''}.`);
-                if (operator.trucks[1]) note(laneName, 'Fleet, second size', fleet2, 'trucks', operatorBasis, `${operator.name}'s ${operator.trucks[1].label} trucks from its ${contract.depot}${operator.synthetic ? ' (invented)' : ''}.`);
-            } else if (lane.standby) {
-                note(laneName, 'Fleet', fleet, 'trucks', 'assumed', 'On standby: it carries nothing, and has no trucks, until a scenario diverts cargo to its port.');
-            } else {
-                note(laneName, 'Fleet', fleet, 'trucks', 'assumed', `Enough for the baseline flow of ${lane.rate.toFixed(1)} TEU/day, plus a reserve.`);
-            }
-            lanes.push({ name: laneName, from: lane.port.name, to: zone.name, rate: lane.rate, leadTime, kilometres, fleet, fleet2, operator: Boolean(contract), standby: Boolean(lane.standby), basis: lane.leg.basis });
-            laneGeometry.push({ name: laneName, rate: lane.rate, standby: Boolean(lane.standby), basis: lane.leg.basis, origin: lane.port, destination: zone, path: lane.leg.path ?? null });
         }
         warehouses.set(zone.id, warehouse);
     }
@@ -555,26 +747,70 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
     const latitudes = [...ports, ...usedZones].map((item) => item.lat);
     const corridors = laneCorridors(laneGeometry, { tolerance: Math.max(20, (Math.max(...latitudes) - Math.min(...latitudes)) * 111320 / 2000) });
 
-    // ---- towns, each served by its zones
+    // ---- towns, each served by its zones: a customer area (or a town) by deliveries; a store or dark store, with a
+    // catalogue, from its own stock, restocked by road from its warehouses.
+    const serveLinkOf = new Map((links?.serve ?? []).map((link) => [`${link.zone}|${link.town}`, link]));
+    const stores = [];
     for (const town of towns) {
         const townDemand = demand.get(town.id);
+        const itsAllocations = allocations.filter((item) => item.town === town);
+        const shop = stocked(town);
         const node = place('demandZone', town.name, {
             name: town.name, position: position(town),
-            initialValues: { backlog: townDemand * responseDays, demandRate: townDemand },
+            initialValues: { backlog: townDemand * (shop ? settings.saleDays : responseDays), demandRate: townDemand },
             shared: { baseDemand: townDemand }
         });
         // Live, so a scenario can step demand up: to four times the town's own.
         makeLive(town.name, 'baseDemand', niceCeiling(4 * townDemand));
-        for (const allocation of allocations.filter((item) => item.town === town)) {
+        if (shop) {
+            const stockName = `${town.name} stock`;
+            const kindName = town.role === 'darkStore' ? 'dark store' : 'store';
+            const laneSpecs = itsAllocations.map((item) => {
+                const link = serveLinkOf.get(`${item.zone.id}|${town.id}`);
+                const types = typesOf(choiceOf(link?.vehicles, 'store'), `${item.zone.name} → ${town.name}`);
+                if (!types.length) throw new Error(`${item.zone.name} → ${town.name} has no vehicles. Choose a vehicle for it.`);
+                const barred = types.filter((type) => !type.toStores);
+                if (barred.length) throw new Error(`${barred.map((type) => type.name).join(' and ')} may not deliver to ${kindName}s: choose another vehicle for ${item.zone.name} → ${town.name}.`);
+                return { allocation: item, link, rate: item.share * townDemand, leadTime: laneTiming(item.leg, types, 'store').leadTime };
+            });
+            const storeCover = town.role === 'darkStore' ? settings.darkStoreCoverDays : settings.storeCoverDays;
+            const stockNode = placeStock({
+                entity: stockName, site: town, total: townDemand, laneSpecs, defaultCover: storeCover, what: 'sells', minimumDays: settings.shelfDrawDownDays,
+                coverAs: town.role === 'darkStore'
+                    ? { symbol: 'darkStoreCoverDays', name: 'Stock cover target at dark stores', value: storeCover }
+                    : { symbol: 'storeCoverDays', name: 'Stock cover target at stores', value: storeCover }
+            });
+            // Shoppers buy from the shelves within the sale time, drawing at most the stock there per shelf draw-down time.
+            bundle('delivery', `${town.name} sales`, { warehouse: stockNode, zone: node }, {
+                shared: { share: 1, demandShare: 1 },
+                as: {
+                    responseDays: { symbol: 'saleDays', name: 'Sale time at stores', value: settings.saleDays },
+                    drawDownDays: { symbol: 'shelfDrawDownDays', name: 'Shelf draw-down time', value: settings.shelfDrawDownDays }
+                }
+            });
+            for (const [laneIndex, lane] of laneSpecs.entries()) {
+                const zone = lane.allocation.zone;
+                placeLane({
+                    name: `Road ${zone.name} → ${town.name}`, kind: 'store', origin: warehouses.get(zone.id), destination: stockNode,
+                    originSite: zone, destinationSite: town, rate: lane.rate, share: lane.allocation.share, leg: lane.allocation.leg,
+                    chosen: lane.link?.vehicles ?? null, offset: laneIndex * 0.8
+                });
+                if (laneSpecs.length > 1) note(town.name, `Share ordered from ${zone.name}`, lane.allocation.share * 100, '%', 'assumed', `By the warehouse's size and road access, and ${lane.allocation.leg.hours.toFixed(1)} h by road.`);
+            }
+            stores.push({ name: town.name, stock: stockName, role: town.role, demand: townDemand });
+            continue;
+        }
+        for (const allocation of itsAllocations) {
             const zoneTotal = zoneDemand.get(allocation.zone.id);
             bundle('delivery', `${town.name} from ${allocation.zone.name}`, { warehouse: warehouses.get(allocation.zone.id), zone: node }, {
                 shared: { share: allocation.share * townDemand / zoneTotal, demandShare: allocation.share }
             });
-            if (allocations.filter((item) => item.town === town).length > 1) {
+            if (itsAllocations.length > 1) {
                 note(town.name, `Share served from ${allocation.zone.name}`, allocation.share * 100, '%', 'assumed', `By the zone's size and road access, and ${allocation.leg.hours.toFixed(1)} h by road.`);
             }
         }
     }
+    if (catalogue) note('Every store', 'Sale time and shelf draw-down time', settings.saleDays, 'day', 'assumed', `A shopper buys what is on the shelf within ${number(settings.saleDays * 24, 1)} hours, and the shelves can be emptied in as long: a store sells what it has, and its shoppers wait for what it has not.`);
 
     if (operator && lanes.length) {
         const [first, second] = operator.trucks;
@@ -634,6 +870,11 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         corridors,
         // Each town's demand as built, what a scenario that steps it up starts from.
         towns: towns.map((town) => ({ name: town.name, demand: demand.get(town.id) })),
+        // The stores and dark stores that hold stock: { name, stock (its stock room's node), role, demand }.
+        stores,
+        // What the model counts, how many of it a TEU is, and the vehicle types its lanes run on (null for two truck sizes).
+        unit, perTeu,
+        vehicles: catalogue ? catalogue.map((type) => ({ id: type.id, name: type.name, capacity: type.capacity })) : null,
         // One entry per town and zone serving it: the zone's share of the town's demand.
         served: allocations.map((allocation) => ({ town: allocation.town.name, zone: allocation.zone.name, share: allocation.share, demand: allocation.share * demand.get(allocation.town.id), hours: allocation.leg.hours }))
     };

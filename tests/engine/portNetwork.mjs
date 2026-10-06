@@ -15,86 +15,55 @@
 // (defaults to the sibling Konjugate checkout's out/engine build)
 
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { konjugateModule } from '../../scripts/konjugatePaths.mjs';
 import { buildPortNetwork } from '../../scripts/portNetwork.mjs';
+import { day, maxDrift, runDocument, sum, tolerance } from './harness.mjs';
 
-const { encodeProjectFile } = await import(pathToFileURL(konjugateModule('src/projectFile.mjs')));
-const { decodeResultFile } = await import(pathToFileURL(konjugateModule('src/engineProtocol.mjs')));
-const { decodeValidationReport } = await import(pathToFileURL(konjugateModule('src/reportProtocol.mjs')));
-
-const executable = process.argv[2] ?? konjugateModule(join('out', 'engine', process.platform === 'win32' ? 'konjugateEngine.exe' : 'konjugateEngine'));
 const directory = await mkdtemp(join(tmpdir(), 'konjugateLogisticsToolbox-'));
-const day = 86400;
-
-function execute(args) {
-    return new Promise((resolve, reject) => {
-        const child = spawn(executable, args, { stdio: ['ignore', 'ignore', 'inherit'] });
-        child.once('error', reject);
-        child.once('exit', resolve);
-    });
-}
 
 async function run(name, options = {}) {
     const document = await buildPortNetwork(options);
-    const inputPath = join(directory, `${name}.kjt`);
-    const reportPath = join(directory, `${name}.report`);
-    const outputPath = join(directory, `${name}.kjr`);
-    const configurationPath = join(directory, `${name}.json`);
-    const { globalTimeStep, outputInterval } = document.runConfigurations[0];
-    await writeFile(inputPath, await encodeProjectFile(JSON.stringify(document)));
-    await writeFile(configurationPath, JSON.stringify({ name, targetTime: 120 * day, globalTimeStep, outputInterval }));
-    assert.equal(await execute(['validate', inputPath, '--report', reportPath]), 0, `${name}: validation failed to run.`);
-    const report = decodeValidationReport(await readFile(reportPath));
-    assert.equal(report.valid, true, `${name}: ${JSON.stringify(report.issues ?? report)}`);
-    assert.equal(await execute(['run', inputPath, '--configuration', configurationPath, '--output', outputPath]), 0, `${name}: run failed.`);
-    const result = decodeResultFile(await readFile(outputPath));
-    const stateIds = new Map(document.nodes.flatMap((node) => node.states.map((state) => [`${node.name}.${state.symbol}`, state.id])));
-    const series = (key) => {
-        if (!stateIds.has(key)) throw new Error(`${name}: no state ${key}.`);
-        const stateId = stateIds.get(key);
-        return result.samples.map((sample) => sample.states.find((state) => state.stateId === stateId).value);
-    };
-    return { name, document, series, has: (key) => stateIds.has(key) };
+    const result = await runDocument(directory, name, document, 120);
+    const keys = new Set(document.nodes.flatMap((node) => node.states.map((state) => `${node.name}.${state.symbol}`)));
+    return { ...result, has: (key) => keys.has(key) };
 }
 
-const sum = (arrays) => arrays[0].map((_, index) => arrays.reduce((total, values) => total + values[index], 0));
-const maxDrift = (values) => Math.max(...values.map((value) => Math.abs(value - values[0])));
 const loaded = (series, lane) => sum(['loaded1', 'loaded2', 'loaded3'].map((stage) => series(`${lane}.${stage}`)));
 
 function checkInvariants({ name, series, has }, { fleetsChange = false } = {}) {
     const lanes = ['Road lane A', 'Road lane B', ...(has('Rail lane.loaded1') ? ['Rail lane'] : [])];
     // Containers: everything at the port, on the lanes, in the warehouses and delivered, minus arrivals.
-    const containers = sum([
+    const goods = [
         series('Port.queue'), series('Port.stock'), ...lanes.map((lane) => loaded(series, lane)),
         series('Warehouse A.stock'), series('Warehouse B.stock'),
         ...['Zone 1', 'Zone 2', 'Zone 3'].map((zone) => series(`${zone}.delivered`)),
         series('Port.arrived').map((value) => -value)
-    ]);
-    assert.ok(maxDrift(containers) < 1e-6, `${name}: containers must be conserved (drift ${maxDrift(containers)} TEU).`);
+    ];
+    const containers = sum(goods);
+    assert.ok(maxDrift(containers) < tolerance(goods), `${name}: containers must be conserved (drift ${maxDrift(containers)} TEU).`);
     // Trucks: idle + returning + loaded trucks of each size, per road lane, unless the scenario hires trucks; and the
     // loaded trucks of both sizes carry exactly the containers in transit.
     for (const lane of fleetsChange ? ['Road lane B'] : ['Road lane A', 'Road lane B']) {
         for (const size of ['', '2']) {
-            const trucks = sum([series(`${lane}.idleTrucks${size}`), series(`${lane}.returning${size}`), series(`${lane}.loadedTrucks${size}`)]);
-            assert.ok(maxDrift(trucks) < 1e-6, `${name}: ${lane} must keep its trucks${size ? ' of the second size' : ''} (drift ${maxDrift(trucks)}).`);
+            const parts = [series(`${lane}.idleTrucks${size}`), series(`${lane}.returning${size}`), series(`${lane}.loadedTrucks${size}`)];
+            const trucks = sum(parts);
+            assert.ok(maxDrift(trucks) < tolerance(parts), `${name}: ${lane} must keep its trucks${size ? ' of the second size' : ''} (drift ${maxDrift(trucks)}).`);
         }
     }
     for (const lane of ['Road lane A', 'Road lane B']) {
         const carried = sum([series(`${lane}.loadedTrucks`).map((value) => 2 * value), series(`${lane}.loadedTrucks2`)]);
         const gap = carried.map((value, index) => value - loaded(series, lane)[index]);
-        assert.ok(Math.max(...gap.map(Math.abs)) < 1e-6, `${name}: ${lane}'s loaded trucks must carry exactly what is in transit.`);
+        assert.ok(Math.max(...gap.map(Math.abs)) < tolerance([carried, loaded(series, lane)]), `${name}: ${lane}'s loaded trucks must carry exactly what is in transit.`);
     }
     // On order = what waits on and travels along the warehouse's lanes.
     const lanesOf = { 'Warehouse A': lanes.filter((lane) => lane !== 'Road lane B'), 'Warehouse B': ['Road lane B'] };
     for (const [warehouse, itsLanes] of Object.entries(lanesOf)) {
-        const pipeline = sum(itsLanes.flatMap((lane) => [series(`${lane}.requested`), loaded(series, lane)]));
-        const gap = series(`${warehouse}.onOrder`).map((value, index) => value - pipeline[index]);
-        assert.ok(maxDrift(gap) < 1e-6 && Math.abs(gap[0]) < 1e-6, `${name}: ${warehouse} on order must match its lanes (drift ${maxDrift(gap)}).`);
+        const parts = [series(`${warehouse}.onOrder`), ...itsLanes.flatMap((lane) => [series(`${lane}.requested`), loaded(series, lane)])];
+        const pipeline = sum(parts.slice(1));
+        const gap = parts[0].map((value, index) => value - pipeline[index]);
+        assert.ok(maxDrift(gap) < tolerance(parts) && Math.abs(gap[0]) < tolerance(parts), `${name}: ${warehouse} on order must match its lanes (drift ${maxDrift(gap)}).`);
     }
     for (const key of ['Port.queue', 'Port.stock', 'Warehouse A.stock', 'Warehouse B.stock', 'Road lane A.idleTrucks', 'Road lane B.idleTrucks']) {
         assert.ok(Math.min(...series(key)) > -1e-9, `${name}: ${key} must not go negative.`);

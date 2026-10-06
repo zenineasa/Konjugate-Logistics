@@ -209,16 +209,17 @@ test('the importer gets the pins by group, adopted ones by the candidate they ca
 
 test('the network saved as a CSV reads back as the same pins and links, with only the figures the user set', () => {
     const supplier = createPin('supplier', { lat: 25.1, lon: 55.1 }, { name: 'Mill, north', fields: { supply: 40 } });
-    const warehouse = createPin('warehouse', { lat: 25.2, lon: 55.2 }, { name: 'Depot "A"' });
-    const store = createPin('store', { lat: 25.3, lon: 55.3 }, { name: 'Shop' });
+    const warehouse = createPin('warehouse', { lat: 25.2, lon: 55.2 }, { name: 'Depot "A"', fields: { capacity: 4000 } });
+    const store = createPin('store', { lat: 25.3, lon: 55.3 }, { name: 'Shop', fields: { cover: 1.5 } });
     const dark = createPin('darkStore', { lat: 25.31, lon: 55.31 }, { name: 'Night hub', fields: { demand: 7 } });
     const area = createPin('customerArea', { lat: 25.4, lon: 55.4 }, { name: 'Suburbs', fields: { population: 12000 } });
     const pins = [supplier, warehouse, store, dark, area];
     const links = [[supplier, warehouse], [warehouse, store], [warehouse, dark], [warehouse, area]].map(([from, to]) => ({ id: linkId(from.id, to.id), from: from.id, to: to.id, basis: 'suggested' }));
     const text = writeSites(pins, links);
-    assert.equal(text.split('\n')[0], 'name,kind,latitude,longitude,teuPerDay,floorArea,population,from');
-    assert.match(text, /^"Mill, north",supplier,25\.1,55\.1,40,,,$/m);
-    assert.match(text, /^Shop,store,25\.3,55\.3,,,,"Depot ""A"""$/m, 'the assumed demand is left out');
+    assert.equal(text.split('\n')[0], 'name,kind,latitude,longitude,teuPerDay,floorArea,population,capacity,cover,from');
+    assert.match(text, /^"Mill, north",supplier,25\.1,55\.1,40,,,,,$/m);
+    assert.match(text, /^Shop,store,25\.3,55\.3,,,,,1\.5,"Depot ""A"""$/m, 'the assumed demand is left out; the cover set is kept');
+    assert.match(text, /^"Depot ""A""",warehouse,25\.2,55\.2,,,,4000,,"Mill, north"$/m, 'the capacity set is kept, the assumed cover is not');
     const parsed = parseSites(text);
     assert.deepEqual(parsed.errors, []);
     const loaded = networkFromSites(parsed.sites);
@@ -227,6 +228,9 @@ test('the network saved as a CSV reads back as the same pins and links, with onl
     const byName = new Map(loaded.pins.map((pin) => [pin.name, pin]));
     assert.deepEqual(byName.get('Mill, north').fields.supply, { value: 40, basis: 'user' });
     assert.equal(byName.get('Shop').fields.demand.basis, 'assumed');
+    assert.deepEqual(byName.get('Shop').fields.cover, { value: 1.5, basis: 'user' });
+    assert.deepEqual(byName.get('Depot "A"').fields.capacity, { value: 4000, basis: 'user' });
+    assert.deepEqual(byName.get('Depot "A"').fields.cover, { value: 3, basis: 'assumed' });
     assert.deepEqual(byName.get('Night hub').fields.demand, { value: 7, basis: 'user' });
     assert.deepEqual(byName.get('Suburbs').fields.population, { value: 12000, basis: 'user' });
     assert.deepEqual(loaded.links.map((link) => [byName.get('Mill, north').id === link.from ? 'Mill, north' : 'Depot "A"', [...byName.values()].find((pin) => pin.id === link.to).name]).sort(), [['Depot "A"', 'Night hub'], ['Depot "A"', 'Shop'], ['Depot "A"', 'Suburbs'], ['Mill, north', 'Depot "A"']]);

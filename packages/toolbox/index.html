@@ -66,11 +66,17 @@
                     <button type="button" class="stepToggle" aria-label="Toggle Network section">▾</button>
                 </div>
                 <div class="stepContent">
-                    <p class="muted small">Pick a role above the map (or press 1 to 6) and click the map to place sites; they snap to the nearest road. Links are suggested. Click a site or a link to change it here or beside it on the map, right-click for its menu, and press ? for the keyboard shortcuts. Everything can be undone. Until product categories come, every unit counts as one TEU in the model.</p>
+                    <p class="muted small">Pick a role above the map (or press 1 to 6) and click the map to place sites; they snap to the nearest road. Links are suggested. Click a site or a link to change it here or beside it on the map, right-click for its menu, and press ? for the keyboard shortcuts. Everything can be undone. Goods are counted in pallets; a port's containers as ten pallets each.</p>
                     <div id="networkStatus"></div>
                     <div class="card" id="selectionCard" hidden></div>
                     <div class="tabs" role="tablist" id="roleTabs"></div>
                     <ul class="candidates pins" id="pinList"></ul>
+                    <details id="vehicles">
+                        <summary>Vehicles <span class="muted small" id="vehiclesSummary"></span></summary>
+                        <p class="muted small">The types every link chooses from. A link to a warehouse runs on heavy trucks, to a store on medium trucks and to a dark store on mini-vans, until you choose others on its card (or press V). Each figure is assumed until you set your own fleet's; costs are in your cost units.</p>
+                        <ul class="vehicles" id="vehicleList"></ul>
+                        <button class="button small" type="button" id="addVehicleButton">Add a vehicle type</button>
+                    </details>
                     <details id="suggestions">
                         <summary>Suggestions from public data</summary>
                         <p class="muted small">Nothing is fetched until you ask. Each source shows what it finds as hollow sites on the map; click one, or Adopt it here, to place it in your network with what was found there.</p>
@@ -119,7 +125,7 @@
                     <label class="row small" title="The days of PortWatch history the model uses: the arrivals it replays, or the days it averages over. Empty: the latest days (replayed), or the whole year fetched (averaged).">History from
                         <input type="date" id="historyFromInput"> <span class="muted" id="historyFromHint">empty: the latest days</span></label>
                     </div>
-                    <div class="row small" title="A haulier's trucks: its truck sizes and costs become the region's, and the lanes it carries run on its trucks. An invented operator is plausible, and labelled synthetic wherever it is used.">
+                    <div class="row small" id="operatorRow" hidden title="A haulier's trucks: its truck sizes and costs become the region's, and the lanes it carries run on its trucks. An invented operator is plausible, and labelled synthetic wherever it is used.">
                         <label>Fleet operator
                             <select id="operatorSelect">
                                 <option value="">None: each lane sized to its flow</option>
@@ -195,15 +201,15 @@
                         <div class="muted small" id="closureHint"></div>
                     </div>
                     <div class="scenarioPanel" data-panel="fleetChange" hidden>
-                        <p class="muted small">Fewer trucks (drivers short, trucks off the road) or more (the operator hires). Trucks are hired or released over a few days; only idle ones are released.</p>
+                        <p class="muted small">Fewer vehicles (drivers short, vehicles off the road) or more (hired). They are hired or released over a few days; only idle ones are released.</p>
                         <label class="row small">On <select id="fleetLanesSelect"></select></label>
                         <div class="row small">
-                            <label>Change the trucks by <input type="number" id="fleetChangeInput" min="-100" max="200" step="5" value="-30"> %</label>
+                            <label>Change the vehicles by <input type="number" id="fleetChangeInput" min="-100" max="200" step="5" value="-30"> %</label>
                         </div>
                         <div class="muted small" id="fleetHint"></div>
                     </div>
                     <div class="scenarioPanel" data-panel="demandSurge" hidden>
-                        <p class="muted small">Towns order more for a while, as on peak days.</p>
+                        <p class="muted small">Stores, dark stores and customer areas sell more for a while, as on peak days.</p>
                         <label class="row small">In <select id="demandTownsSelect"></select></label>
                         <div class="row small">
                             <label>Change demand by <input type="number" id="demandChangeInput" min="-90" max="300" step="5" value="30"> %</label>

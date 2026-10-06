@@ -255,9 +255,10 @@ export function diversionPlan({ lanes, ports, affected, to = null, cut, diverted
             const teuPerDay = byPort.get(target.to) ?? 0;
             if (!(teuPerDay > 0)) continue;
             const lane = lanes.find((item) => item.from === target.to && item.to === warehouse);
-            // Trucks for the new flow, as the toolbox sizes a lane: loaded and returning, and a reserve of loads.
+            // Trucks for the new flow, as the toolbox sizes a lane: loaded and returning, and a reserve of loads, of the
+            // lane's own first size when it has vehicle types.
             const rate = lane.rate + teuPerDay;
-            const needed = Math.ceil((2 * rate * lane.leadTime + idleReserve * rate * loadDays) / truckCapacity);
+            const needed = Math.ceil((2 * rate * lane.leadTime + idleReserve * rate * (lane.loadDays ?? loadDays)) / (lane.truckCapacity ?? truckCapacity));
             const fleet = lane.fleet + Math.max(0, Math.round((needed - lane.fleet) * trucksFound));
             fleetSize.entities.push(lane.name);
             // Hired from the disruption's first day to the end of the run: the trucks stay while the cargo diverted to

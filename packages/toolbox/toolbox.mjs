@@ -13,7 +13,8 @@ import { chokepointById, chokepointDependence, chokepointRecentUrl, chokepoints,
 import { portwatchActivityUrl, portwatchPortsUrl } from './lib/portwatch.mjs';
 import { closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan } from './lib/scenarios.mjs';
 import { createNetworkRouter } from './lib/routing.mjs';
-import { createPin, kindOf, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
+import { completeFields, createPin, kindOf, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
+import { carriesVehicles, completeCatalogue, createVehicle, defaultCatalogue, linkKind, setVehicleField, typesPerLink, vehicleFields, vehiclesOf } from './lib/vehicles.mjs';
 import { writeSites } from './lib/sites.mjs';
 import { addsToSelection, commandHeld, platformKeys } from './lib/platform.mjs';
 
@@ -37,8 +38,9 @@ const state = {
     place: null, bbox: null, roadLevel: 'major',
     // The roads step's answer (map, graph, coverage, notices) and the router over its graph.
     roads: null, router: null,
-    // The user's network: pins and links, the suggested links the user deleted and what is selected.
-    pins: [], links: [], dismissed: new Set(), selection: [], selected: null, listRole: 'all',
+    // The user's network: pins and links, the suggested links the user deleted and what is selected; and the vehicle
+    // types its links run on.
+    pins: [], links: [], dismissed: new Set(), selection: [], selected: null, listRole: 'all', vehicles: defaultCatalogue(),
     // Suggestions from public data, by source, once asked for; the roles whose answers the host holds.
     suggestions: {}, available: new Set(), sourceTab: null,
     // When the data in hand was fetched, by kind ({ at, cached }), and whether this area was loaded fresh.
@@ -96,7 +98,8 @@ const selectedLinks = () => state.selection.filter((item) => item.kind === 'link
 // Every change to the network can be undone, and redone: a copy of the network before each change, the last hundred
 // kept. Changes of one kind in quick succession (a pin nudged with the arrow keys, a figure typed) are one step.
 const history = { past: [], future: [], lastLabel: null, lastTime: 0 };
-const snapshot = () => ({ pins: structuredClone(state.pins), links: state.links.map((link) => ({ ...link })), dismissed: [...state.dismissed], selection: [...state.selection] });
+const copyLink = (link) => ({ ...link, ...(link.vehicles ? { vehicles: link.vehicles.map((item) => ({ ...item })) } : {}) });
+const snapshot = () => ({ pins: structuredClone(state.pins), links: state.links.map(copyLink), dismissed: [...state.dismissed], selection: [...state.selection], vehicles: structuredClone(state.vehicles) });
 function checkpoint(label, { merge = false } = {}) {
     const now = performance.now();
     if (merge && label === history.lastLabel && now - history.lastTime < 1500) { history.lastTime = now; return; }
@@ -109,8 +112,10 @@ function checkpoint(label, { merge = false } = {}) {
 }
 function restore(network) {
     state.pins = structuredClone(network.pins);
-    state.links = network.links.map((link) => ({ ...link }));
+    state.links = network.links.map(copyLink);
     state.dismissed = new Set(network.dismissed);
+    state.vehicles = structuredClone(network.vehicles);
+    renderVehicles();
     setSelection(network.selection.filter((item) => (item.kind === 'pin' ? pinById(item.id) : state.links.some((link) => link.id === item.id))));
     $('#selectionCard').dataset.for = '';
     networkChanged();
@@ -549,7 +554,7 @@ function networkChanged({ rebuild = true } = {}) {
     renderNetwork();
     updateStepSummaries();
     keepSessionSoon();
-    const errors = networkProblems(state.pins, state.links).filter((problem) => problem.level === 'error');
+    const errors = networkProblems(state.pins, state.links, state.vehicles).filter((problem) => problem.level === 'error');
     $('#buildButton').disabled = state.busy || errors.length > 0 || !state.pins.length;
     $('#buildStatus').innerHTML = errors.length && state.pins.length ? notice('warning', 'Resolve what Network lists to build a model.') : '';
     if (state.built) {
@@ -566,7 +571,7 @@ function networkChanged({ rebuild = true } = {}) {
 const legHow = (leg) => ({ routed: 'over the roads', local: 'by local streets (the sites are close)', 'straight-line': 'as a straight-line estimate (no road route found)' })[leg.basis] ?? '';
 
 function renderNetwork() {
-    const problems = networkProblems(state.pins, state.links);
+    const problems = networkProblems(state.pins, state.links, state.vehicles);
     const troubled = new Set(problems.filter((problem) => problem.level === 'error').flatMap((problem) => problem.pins));
     const adopted = new Set(state.pins.map((pin) => pin.candidate?.id).filter(Boolean));
     const roleOfGroup = { ports: 'port', zones: 'warehouse', towns: 'customerArea' };
@@ -589,7 +594,7 @@ function renderNetwork() {
         return {
             id: link.id, from: link.from, to: link.to, basis: link.basis, points: leg?.path?.points ?? null,
             unused: Boolean(from && to && unused.has(`${from.name}>${to.name}`)),
-            title: leg ? `${number(leg.kilometres, 1)} km, ${number(leg.hours, 1)} h ${legHow(leg)}; ${link.basis === 'user' ? 'your link' : 'suggested'}` : ''
+            title: leg ? `${number(leg.kilometres, 1)} km, ${number(leg.hours, 1)} h ${legHow(leg)}; ${link.basis === 'user' ? 'your link' : 'suggested'}${vehicleWords(link)}` : ''
         };
     }));
     map.setSelected(state.selection);
@@ -598,6 +603,7 @@ function renderNetwork() {
     renderPinList(troubled);
     renderCard();
     renderPopover();
+    renderVehicles();
 }
 
 // Beside what is selected on the map: its name, to rename it there, and Delete.
@@ -902,6 +908,133 @@ function deleteSelected() {
     toast(`Deleted ${what}.`, { undoable: true });
 }
 
+// ---- the vehicles on the links -----------------------------------------------------------------------------------
+// A link's kind for its vehicles (supply, store, dark store, customer area), and the vehicles it runs on.
+const kindOfLink = (link) => linkKind(pinById(link.from)?.role, pinById(link.to)?.role);
+const linkVehicles = (link) => vehiclesOf(link, kindOfLink(link), state.vehicles);
+const typeNamed = (id) => state.vehicles.find((type) => type.id === id);
+// May this type carry this link: anything to a warehouse; to a store or dark store only what may deliver to stores.
+const typeAllowed = (type, link) => kindOfLink(link) === 'supply' || type.toStores;
+// "; on medium trucks" for a link's title on the map.
+function vehicleWords(link) {
+    const carried = linkVehicles(link);
+    if (!carried.length) return kindOfLink(link) === 'customerArea' ? '; by a delivery service' : '';
+    return `; on ${carried.map((item) => `${typeNamed(item.type)?.name.toLowerCase()}s`).join(' and ')}`;
+}
+
+// The links given carried by `typeId` (as their first type, keeping a second that differs), each made the user's: one
+// step to undo. Links that carry no vehicles, or may not take that type, are left as they are and said so.
+function carryBy(links, typeId) {
+    const type = typeNamed(typeId);
+    if (!type) return;
+    const able = links.filter((link) => carriesVehicles(kindOfLink(link)) && typeAllowed(type, link));
+    const left = links.length - able.length;
+    if (!able.length) {
+        refuse(links.length === 1 && carriesVehicles(kindOfLink(links[0])) ? `${type.name} may not deliver to stores: choose another vehicle.` : 'Deliveries to a customer area have no vehicles of their own.');
+        return;
+    }
+    checkpoint(`carrying ${able.length === 1 ? `${pinById(able[0].from)?.name} → ${pinById(able[0].to)?.name}` : `${able.length} links`} by ${type.name.toLowerCase()}`);
+    for (const link of able) {
+        const second = linkVehicles(link)[1];
+        link.vehicles = [{ type: typeId, fleet: null }, ...(second && second.type !== typeId ? [second] : [])];
+        link.basis = 'user';
+    }
+    $('#selectionCard').dataset.for = '';
+    networkChanged();
+    toast(`${able.length === 1 ? 'The link is' : `${able.length} links are`} carried by ${type.name.toLowerCase()}s${left ? `; ${left} other${left === 1 ? '' : 's'} left as ${left === 1 ? 'it was' : 'they were'}` : ''}.`, { undoable: true });
+}
+
+// One of a link's vehicles changed on its card: its type, its fleet (empty: sized by the toolbox), added or taken off.
+function changeLinkVehicles(link, change, label) {
+    checkpoint(label, { merge: true });
+    const carried = linkVehicles(link).map((item) => ({ ...item }));
+    change(carried);
+    link.vehicles = carried.slice(0, typesPerLink);
+    link.basis = 'user';
+    $('#selectionCard').dataset.for = '';
+    networkChanged();
+}
+
+// The next type a link may take, for V: through the catalogue, wrapping round.
+function cycleVehicles() {
+    const links = selectedLinks().filter((link) => carriesVehicles(kindOfLink(link)));
+    if (!links.length) { refuse('Select a link that runs on vehicles first: V gives it the next vehicle type.'); return; }
+    const current = linkVehicles(links[0])[0]?.type;
+    const allowed = state.vehicles.filter((type) => links.every((link) => typeAllowed(type, link)));
+    if (!allowed.length) return;
+    const next = allowed[(allowed.findIndex((type) => type.id === current) + 1) % allowed.length];
+    carryBy(links, next.id);
+}
+
+// ---- the vehicle catalogue ------------------------------------------------------------------------------------------
+// The types every link chooses from: each a card of its figures (each labelled assumed or yours), whether it may deliver
+// to stores, and how many links run on it.
+function renderVehicles() {
+    const panel = $('#vehicleList');
+    if (!panel) return;
+    // Being typed in: keep the fields as they are.
+    if (panel.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && document.activeElement.type !== 'checkbox') return;
+    const uses = (type) => state.links.filter((link) => linkVehicles(link).some((item) => item.type === type.id)).length;
+    $('#vehiclesSummary').textContent = `${state.vehicles.length} type${state.vehicles.length === 1 ? '' : 's'}`;
+    panel.innerHTML = state.vehicles.map((type) => `
+        <li class="vehicle" data-type="${escape(type.id)}">
+            <div class="row"><input type="text" data-vehicle-name value="${escape(type.name)}" aria-label="Name of the vehicle type"><span class="muted small">${uses(type) ? `on ${uses(type)} link${uses(type) === 1 ? '' : 's'}` : 'unused'}</span>
+                <button class="link remove" type="button" data-vehicle-delete title="Delete this type" aria-label="Delete ${escape(type.name)}"${state.vehicles.length === 1 ? ' disabled' : ''}>✕</button></div>
+            ${vehicleFields.map((field) => {
+                const value = type.fields[field.key];
+                return `<div class="field" title="${escape(field.detail)}"><label for="vehicle-${escape(type.id)}-${field.key}">${escape(field.label)}</label><span><input type="number" min="0" step="any" id="vehicle-${escape(type.id)}-${field.key}" data-vehicle-field="${field.key}" value="${value.value}"> <span class="muted">${escape(field.unit)}</span></span><span class="basis ${value.basis}">${escape(basisLabel[value.basis])}</span></div>`;
+            }).join('')}
+            <label class="row small"><input type="checkbox" data-vehicle-stores ${type.toStores ? 'checked' : ''}> May deliver to stores and dark stores</label>
+        </li>`).join('');
+    panel.querySelectorAll('[data-type]').forEach((row) => {
+        const type = state.vehicles.find((item) => item.id === row.dataset.type);
+        row.querySelector('[data-vehicle-name]').addEventListener('change', (event) => {
+            const name = event.target.value.trim();
+            if (!name || name === type.name) { event.target.value = type.name; return; }
+            if (state.vehicles.some((other) => other !== type && other.name === name)) { refuse(`There is already a vehicle type named ${name}.`); event.target.value = type.name; return; }
+            checkpoint(`renaming the ${type.name.toLowerCase()}`);
+            type.name = name;
+            vehiclesChanged();
+        });
+        row.querySelectorAll('[data-vehicle-field]').forEach((input) => input.addEventListener('change', () => {
+            checkpoint(`changing the ${type.name.toLowerCase()}'s ${vehicleFields.find((field) => field.key === input.dataset.vehicleField).label.toLowerCase()}`, { merge: true });
+            setVehicleField(type, input.dataset.vehicleField, input.value);
+            input.blur();
+            vehiclesChanged();
+        }));
+        row.querySelector('[data-vehicle-stores]').addEventListener('change', (event) => {
+            checkpoint(`${event.target.checked ? 'letting' : 'keeping'} the ${type.name.toLowerCase()} ${event.target.checked ? 'deliver to' : 'off'} stores`);
+            type.toStores = event.target.checked;
+            vehiclesChanged();
+        });
+        row.querySelector('[data-vehicle-delete]').addEventListener('click', () => deleteVehicle(type));
+    });
+}
+function vehiclesChanged() {
+    renderVehicles();
+    $('#selectionCard').dataset.for = '';
+    networkChanged();
+}
+function addVehicle() {
+    checkpoint('adding a vehicle type');
+    const type = createVehicle({}, state.vehicles);
+    state.vehicles.push(type);
+    $('#vehicles').open = true;
+    vehiclesChanged();
+    $(`#vehicleList [data-type="${type.id}"] [data-vehicle-name]`)?.select();
+}
+// A type deleted: the links that ran on it run on what their kind usually takes.
+function deleteVehicle(type) {
+    if (state.vehicles.length === 1) return;
+    const on = state.links.filter((link) => linkVehicles(link).some((item) => item.type === type.id)).length;
+    checkpoint(`deleting the ${type.name.toLowerCase()}`);
+    state.vehicles = state.vehicles.filter((item) => item !== type);
+    vehiclesChanged();
+    toast(`Deleted the ${type.name.toLowerCase()}${on ? `: its ${on} link${on === 1 ? ' runs' : 's run'} on ${on === 1 ? 'its' : 'their'} usual vehicles now` : ''}.`, { undoable: true });
+}
+$('#addVehicleButton').addEventListener('click', addVehicle);
+renderVehicles();
+
 // ---- the keyboard ------------------------------------------------------------------------------------------
 // Every action has a button or a menu item; these are the quicker ways, listed under ? (and in each menu and tooltip).
 const shortcuts = [
@@ -916,6 +1049,7 @@ const shortcuts = [
     ['Arrow keys (Shift: further)', 'Move the selected sites'],
     ['Enter or F2, or click twice', 'Rename the selected site'],
     ['L', 'Link the selected site to the next one clicked'],
+    ['V', 'Carry the selected links by the next vehicle type'],
     ['F', 'Fit the map to the selection, or to the network'], ['0', 'Fit the map to the region'], ['+ and -', 'Zoom'],
     [keys.menu, 'The menu of a site, a link or the map'], ['?', 'Show or hide these shortcuts']
 ];
@@ -949,6 +1083,7 @@ document.addEventListener('keydown', (event) => {
     else if (/^[1-6]$/.test(event.key)) { const role = roleIds[Number(event.key) - 1]; setAddRole(map.addKind === role ? null : role); }
     else if ((event.key === 'Enter' || event.key === 'F2') && state.selected?.kind === 'pin') rename(state.selected.id);
     else if (key === 'l' && state.selected?.kind === 'pin') startLinking(state.selected.id);
+    else if (key === 'v') cycleVehicles();
     else if (event.key.startsWith('Arrow')) nudge({ ArrowLeft: -1, ArrowRight: 1 }[event.key] ?? 0, { ArrowUp: -1, ArrowDown: 1 }[event.key] ?? 0, event.shiftKey);
     else if (key === 'f') fitNetwork();
     else if (event.key === '0') map.fit();
@@ -994,6 +1129,12 @@ function openMenu({ target, point, clientX, clientY }) {
     } else if (target?.kind === 'link') {
         const link = state.links.find((each) => each.id === target.id);
         if (link?.basis !== 'user') item('Make it mine (keep it as it is)', '', () => { checkpoint('keeping a suggested link'); link.basis = 'user'; networkChanged(); });
+        // The vehicles it runs on: every type that may take all the links selected.
+        const carrying = links.filter((each) => carriesVehicles(kindOfLink(each)));
+        const current = carrying.length === 1 ? linkVehicles(carrying[0])[0]?.type : null;
+        for (const type of state.vehicles.filter((each) => carrying.length && each.id !== current && carrying.every((each2) => typeAllowed(each, each2)))) {
+            item(`Carry ${carrying.length > 1 ? `${carrying.length} links` : 'it'} by ${type.name.toLowerCase()}`, 'V', () => carryBy(carrying, type.id));
+        }
         item(links.length > 1 ? `Delete ${links.length} links` : 'Delete', keys.delete, deleteSelected, { danger: true });
     } else {
         roleIds.forEach((role, index) => item(`Place a ${roles[role].label.toLowerCase()} here`, String(index + 1), () => addPin(role, point)));
@@ -1045,13 +1186,17 @@ function renderCard() {
         const pins = selectedPins();
         const links = selectedLinks();
         card.dataset.for = state.selection.map((item) => item.id).join('|');
+        const carrying = links.filter((link) => carriesVehicles(kindOfLink(link)));
+        const offered = state.vehicles.filter((type) => carrying.every((link) => typeAllowed(type, link)));
         card.innerHTML = `
             <h3>${[pins.length ? `${pins.length} site${pins.length === 1 ? '' : 's'}` : '', links.length ? `${links.length} link${links.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ')} selected</h3>
             <div class="detail">${escape(pins.map((item) => item.name).join(', '))}</div>
+            ${carrying.length ? `<div class="field"><label for="carryAll">Carry ${carrying.length === links.length ? 'them' : `the ${carrying.length} that run on vehicles`} by</label><select id="carryAll" title="V gives them the next type"><option value="">choose a vehicle</option>${offered.map((type) => `<option value="${escape(type.id)}">${escape(type.name)}</option>`).join('')}</select></div>` : ''}
             <div class="row">${pins.length ? `<button class="button small" type="button" id="duplicateSelection" title="${keys.duplicate}">Duplicate</button><button class="button small" type="button" id="fitSelection" title="F">Fit the map to them</button>` : ''}<button class="button small danger" type="button" id="deleteSelection" title="${keys.delete}">Delete</button></div>
             <div class="detail">Drag any of them on the map to move them together; the arrow keys move them too. Shift-click to add or take out one.</div>`;
         $('#duplicateSelection')?.addEventListener('click', duplicateSelected);
         $('#fitSelection')?.addEventListener('click', fitNetwork);
+        $('#carryAll')?.addEventListener('change', (event) => { if (event.target.value) carryBy(carrying, event.target.value); });
         $('#deleteSelection').addEventListener('click', deleteSelected);
         return;
     }
@@ -1077,7 +1222,7 @@ function renderCard() {
             <input type="text" id="pinName" value="${escape(pin.name)}" aria-label="Name">
             ${roles[pin.role].fields.map((field) => {
                 const value = pin.fields[field.key] ?? {};
-                const placeholder = field.key === 'teuPerDay' ? (found?.activity ? 'from PortWatch' : `${number(state.portVolume ?? 100)} assumed`) : '';
+                const placeholder = field.key === 'teuPerDay' ? (found?.activity ? 'from PortWatch' : `${number(state.portVolume ?? 100)} assumed`) : field.key === 'capacity' ? 'no limit' : '';
                 return `<div class="field"><label for="field-${field.key}">${escape(field.label)}</label><span><input type="number" min="0" step="any" id="field-${field.key}" data-field="${field.key}" value="${value.value ?? ''}" placeholder="${escape(placeholder)}"> <span class="muted">${escape(field.unit)}</span></span><span class="basis ${value.basis ?? ''}">${escape(basisLabel[value.basis] ?? '')}</span></div><div class="detail">${escape(field.detail)}</div>`;
             }).join('')}
             <div class="detail road">${escape(roadText(pin))}</div>
@@ -1113,6 +1258,8 @@ function renderCard() {
         $('#duplicatePin').addEventListener('click', duplicateSelected);
         $('#deletePin').addEventListener('click', deleteSelected);
     } else if (link) {
+        // Being typed in: keep the fields as they are.
+        if (card.dataset.for === link.id && card.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
         card.dataset.for = link.id;
         const from = pinById(link.from);
         const to = pinById(link.to);
@@ -1122,13 +1269,59 @@ function renderCard() {
             <h3>${escape(from?.name)} → ${escape(to?.name)}</h3>
             <div class="detail">${leg ? `${number(leg.kilometres, 1)} km, ${number(leg.hours, 1)} h ${legHow(leg)}.` : 'Not routed yet.'} ${link.basis === 'user' ? 'Your link.' : 'Suggested.'}</div>
             ${unused ? `<div class="detail">Left out of the model: it ${escape(unused.why)}.</div>` : ''}
+            ${renderLinkVehicles(link)}
             <div class="row">${link.basis === 'user' ? '' : '<button class="button small" type="button" id="keepLink">Make it mine</button>'}<button class="button small danger" type="button" id="deleteLink" title="${keys.delete}">Delete</button></div>
             <div class="detail">Drag either end on the map to another site to move it.</div>`;
         $('#keepLink')?.addEventListener('click', () => { checkpoint('keeping a suggested link'); link.basis = 'user'; networkChanged(); });
         $('#deleteLink').addEventListener('click', deleteSelected);
+        wireLinkVehicles(link);
     } else {
         card.dataset.for = '';
     }
+}
+
+// A link's vehicles on its card: each type it runs on, with its fleet (empty: sized by the toolbox, as the last build
+// sized it), a second type to add or take off; or why it has none.
+function renderLinkVehicles(link) {
+    const kind = kindOfLink(link);
+    if (kind === 'customerArea') return '<div class="detail">Delivered by a parcel or courier service: no vehicles of its own.</div>';
+    if (!carriesVehicles(kind)) return '';
+    const carried = linkVehicles(link);
+    const lane = state.built?.lanes?.find((item) => item.from === pinById(link.from)?.name && (item.site ?? item.to) === pinById(link.to)?.name);
+    const sized = (index) => lane?.vehicles?.[index] && lane.vehicles[index].type === carried[index].type ? `auto (${number(lane.vehicles[index].fleet)})` : 'auto';
+    const row = (item, index) => `<div class="field vehicleChoice">
+            <select data-link-vehicle="${index}" aria-label="${index ? 'Second vehicle type' : 'Vehicle type'}" title="V gives it the next type">${state.vehicles.map((type) => `<option value="${escape(type.id)}" ${type.id === item.type ? 'selected' : ''} ${typeAllowed(type, link) ? '' : 'disabled'}>${escape(type.name)}${typeAllowed(type, link) ? '' : ' (not to stores)'}</option>`).join('')}</select>
+            <span><input type="number" min="0" step="1" data-link-fleet="${index}" value="${item.fleet ?? ''}" placeholder="${escape(sized(index))}" aria-label="How many"> <span class="muted">vehicles</span></span>
+            <span class="basis ${item.fleet === null ? 'assumed' : 'user'}">${item.fleet === null ? 'sized' : 'yours'}</span>
+            ${index ? `<button class="link remove" type="button" data-link-vehicle-remove title="Take this type off the link" aria-label="Take ${escape(typeNamed(item.type)?.name ?? '')} off the link">✕</button>` : ''}
+        </div>`;
+    return `<div class="links"><b>Vehicles</b>${carried.map(row).join('')}
+        ${carried.length < typesPerLink && state.vehicles.length > 1 ? '<button class="link" type="button" id="addLinkVehicle">+ a second type</button>' : ''}
+        <div class="detail">Empty: as many as its flow needs, plus a reserve. Two types share its loads by their capacity.</div></div>`;
+}
+function wireLinkVehicles(link) {
+    const card = $('#selectionCard');
+    const ends = `${pinById(link.from)?.name} → ${pinById(link.to)?.name}`;
+    card.querySelectorAll('[data-link-vehicle]').forEach((choice) => choice.addEventListener('change', () => {
+        const index = Number(choice.dataset.linkVehicle);
+        changeLinkVehicles(link, (carried) => {
+            carried[index] = { type: choice.value, fleet: null };
+            // The same type twice is one type.
+            if (carried.length === 2 && carried[0].type === carried[1].type) carried.splice(1, 1);
+        }, `choosing the vehicles of ${ends}`);
+    }));
+    card.querySelectorAll('[data-link-fleet]').forEach((input) => input.addEventListener('change', () => {
+        const index = Number(input.dataset.linkFleet);
+        const value = input.value === '' ? null : Math.max(0, Math.round(Number(input.value)));
+        changeLinkVehicles(link, (carried) => { carried[index].fleet = Number.isFinite(value) ? value : null; }, `changing the fleet of ${ends}`);
+    }));
+    card.querySelector('[data-link-vehicle-remove]')?.addEventListener('click', () => changeLinkVehicles(link, (carried) => carried.splice(1, 1), `taking a vehicle off ${ends}`));
+    $('#addLinkVehicle')?.addEventListener('click', () => {
+        const carried = linkVehicles(link);
+        const other = state.vehicles.find((type) => typeAllowed(type, link) && !carried.some((item) => item.type === type.id));
+        if (!other) { refuse('Every vehicle type that may take this link already does.'); return; }
+        changeLinkVehicles(link, (list) => list.push({ type: other.id, fleet: null }), `adding a vehicle to ${ends}`);
+    });
 }
 
 function renamePin(pin, text) {
@@ -1413,12 +1606,12 @@ async function build({ focus = false } = {}) {
     try {
         if (state.router) routeLinks(state.pins, state.links, state.router);
         // The host accepts 2 MB of options: a large network's roads are left out, and its lanes drawn straight.
-        let network = networkSelection(state.pins, state.links);
+        let network = networkSelection(state.pins, state.links, { catalogue: state.vehicles });
         const straight = JSON.stringify(network).length > maximumNetworkBytes;
-        if (straight) network = networkSelection(state.pins, state.links, { paths: false });
+        if (straight) network = networkSelection(state.pins, state.links, { paths: false, catalogue: state.vehicles });
         const answer = await call(api.runImport(importerId, {
             step: 'buildNetwork', ...(state.bbox ? { bbox: state.bbox } : {}), network,
-            settings: { portTeuPerDay: state.portVolume, arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(), operator: $('#operatorSelect').value || null, standbyPorts: [...state.standby] }
+            settings: { portTeuPerDay: state.portVolume, arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(), operator: null, standbyPorts: [...state.standby] }
         }));
         if (!answer.imported) throw new Error((answer.report?.errors ?? ['The model could not be built.']).join(' '));
         state.built = answer.data;
@@ -1477,9 +1670,9 @@ function renderFlows() {
         }) ?? null,
         // One scale for both views: the busiest corridor as built.
         scale: during ? Math.max(1, ...built.corridors.map((corridor) => corridor.rate)) : null,
-        lanes: built.lanes.filter((lane) => positions.has(lane.from) && positions.has(lane.to)).map((lane) => ({
-            from: positions.get(lane.from), to: positions.get(lane.to), rate: lane.rate,
-            title: `${lane.name}: ${number(lane.rate, 1)} TEU/day, ${number(lane.kilometres, 1)} km, ${number(lane.leadTime * 24, 1)} h, ${trucksOf(lane)} trucks${lane.operator ? ` (${built.operator.name})` : ''}`
+        lanes: built.lanes.filter((lane) => positions.has(lane.from) && positions.has(lane.site ?? lane.to)).map((lane) => ({
+            from: positions.get(lane.from), to: positions.get(lane.site ?? lane.to), rate: lane.rate,
+            title: `${laneEnds(lane)}: ${number(lane.rate, 1)} ${goods()}/day, ${number(lane.kilometres, 1)} km, ${number(lane.leadTime * 24, 1)} h, ${trucksOf(lane)}${lane.vehicles ? '' : ' trucks'}${lane.operator ? ` (${built.operator.name})` : ''}`
         })),
         // Who serves whom is drawn by the links themselves.
         serves: []
@@ -1494,12 +1687,12 @@ function renderBuilt() {
     const bases = ['assumed', 'synthetic', 'user'].filter((basis) => count(basis)).map((basis) => `${count(basis)} ${basis === 'user' ? 'yours' : basis}`);
     $('#buildResult').innerHTML = `
         <table>
-            <thead><tr><th>Road lane</th><th class="number">TEU/day</th><th class="number">km</th><th class="number">hours</th><th class="number" title="${built.operator ? `${escape(built.operator.trucks.map((truck) => truck.label).join(' + '))}` : 'Trucks of the first size'}">trucks</th></tr></thead>
-            <tbody>${built.lanes.map((lane) => `<tr><td>${escape(lane.from)} → ${escape(lane.to)} <span class="basis ${lane.basis === 'routed' ? '' : 'assumed'}">${basisLabel[lane.basis]}</span>${lane.operator ? ` <span class="basis ${built.operator.synthetic ? 'synthetic' : 'user'}">operator</span>` : ''}${lane.standby ? ' <span class="basis" title="Carries nothing until cargo is diverted to its port">standby</span>' : ''}</td><td class="number">${number(lane.rate, 1)}</td><td class="number">${number(lane.kilometres, 1)}</td><td class="number">${number(lane.leadTime * 24, 1)}</td><td class="number">${trucksOf(lane)}</td></tr>`).join('')}</tbody>
+            <thead><tr><th>Road lane</th><th class="number">${goods()}/day</th><th class="number">km</th><th class="number">hours</th><th class="number" title="${built.operator ? `${escape(built.operator.trucks.map((truck) => truck.label).join(' + '))}` : built.vehicles ? 'Of each vehicle type it runs on' : 'Trucks of the first size'}">${built.vehicles ? 'vehicles' : 'trucks'}</th></tr></thead>
+            <tbody>${built.lanes.map((lane) => `<tr><td>${escape(laneEnds(lane))} <span class="basis ${lane.basis === 'routed' ? '' : 'assumed'}">${basisLabel[lane.basis]}</span>${lane.operator ? ` <span class="basis ${built.operator.synthetic ? 'synthetic' : 'user'}">operator</span>` : ''}${lane.standby ? ' <span class="basis" title="Carries nothing until cargo is diverted to its port">standby</span>' : ''}</td><td class="number">${number(lane.rate, 1)}</td><td class="number">${number(lane.kilometres, 1)}</td><td class="number">${number(lane.leadTime * 24, 1)}</td><td class="number">${trucksOf(lane)}</td></tr>`).join('')}</tbody>
         </table>
         ${renderOperator(built.operator)}
         <table>
-            <thead><tr><th>Store or customer area</th><th>Served from</th><th class="number">TEU/day</th></tr></thead>
+            <thead><tr><th>Store or customer area</th><th>Served from</th><th class="number">${goods()}/day</th></tr></thead>
             <tbody>${built.served.map((item) => `<tr><td>${escape(item.town)}</td><td>${escape(item.zone)}</td><td class="number">${number(item.demand, 1)}</td></tr>`).join('')}</tbody>
         </table>
         <details><summary>Where every value comes from (${built.provenance.length}${bases.length ? `; ${bases.join(', ')}` : ''})</summary>
@@ -1508,8 +1701,14 @@ function renderBuilt() {
         </details>`;
 }
 
-// A lane's trucks: of the first size, plus the second when it has any.
-const trucksOf = (lane) => (lane.fleet2 ? `${lane.fleet} + ${lane.fleet2}` : `${lane.fleet}`);
+// A lane's trucks: of the first size, plus the second when it has any; with vehicle types, each by its name.
+const trucksOf = (lane) => (lane.vehicles
+    ? lane.vehicles.map((item) => `${item.fleet} ${item.name.toLowerCase()}${item.fleet === 1 ? '' : 's'}`).join(' + ')
+    : lane.fleet2 ? `${lane.fleet} + ${lane.fleet2}` : `${lane.fleet}`);
+// What the model counts: pallets for a network with vehicle types, TEU for one built before them.
+const goods = () => state.built?.unit ?? 'TEU';
+// A lane's ends as the user named them: a store's lane ends at the store, not at its stock room's node.
+const laneEnds = (lane) => `${lane.from} → ${lane.site ?? lane.to}`;
 
 // The fleet operator: its trucks and costs, its depots, and each lane it carries with the capacity it has there
 // against what the lane's flow needs on the road.
@@ -1550,7 +1749,7 @@ function sessionState() {
         version: 2, place: state.place ? { display_name: state.place.display_name, boundingbox: state.place.boundingbox } : null,
         margin: $('#marginSelect').value, bbox: state.bbox, roadLevel: state.roadLevel, sample: Boolean(state.sample), portVolume: state.portVolume,
         // Links without their legs, which are routed again when the session is restored (from the same roads, the same legs).
-        pins: state.pins, links: state.links.map(({ id, from, to, basis }) => ({ id, from, to, basis })),
+        pins: state.pins, links: state.links.map(({ id, from, to, basis, vehicles }) => ({ id, from, to, basis, ...(vehicles ? { vehicles } : {}) })), vehicles: state.vehicles,
         dismissed: [...state.dismissed], suggestions: Object.keys(state.suggestions), available: [...state.available], listRole: state.listRole,
         built: state.built, keepInStep: $('#keepInStep').checked,
         arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(),
@@ -1640,8 +1839,11 @@ async function restoreSession() {
             state.savedChokepoint = saved.disruption.chokepoint ?? null;
         }
         state.built = null;
-        state.pins = saved.version === 2 ? saved.pins ?? [] : [];
+        // A session from before stock and vehicles: its pins get the figures they lack, and the default vehicles.
+        state.pins = (saved.version === 2 ? saved.pins ?? [] : []).map(completeFields);
         state.links = saved.version === 2 ? saved.links ?? [] : [];
+        state.vehicles = completeCatalogue(saved.vehicles);
+        renderVehicles();
         state.dismissed = new Set(saved.dismissed ?? []);
         state.listRole = saved.listRole ?? 'all';
         await loadRoads({ keepNetwork: true });
@@ -1686,7 +1888,7 @@ function setBusy(busy) {
     // Run waits too: a scenario asked for while the model is being built would otherwise be silently ignored.
     for (const selector of ['#fetchButton', '#sampleButton', '#sitesButton', '#searchButton', '#runScenarioButton', ...Object.keys(sources).map((source) => `[data-fetch-source="${source}"]`)]) $(selector).disabled = busy;
     if (!busy) showArea();
-    const errors = networkProblems(state.pins, state.links).filter((problem) => problem.level === 'error');
+    const errors = networkProblems(state.pins, state.links, state.vehicles).filter((problem) => problem.level === 'error');
     $('#buildButton').disabled = busy || errors.length > 0 || !state.pins.length;
 }
 
@@ -1765,14 +1967,14 @@ function renderDiversion() {
     state.savedDivertTo = null;
     const outside = builtPorts().filter((port) => !((sharesOf(port)[chokepoint] ?? 0) > 0));
     $('#divertToSelect').innerHTML = outside.length
-        ? outside.map((port) => `<option value="${escape(port.name)}">${escape(port.name)} (berths for ${number(port.berths ?? port.arrivals * 1.5)} TEU/day)</option>`).join('')
+        ? outside.map((port) => `<option value="${escape(port.name)}">${escape(port.name)} (berths for ${number(port.berths ?? port.arrivals * 1.5)} ${goods()}/day)</option>`).join('')
         : '<option value="">no kept port outside it</option>';
     if (previous && outside.some((port) => port.name === previous)) $('#divertToSelect').value = previous;
     // A second port: any other kept port outside the chokepoint.
     const previous2 = $('#divertToSelect2').value || state.savedDivertTo2;
     state.savedDivertTo2 = null;
     const others = outside.filter((port) => port.name !== $('#divertToSelect').value);
-    $('#divertToSelect2').innerHTML = others.map((port) => `<option value="${escape(port.name)}">${escape(port.name)} (berths for ${number(port.berths ?? port.arrivals * 1.5)} TEU/day)</option>`).join('');
+    $('#divertToSelect2').innerHTML = others.map((port) => `<option value="${escape(port.name)}">${escape(port.name)} (berths for ${number(port.berths ?? port.arrivals * 1.5)} ${goods()}/day)</option>`).join('');
     if (previous2 && others.some((port) => port.name === previous2)) $('#divertToSelect2').value = previous2;
     showDiversionRows();
 }
@@ -1880,14 +2082,17 @@ function renderScenarioChoices() {
     };
     // Busiest lanes first: closing one of them matters most.
     $('#closureLaneSelect').innerHTML = [...built.lanes].sort((a, b) => b.rate - a.rate)
-        .map((lane) => `<option value="${escape(lane.name)}">${escape(lane.from)} → ${escape(lane.to)} (${number(lane.rate)} TEU/day)</option>`).join('');
+        .map((lane) => `<option value="${escape(lane.name)}">${escape(laneEnds(lane))} (${number(lane.rate)} ${goods()}/day)</option>`).join('');
     keep('#closureLaneSelect', previous.lane);
     $('#fleetLanesSelect').innerHTML = (built.operator ? `<option value="operator">every lane ${escape(built.operator.name)} carries</option>` : '')
         + '<option value="all">every lane</option>'
-        + built.lanes.map((lane) => `<option value="lane:${escape(lane.name)}">${escape(lane.from)} → ${escape(lane.to)}</option>`).join('');
+        // With vehicle types: every lane a type runs on, as when vans or drivers of one kind are short.
+        + (built.vehicles ?? []).filter((type) => built.lanes.some((lane) => lane.vehicles?.some((item) => item.type === type.id)))
+            .map((type) => `<option value="type:${escape(type.id)}">every lane with ${escape(type.name.toLowerCase())}s</option>`).join('')
+        + built.lanes.map((lane) => `<option value="lane:${escape(lane.name)}">${escape(laneEnds(lane))}</option>`).join('');
     keep('#fleetLanesSelect', previous.fleet);
-    $('#demandTownsSelect').innerHTML = '<option value="all">every town</option>'
-        + [...(built.towns ?? [])].sort((a, b) => b.demand - a.demand).map((town) => `<option value="town:${escape(town.name)}">${escape(town.name)} (${number(town.demand, 1)} TEU/day)</option>`).join('');
+    $('#demandTownsSelect').innerHTML = `<option value="all">${built.stores ? 'every store, dark store and customer area' : 'every town'}</option>`
+        + [...(built.towns ?? [])].sort((a, b) => b.demand - a.demand).map((town) => `<option value="town:${escape(town.name)}">${escape(town.name)} (${number(town.demand, 1)} ${goods()}/day)</option>`).join('');
     keep('#demandTownsSelect', previous.towns);
     if (saved) {
         if (saved.closure) {
@@ -1914,6 +2119,7 @@ const fleetLanes = (choice) => {
     const lanes = state.built.lanes;
     if (choice === 'operator') return lanes.filter((lane) => lane.operator);
     if (choice === 'all') return lanes;
+    if (choice?.startsWith('type:')) return lanes.filter((lane) => lane.vehicles?.some((item) => `type:${item.type}` === choice));
     return lanes.filter((lane) => `lane:${lane.name}` === choice);
 };
 // A build saved before demand could be changed has no towns: rebuild to change it.
@@ -1930,18 +2136,18 @@ function renderScenarioHints() {
     if (lane) {
         const others = state.built.lanes.filter((item) => item.to === lane.to && item !== lane);
         $('#closureHint').textContent = {
-            wait: `${number(lane.leadTime * 24, 1)} h a trip today. ${lane.to}'s orders over it queue until it reopens.`,
+            wait: `${number(lane.leadTime * 24, 1)} h a trip today. ${lane.site ?? lane.to}'s orders over it queue until it reopens.`,
             detour: `${number(lane.leadTime * 24, 1)} h a trip today, over ${number(lane.kilometres)} km: the detour adds as many kilometres in proportion.`,
             otherPorts: others.length
-                ? `${lane.to} also orders over ${others.map((item) => `${item.from} (${number(item.rate)} TEU/day)`).join(', ')}, which ship${others.length === 1 ? 's' : ''} only what ${others.length === 1 ? 'its port holds' : 'their ports hold'}.`
-                : `${lane.to} has no other lane: its orders wait for the road to reopen.`
+                ? `${lane.site ?? lane.to} also orders over ${others.map((item) => `${item.from} (${number(item.rate)} ${goods()}/day)`).join(', ')}, which ship${others.length === 1 ? 's' : ''} only what ${others.length === 1 ? (lane.kind === 'store' ? 'its warehouse holds' : 'its port holds') : (lane.kind === 'store' ? 'their warehouses hold' : 'their ports hold')}.`
+                : `${lane.site ?? lane.to} has no other lane: its orders wait for the road to reopen.`
         }[mode];
     }
     const lanes = fleetLanes(settings.fleet.lanes);
     const trucks = lanes.reduce((sum, item) => sum + item.fleet + (item.fleet2 ?? 0), 0);
-    $('#fleetHint').textContent = `${lanes.length} lane${lanes.length === 1 ? '' : 's'} with ${number(trucks)} trucks.`;
+    $('#fleetHint').textContent = `${lanes.length} lane${lanes.length === 1 ? '' : 's'} with ${number(trucks)} ${state.built.vehicles ? 'vehicles' : 'trucks'}.`;
     const towns = demandTowns(settings.demand.towns);
-    $('#demandHint').textContent = `${towns.length} town${towns.length === 1 ? '' : 's'} ordering ${number(towns.reduce((sum, town) => sum + town.demand, 0), 1)} TEU/day.`;
+    $('#demandHint').textContent = `${towns.length} ${state.built.stores ? 'site' : 'town'}${towns.length === 1 ? '' : 's'} ordering ${number(towns.reduce((sum, town) => sum + town.demand, 0), 1)} ${goods()}/day.`;
 }
 for (const selector of ['#closureLaneSelect', '#closureModeSelect', '#fleetLanesSelect', '#demandTownsSelect']) $(selector).addEventListener('change', renderScenarioHints);
 
@@ -2004,12 +2210,13 @@ function chokepointRun(settings, start, runTime, status) {
     // Part of it lands at ports outside the chokepoint and is trucked inland from there.
     const diversion = diversionPlan({
         lanes: state.built.lanes, ports: state.built.ports, affected: reached,
-        targets: targets.map((target) => ({ to: target.to, diverted: target.diverted / 100, berths: target.berths })),
+        // The berths the user gives are in TEU a day, as a port counts them; the model may count pallets.
+        targets: targets.map((target) => ({ to: target.to, diverted: target.diverted / 100, berths: target.berths ? target.berths * (state.built.perTeu ?? 1) : target.berths })),
         cut: settings.cut / 100, trucksFound: settings.trucksFound / 100,
         start, duration: settings.days * day, forkAt: start, runTime, ...state.built.trucking
     });
     const byParameter = { ...diversion.supplied, vesselArrivals: { entities: [...supplied.entities, ...diversion.supplied.vesselArrivals.entities], samples: { ...supplied.samples, ...diversion.supplied.vesselArrivals.samples } }, baseDemand };
-    const port = (item) => `${item.to} (${number(item.teu)} TEU), whose berths take ${number(item.berths)} TEU/day`;
+    const port = (item) => `${item.to} (${number(item.teu)} ${goods()}), whose berths take ${number(item.berths)} ${goods()}/day`;
     const [first, second] = diversion.targets;
     const where = `${Math.round(first.diverted * 100)}% of it is diverted to ${port(first)}${second ? `, and ${Math.round(second.diverted * 100)}% to ${port(second)};` : ', and'}`;
     const unreachable = diversion.unreachable;
@@ -2032,24 +2239,26 @@ function scenarioRun(id, start, runTime, status) {
         const lane = state.built.lanes.find((item) => item.name === settings.closure.lane);
         const what = mode === 'detour'
             ? `on a detour ${days}: ${number(plan.detour.hours, 1)} h and ${number(plan.detour.kilometres)} km more each way`
-            : `${open > 0 ? `restricted to ${settings.closure.open}% of its loads` : 'closed'} ${days}: ${number(plan.teuPerDay)} TEU a day it no longer carries${plan.reroutedTo.length ? `, ordered from ${state.built.lanes.filter((item) => plan.reroutedTo.includes(item.name)).map((item) => item.from).join(' and ')} instead` : ', its orders waiting for the road to reopen'}`;
-        return { supplied: { byParameter: plan.supplied }, lanes: plan.supplied.orderShare.entities, describe: `${lane.from} → ${lane.to} ${what}.` };
+            : `${open > 0 ? `restricted to ${settings.closure.open}% of its loads` : 'closed'} ${days}: ${number(plan.teuPerDay, 1)} ${goods()} a day it no longer carries${plan.reroutedTo.length ? `, ordered from ${state.built.lanes.filter((item) => plan.reroutedTo.includes(item.name)).map((item) => item.from).join(' and ')} instead` : ', its orders waiting for the road to reopen'}`;
+        return { supplied: { byParameter: plan.supplied }, lanes: plan.supplied.orderShare.entities, describe: `${laneEnds(lane)} ${what}.` };
     }
     if (id === 'fleetChange') {
         const lanes = fleetLanes(settings.fleet.lanes);
         const plan = fleetPlan({ lanes, change: settings.fleet.change / 100, ...common });
-        const which = settings.fleet.lanes === 'operator' ? `on the lanes ${state.built.operator.name} carries` : settings.fleet.lanes === 'all' ? 'on every lane' : `on ${lanes[0].from} → ${lanes[0].to}`;
+        const type = settings.fleet.lanes?.startsWith('type:') ? (state.built.vehicles ?? []).find((item) => `type:${item.id}` === settings.fleet.lanes) : null;
+        const which = settings.fleet.lanes === 'operator' ? `on the lanes ${state.built.operator.name} carries` : settings.fleet.lanes === 'all' ? 'on every lane' : type ? `on every lane with ${type.name.toLowerCase()}s` : `on ${laneEnds(lanes[0])}`;
         return {
             supplied: { byParameter: plan.supplied }, lanes: lanes.map((lane) => lane.name),
-            describe: `Trucks ${which} changed by ${settings.fleet.change > 0 ? '+' : ''}${settings.fleet.change}% ${days}: ${number(plan.trucks.before)} to ${number(plan.trucks.after)}.`
+            describe: `${state.built.vehicles ? 'Vehicles' : 'Trucks'} ${which} changed by ${settings.fleet.change > 0 ? '+' : ''}${settings.fleet.change}% ${days}: ${number(plan.trucks.before)} to ${number(plan.trucks.after)}.`
         };
     }
     const towns = demandTowns(settings.demand.towns);
     const plan = demandPlan({ towns, change: settings.demand.change / 100, ...common });
     const servedBy = new Set(state.built.served.filter((item) => towns.some((town) => town.name === item.town)).map((item) => item.zone));
     return {
-        supplied: { byParameter: plan.supplied }, lanes: state.built.lanes.filter((lane) => servedBy.has(lane.to)).map((lane) => lane.name),
-        describe: `Demand ${settings.demand.change > 0 ? 'up' : 'down'} ${Math.abs(settings.demand.change)}% in ${settings.demand.towns === 'all' ? 'every town' : towns[0].name} ${days}: ${number(Math.abs(plan.extraTeu))} TEU ${settings.demand.change > 0 ? 'more' : 'fewer'} ordered.`
+        // The lanes into the warehouses that serve them, and those to the stores themselves.
+        supplied: { byParameter: plan.supplied }, lanes: state.built.lanes.filter((lane) => servedBy.has(lane.to) || towns.some((town) => town.name === lane.site)).map((lane) => lane.name),
+        describe: `Demand ${settings.demand.change > 0 ? 'up' : 'down'} ${Math.abs(settings.demand.change)}% in ${settings.demand.towns === 'all' ? (state.built.stores ? 'every store, dark store and customer area' : 'every town') : towns[0].name} ${days}: ${number(Math.abs(plan.extraTeu))} ${goods()} ${settings.demand.change > 0 ? 'more' : 'fewer'} ordered.`
     };
 }
 
@@ -2123,7 +2332,7 @@ api?.onProgress?.((progress) => {
 
 // ---- the scenarios: what a run showed --------------------------------------------------------------------------------
 
-const summarySignals = ['arrived', 'queue', 'waitDays', 'stock', 'backlog', 'delivered', 'ordered', 'arriving', 'utilisation', 'transportCost', 'fleetCost', 'holdingCost', 'backlogCost'];
+const summarySignals = ['arrived', 'queue', 'waitDays', 'stock', 'spaceUsed', 'backlog', 'delivered', 'ordered', 'arriving', 'utilisation', 'transportCost', 'fleetCost', 'holdingCost', 'backlogCost'];
 
 // What the run showed, from the day the scenario starts to the end of the run, kept small enough to save with the
 // session: the share of orders delivered, how long an order waited and the costs, per port the longest anchorage wait,
@@ -2161,7 +2370,9 @@ function summariseRun(answer, id, run, start, duration) {
     const total = (series, names, symbol) => names.reduce((sum, name) => sum + grew(series[name]?.[symbol]), 0);
     const townNames = [...new Set(built.served.map((item) => item.town))];
     const laneNames = built.lanes.map((lane) => lane.name);
-    const warehouseNames = [...new Set(built.lanes.map((lane) => lane.to))];
+    // Warehouses are where supply lanes end; a store's stock room is where its own lane ends.
+    const warehouseNames = [...new Set(built.lanes.filter((lane) => lane.kind !== 'store').map((lane) => lane.to))];
+    const stores = built.stores ?? [];
     const days = (built.days * day - start) / day;
     const sampleSpark = (series, startTime, count = 12) => {
         if (!series || !series.length) return [];
@@ -2183,7 +2394,7 @@ function summariseRun(answer, id, run, start, duration) {
             wait: both((series) => townNames.reduce((sum, name) => sum + area(series[name]?.backlog), 0) / Math.max(1e-9, total(series, townNames, 'ordered'))),
             transport: both((series) => total(series, laneNames, 'transportCost')),
             fleet: both((series) => total(series, laneNames, 'fleetCost')),
-            holding: both((series) => total(series, warehouseNames, 'holdingCost')),
+            holding: both((series) => total(series, [...warehouseNames, ...stores.map((item) => item.stock)], 'holdingCost')),
             backlog: both((series) => total(series, townNames, 'backlogCost'))
         },
         ports: built.ports.map((port) => ({
@@ -2199,7 +2410,20 @@ function summariseRun(answer, id, run, start, duration) {
             const low = extreme(scenario[name]?.stock, (value, best) => value < best);
             return {
                 name, baseline: extreme(baseline[name]?.stock, (value, best) => value < best)[1], low: low[1], day: low[0] / day,
+                // Its fullest, as a share of its storage capacity (a model built before capacities has none).
+                space: scenario[name]?.spaceUsed ? { baseline: extreme(baseline[name]?.spaceUsed, (value, best) => value > best)[1], scenario: extreme(scenario[name]?.spaceUsed, (value, best) => value > best)[1] } : null,
                 scenPts: sampleSpark(scenario[name]?.stock, start), basePts: sampleSpark(baseline[name]?.stock, start)
+            };
+        }),
+        // Each store's lowest stock, and how long it sold nothing for want of stock (under a tenth of a day's sales).
+        stores: stores.map((item) => {
+            const low = extreme(scenario[item.stock]?.stock, (value, best) => value < best);
+            const empty = (series) => from(series).filter((point) => point[1] < 0.1 * item.demand * 0.1).length;
+            const step = (series) => { const points = from(series); return points.length > 1 ? (points.at(-1)[0] - points[0][0]) / (points.length - 1) / day : 0; };
+            return {
+                name: item.name, baseline: extreme(baseline[item.stock]?.stock, (value, best) => value < best)[1], low: low[1], day: low[0] / day,
+                emptyDays: { baseline: empty(baseline[item.stock]?.stock) * step(baseline[item.stock]?.stock), scenario: empty(scenario[item.stock]?.stock) * step(scenario[item.stock]?.stock) },
+                scenPts: sampleSpark(scenario[item.stock]?.stock, start), basePts: sampleSpark(baseline[item.stock]?.stock, start)
             };
         }),
         towns: townNames.map((name) => {
@@ -2251,7 +2475,7 @@ function renderScenarioResult() {
                 ${[['transport', 'Transport cost'], ['fleet', 'Fleet cost'], ['holding', 'Holding cost'], ['backlog', 'Backlog cost']].map(([key, label]) => `<tr><td>${label}</td><td${worse(result.totals[key].scenario, result.totals[key].baseline)}>${number(result.totals[key].scenario)}</td><td class="number">${number(result.totals[key].baseline)}</td></tr>`).join('')}
             </tbody></table>` : '';
     const ports = id.startsWith('chokepoint') ? `
-        <table><thead><tr><th>Port</th><th class="number">Kept out (TEU)</th><th class="number">arrived later</th><th class="number">never arrived</th>${result.diversion ? '<th class="number">diverted here</th>' : ''}</tr></thead>
+        <table><thead><tr><th>Port</th><th class="number">Kept out (${goods()})</th><th class="number">arrived later</th><th class="number">never arrived</th>${result.diversion ? '<th class="number">diverted here</th>' : ''}</tr></thead>
             <tbody>${result.ports.map((port) => {
                 const affected = result.affected.find((item) => item.port === port.name);
                 // A port the cut does not reach keeps nothing out; one that gains (the port cargo is diverted to) shows it received.
@@ -2264,16 +2488,22 @@ function renderScenarioResult() {
         <table><thead><tr><th>Port</th><th class="number">Longest wait (days)</th><th class="number">baseline</th></tr></thead>
             <tbody>${result.ports.map((port) => `<tr><td>${escape(port.name)}</td><td${worse(port.wait.scenario, port.wait.baseline, { noise: 0.01 })}>${number(port.wait.scenario, 2)}</td><td class="number">${number(port.wait.baseline, 2)}</td></tr>`).join('')}</tbody></table>` : '';
     const lanes = result.lanes?.length ? `
-        <table><thead><tr><th>Lane</th><th class="number">TEU/day carried</th><th class="number">baseline</th><th class="number">trucks busy, peak</th></tr></thead>
+        <table><thead><tr><th>Lane</th><th class="number">${goods()}/day carried</th><th class="number">baseline</th><th class="number">${state.built?.vehicles ? 'vehicles' : 'trucks'} busy, peak</th></tr></thead>
             <tbody>${result.lanes.map((lane) => `<tr><td>${escape(lane.name.replace(/^Road /, ''))}</td><td class="number">${number(lane.carried.scenario, 1)}</td><td class="number">${number(lane.carried.baseline, 1)}</td><td${worse(lane.busiest.scenario, lane.busiest.baseline, { noise: 0.01 })}>${percent(lane.busiest.scenario)}</td></tr>`).join('')}</tbody></table>` : '';
     const towns = [...result.towns].sort((a, b) => (b.peak - b.baseline) - (a.peak - a.baseline)).slice(0, 8);
+    // Warehouses with a storage capacity show how full they got; stores, those that ran lowest first.
+    // (A warehouse with no limit has a capacity too large to count: its space used stays near nothing.)
+    const spaceShown = result.warehouses.some((item) => item.space?.scenario > 0.001);
+    const storeRows = [...(result.stores ?? [])].sort((a, b) => (b.emptyDays.scenario - a.emptyDays.scenario) || (a.low / Math.max(a.baseline, 1e-9) - b.low / Math.max(b.baseline, 1e-9))).slice(0, 8);
     $('#scenarioResult').innerHTML = `
         <p class="small">${escape(describe)}</p>
         ${result.clamped?.length ? notice('warning', `Some of the values this scenario supplied lie outside what the model allows, and were held to its limits, so the run differs from what was asked: ${result.clamped.join('; ')}.`) : ''}
         ${totals}${ports}${waits}${lanes}
-        <table><thead><tr><th>Warehouse</th><th class="number">Lowest stock</th><th class="number">baseline</th><th class="number">day</th></tr></thead>
-            <tbody>${result.warehouses.map((item) => `<tr><td><div class="nameWithSpark"><span>${escape(item.name)}</span>${drawSpark(item.scenPts, item.basePts, { stroke: 'var(--warn)' })}</div></td><td${worse(item.low, item.baseline, { lowerIsWorse: true })}>${number(item.low)}</td><td class="number">${number(item.baseline)}</td><td class="number">${number(item.day, 1)}</td></tr>`).join('')}</tbody></table>
-        <table><thead><tr><th>Town</th><th class="number">Highest backlog</th><th class="number">baseline</th><th class="number">day</th></tr></thead>
+        <table><thead><tr><th>Warehouse</th><th class="number">Lowest stock</th><th class="number">baseline</th><th class="number">day</th>${spaceShown ? '<th class="number" title="Its stock at its fullest, as a share of its storage capacity: above 100%, goods ordered before demand fell arrived with no room for them">fullest</th>' : ''}</tr></thead>
+            <tbody>${result.warehouses.map((item) => `<tr><td><div class="nameWithSpark"><span>${escape(item.name)}</span>${drawSpark(item.scenPts, item.basePts, { stroke: 'var(--warn)' })}</div></td><td${worse(item.low, item.baseline, { lowerIsWorse: true })}>${number(item.low)}</td><td class="number">${number(item.baseline)}</td><td class="number">${number(item.day, 1)}</td>${spaceShown ? (item.space?.scenario > 0.001 ? `<td${item.space.scenario > 1.005 ? ' class="number worse"' : ' class="number"'}>${percent(item.space.scenario)}</td>` : '<td class="number muted">no limit</td>') : ''}</tr>`).join('')}</tbody></table>
+        ${storeRows.length ? `<table><thead><tr><th>Store</th><th class="number">Lowest stock</th><th class="number">baseline</th><th class="number" title="Days its shelves were all but empty since the scenario began">days empty</th></tr></thead>
+            <tbody>${storeRows.map((item) => `<tr><td><div class="nameWithSpark"><span>${escape(item.name)}</span>${drawSpark(item.scenPts, item.basePts, { stroke: 'var(--warn)' })}</div></td><td${worse(item.low, item.baseline, { lowerIsWorse: true, noise: 0.05 })}>${number(item.low, 1)}</td><td class="number">${number(item.baseline, 1)}</td><td${worse(item.emptyDays.scenario, item.emptyDays.baseline, { noise: 0.04 })}>${number(item.emptyDays.scenario, 1)}</td></tr>`).join('')}</tbody></table>` : ''}
+        <table><thead><tr><th>${state.built?.stores ? 'Shoppers waiting' : 'Town'}</th><th class="number">Highest backlog</th><th class="number">baseline</th><th class="number">day</th></tr></thead>
             <tbody>${towns.map((item) => `<tr><td><div class="nameWithSpark"><span>${escape(item.name)}</span>${drawSpark(item.scenPts, item.basePts, { stroke: 'var(--danger)' })}</div></td><td${worse(item.peak, item.baseline)}>${number(item.peak)}</td><td class="number">${number(item.baseline)}</td><td class="number">${number(item.day, 1)}</td></tr>`).join('')}</tbody></table>
         <p class="muted small">Costs are in the model's cost units, counted from the day the scenario starts. The forked run is in the canvas beside the baseline; Show in Konjugate brings it forward.</p>`;
 }

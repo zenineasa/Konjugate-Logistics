@@ -239,3 +239,16 @@ td.better { color: var(--ok); font-weight: 600; }
 .card .links .remove { margin-left: auto; color: var(--muted); }
 .card .links select { width: 100%; padding: 3px 6px; font-size: 12px; }
 #map .selectBox { fill: rgba(56, 189, 248, 0.08); stroke: var(--accent); stroke-dasharray: 4 3; pointer-events: none; }
+
+/* A link's vehicles on its card: the type, how many and whose figure; and the vehicle catalogue in the Network step. */
+.card .links .vehicleChoice { grid-template-columns: 1fr auto auto auto; }
+.card .links .vehicleChoice select { width: 100%; }
+.card .links .vehicleChoice input[type="number"] { width: 64px; }
+.vehicles { list-style: none; padding: 0; margin: 6px 0; }
+.vehicles .vehicle { background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px 10px; margin: 6px 0; font-size: 12px; }
+.vehicles .vehicle .row { display: flex; gap: 6px; align-items: center; }
+.vehicles .vehicle input[type="text"] { flex: 1; min-width: 0; }
+.vehicles .vehicle .remove { color: var(--muted); }
+.vehicles .vehicle .field { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; margin: 3px 0; }
+.vehicles .vehicle .field input[type="number"] { width: 80px; }
+.vehicles .vehicle .field .basis { min-width: 54px; text-align: right; }

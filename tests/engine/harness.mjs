@@ -17,6 +17,33 @@ const { decodeValidationReport } = await import(pathToFileURL(konjugateModule('s
 
 export const day = 86400;
 export const executable = process.argv[2] ?? konjugateModule(join('out', 'engine', process.platform === 'win32' ? 'konjugateEngine.exe' : 'konjugateEngine'));
+// KONJUGATE_ENGINE=export runs the model as Konjugate's code export writes it, a standalone Python program that
+// follows the engine step for step (Konjugate checks this in its codeExportFidelity test): for a machine with no
+// engine build of its own. Validation is then the equation checks the model builder already made.
+const useExport = process.env.KONJUGATE_ENGINE === 'export';
+
+async function runExported(directory, name, document, days) {
+    const { generateStandaloneProgram, buildModel } = await import(pathToFileURL(konjugateModule('src/codeExport.mjs')));
+    const sourcePath = join(directory, `${name}Model.py`);
+    const outputPath = join(directory, `${name}.csv`);
+    await writeFile(sourcePath, generateStandaloneProgram(document, 'python'));
+    const run = (command, args) => new Promise((resolve, reject) => {
+        const child = spawn(command, args, { stdio: ['ignore', 'ignore', 'inherit'] });
+        child.once('error', reject);
+        child.once('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${name}: ${command} exited with ${code}.`))));
+    });
+    await run(process.env.PYTHON ?? 'python3', ['-I', sourcePath, '--target-time', String(days * day), '--output', outputPath]);
+    const rows = (await readFile(outputPath, 'utf8')).trim().split('\n').slice(1).map((line) => line.split(',').map(Number));
+    const columns = new Map();
+    let column = 1;
+    for (const plan of buildModel(document).nodePlans) for (const state of plan.node.states) columns.set(`${plan.node.name}.${state.symbol}`, column++);
+    const series = (key) => {
+        if (!columns.has(key)) throw new Error(`${name}: no state ${key}.`);
+        const index = columns.get(key);
+        return rows.map((row) => row[index]);
+    };
+    return { name, document, series };
+}
 
 function execute(args) {
     return new Promise((resolve, reject) => {
@@ -28,6 +55,7 @@ function execute(args) {
 
 // Validates and runs `document` for `days`, in `directory`; returns { series(key) } of "Node.state" values, hourly.
 export async function runDocument(directory, name, document, days) {
+    if (useExport) return runExported(directory, name, document, days);
     const inputPath = join(directory, `${name}.kjt`);
     const reportPath = join(directory, `${name}.report`);
     const outputPath = join(directory, `${name}.kjr`);
@@ -50,6 +78,9 @@ export async function runDocument(directory, name, document, days) {
 }
 
 export const sum = (arrays) => arrays[0].map((_, index) => arrays.reduce((total, values) => total + values[index], 0));
+// What a sum of series may drift by: rounding only. An exported program writes ten significant digits, so a sum of
+// large values may drift by a few billionths of their size.
+export const tolerance = (arrays) => 1e-6 + (useExport ? 1e-9 * arrays.reduce((total, values) => total + Math.max(...values.map(Math.abs)), 0) : 0);
 export const maxDrift = (values) => Math.max(...values.map((value) => Math.abs(value - values[0])));
 export const hour = (days) => Math.round(days * 24);
 
@@ -61,15 +92,17 @@ export function checkInvariants({ name, document, series }, { fleetsChange = fal
     const towns = ofType('Demand zone');
     assert.ok(ports.length && lanes.length && warehouses.length && towns.length, `${name}: the model has every kind of node.`);
     const loaded = (lane) => sum(['loaded1', 'loaded2', 'loaded3'].map((stage) => series(`${lane}.${stage}`)));
-    const containers = sum([
+    const goods = [
         ...ports.flatMap((port) => [series(`${port}.queue`), series(`${port}.stock`), series(`${port}.arrived`).map((value) => -value)]),
         ...lanes.map(loaded), ...warehouses.map((warehouse) => series(`${warehouse}.stock`)), ...towns.map((town) => series(`${town}.delivered`))
-    ]);
-    assert.ok(maxDrift(containers) < 1e-6, `${name}: goods must be conserved (drift ${maxDrift(containers)}).`);
+    ];
+    const containers = sum(goods);
+    assert.ok(maxDrift(containers) < tolerance(goods), `${name}: goods must be conserved (drift ${maxDrift(containers)}).`);
     for (const lane of fleetsChange ? [] : lanes) {
         for (const size of ['', '2']) {
-            const trucks = sum([series(`${lane}.idleTrucks${size}`), series(`${lane}.returning${size}`), series(`${lane}.loadedTrucks${size}`)]);
-            assert.ok(maxDrift(trucks) < 1e-6, `${name}: ${lane} must keep its trucks${size ? ' of the second size' : ''} (drift ${maxDrift(trucks)}).`);
+            const parts = [series(`${lane}.idleTrucks${size}`), series(`${lane}.returning${size}`), series(`${lane}.loadedTrucks${size}`)];
+            const trucks = sum(parts);
+            assert.ok(maxDrift(trucks) < tolerance(parts), `${name}: ${lane} must keep its trucks${size ? ' of the second size' : ''} (drift ${maxDrift(trucks)}).`);
         }
     }
     const nodeName = new Map(document.nodes.map((node) => [node.id, node.name]));
@@ -77,9 +110,10 @@ export function checkInvariants({ name, document, series }, { fleetsChange = fal
         const itsLanes = [...new Set(document.edges
             .filter((edge) => nodeName.get(edge.target.nodeId) === warehouse && lanes.includes(nodeName.get(edge.source.nodeId)))
             .map((edge) => nodeName.get(edge.source.nodeId)))];
-        const pipeline = sum(itsLanes.flatMap((lane) => [series(`${lane}.requested`), loaded(lane)]));
-        const gap = series(`${warehouse}.onOrder`).map((value, index) => value - pipeline[index]);
-        assert.ok(maxDrift(gap) < 1e-6 && Math.abs(gap[0]) < 1e-6, `${name}: ${warehouse} on order must match its lanes (drift ${maxDrift(gap)}).`);
+        const parts = [series(`${warehouse}.onOrder`), ...itsLanes.flatMap((lane) => [series(`${lane}.requested`), loaded(lane)])];
+        const pipeline = sum(parts.slice(1));
+        const gap = parts[0].map((value, index) => value - pipeline[index]);
+        assert.ok(maxDrift(gap) < tolerance(parts) && Math.abs(gap[0]) < tolerance(parts), `${name}: ${warehouse} on order must match its lanes (drift ${maxDrift(gap)}).`);
     }
 }
 

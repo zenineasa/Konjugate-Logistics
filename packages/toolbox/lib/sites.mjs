@@ -2,14 +2,15 @@
 
 // A CSV of the user's own sites, the network they place on the map saved as a table, or one made in a spreadsheet:
 //
-//   name,kind,latitude,longitude,teuPerDay,floorArea,population,from
-//   Harbour terminal,port,24.81,54.65,420,,,
-//   Our depot,warehouse,24.95,55.02,,18000,,Harbour terminal
-//   Mall store,store,25.27,55.30,35,,,Our depot
+//   name,kind,latitude,longitude,teuPerDay,floorArea,population,capacity,cover,from
+//   Harbour terminal,port,24.81,54.65,420,,,,,
+//   Our depot,warehouse,24.95,55.02,,18000,,4000,3,Harbour terminal
+//   Mall store,store,25.27,55.30,35,,,60,2,Our depot
 //
 // `kind` is a site's role: supplier, port, warehouse, store, dark store or customer area (customer, town and depot
 // are read too). teuPerDay is a supplier's or port's volume, or a store's or customer area's demand; floorArea (m²)
-// sizes a warehouse; population weights a customer area without a fixed demand. `from` names the sites it is supplied
+// sizes a warehouse; population weights a customer area without a fixed demand; capacity (pallets) and cover (days of
+// stock it aims to hold) are a warehouse's, store's or dark store's. `from` names the sites it is supplied
 // from, separated by |, so a saved network keeps its links. Only name, kind, latitude and longitude are required.
 // Headers are matched loosely (lat, lng, ...).
 
@@ -29,7 +30,8 @@ const aliases = {
     name: ['name', 'site', 'label'], kind: ['kind', 'type', 'category'],
     latitude: ['latitude', 'lat', 'y'], longitude: ['longitude', 'lon', 'lng', 'long', 'x'],
     teuPerDay: ['teuperday', 'teu/day', 'teu', 'volume', 'demand'], floorArea: ['floorarea', 'floor area', 'area', 'm2', 'sqm'],
-    population: ['population', 'pop', 'weight'], from: ['from', 'supplied from', 'served from', 'sources']
+    population: ['population', 'pop', 'weight'], capacity: ['capacity', 'storage', 'storage capacity', 'storagecapacity'],
+    cover: ['cover', 'cover days', 'stock cover', 'coverdays'], from: ['from', 'supplied from', 'served from', 'sources']
 };
 
 function splitLine(line, delimiter) {
@@ -90,11 +92,18 @@ export function parseSites(text) {
         const teuPerDay = number(cell('teuPerDay'));
         const floorArea = number(cell('floorArea'));
         const population = number(cell('population'));
-        for (const [label, value] of [['teuPerDay', teuPerDay], ['floorArea', floorArea], ['population', population]]) {
+        const capacity = number(cell('capacity'));
+        const cover = number(cell('cover'));
+        for (const [label, value] of [['teuPerDay', teuPerDay], ['floorArea', floorArea], ['population', population], ['capacity', capacity], ['cover', cover]]) {
             if (Number.isNaN(value) || (value !== null && value < 0)) errors.push(`Line ${lineNumber}: ${label} for ${name} is not a number of zero or more.`);
         }
+        const stocked = ['warehouse', 'store', 'darkStore'].includes(role);
+        if (!stocked && (capacity > 0 || cover > 0)) warnings.push(`Line ${lineNumber}: a ${roleNames[role]} holds no stock, so its capacity and cover are not used.`);
         const from = String(cell('from') ?? '').split(delimiter === ';' ? /\|/ : /[|;]/).map((item) => item.trim()).filter(Boolean);
-        const site = { id: `user:${kind}:${lineNumber}`, kind, role, name, lat, lon, source: 'your sites', user: true, ...(from.length ? { from } : {}) };
+        const site = {
+            id: `user:${kind}:${lineNumber}`, kind, role, name, lat, lon, source: 'your sites', user: true, ...(from.length ? { from } : {}),
+            ...(stocked && capacity > 0 ? { capacity } : {}), ...(stocked && cover > 0 ? { coverDays: cover } : {})
+        };
         if (kind === 'port') sites.ports.push({ ...site, ...(role === 'supplier' ? { supplier: true } : {}), ...(teuPerDay > 0 ? { teuPerDay, teuPerDayBasis: 'user' } : {}), significance: Infinity });
         if (kind === 'zone') {
             if (teuPerDay) warnings.push(`Line ${lineNumber}: a warehouse's teuPerDay is not used; its flow follows the customers it serves.`);
@@ -115,7 +124,7 @@ export function writeSites(pins, links = []) {
     const rows = pins.map((pin) => {
         const volume = own(pin, pin.role === 'supplier' ? 'supply' : pin.role === 'port' ? 'teuPerDay' : 'demand');
         const from = links.filter((link) => link.to === pin.id && byId.has(link.from)).map((link) => byId.get(link.from).name);
-        return [pin.name, roleNames[pin.role], Number(pin.lat.toFixed(6)), Number(pin.lon.toFixed(6)), volume, own(pin, 'floorArea'), own(pin, 'population'), from.join('|')].map(quote).join(',');
+        return [pin.name, roleNames[pin.role], Number(pin.lat.toFixed(6)), Number(pin.lon.toFixed(6)), volume, own(pin, 'floorArea'), own(pin, 'population'), own(pin, 'capacity'), own(pin, 'cover'), from.join('|')].map(quote).join(',');
     });
-    return `name,kind,latitude,longitude,teuPerDay,floorArea,population,from\n${rows.join('\n')}\n`;
+    return `name,kind,latitude,longitude,teuPerDay,floorArea,population,capacity,cover,from\n${rows.join('\n')}\n`;
 }

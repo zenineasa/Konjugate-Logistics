@@ -15,32 +15,54 @@
 // link that would carry next to nothing, and says so; links the user drew are built as drawn.
 
 import { groupOfRole, roleNames } from './sites.mjs';
+import { catalogueForModel, linkKind, linkVehicleProblem, vehicleProblem, vehiclesOf } from './vehicles.mjs';
+
+// The network counts goods in pallets: a site's figures, a vehicle's capacity and the model's stocks and flows. A port's
+// volume is in containers (TEU), counted as `palletsPerTeu` pallets each.
+export const unit = 'pallets';
+
+// `positive`: nothing (0) means the default, as an empty field does: a site with no room or no stock target sells nothing.
+const capacityField = (detail) => ({ key: 'capacity', label: 'Storage capacity', unit: 'pallets', value: null, positive: true, detail });
+const coverField = (value, detail) => ({ key: 'cover', label: 'Stock cover', unit: 'days', value, positive: true, detail });
 
 export const roles = {
     supplier: {
         label: 'Supplier', kind: 'source',
-        fields: [{ key: 'supply', label: 'Supplies', unit: 'units a day', value: 50, detail: 'What it ships, whatever is ordered: a steady source until ordering from suppliers comes.' }]
+        fields: [{ key: 'supply', label: 'Supplies', unit: 'pallets a day', value: 50, detail: 'What it ships, whatever is ordered: a steady source until ordering from suppliers comes.' }]
     },
     port: {
         label: 'Port', kind: 'source',
-        fields: [{ key: 'teuPerDay', label: 'Handed inland', unit: 'TEU a day', value: null, detail: 'Empty: from IMF PortWatch when the port is matched, else the assumed volume a port.' }]
+        fields: [{ key: 'teuPerDay', label: 'Handed inland', unit: 'TEU a day', value: null, detail: 'Empty: from IMF PortWatch when the port is matched, else the assumed volume a port. Each container counts as 10 pallets.' }]
     },
     warehouse: {
         label: 'Warehouse', kind: 'warehouse',
-        fields: [{ key: 'floorArea', label: 'Floor area', unit: 'm²', value: null, detail: 'Weights how much of a demand pin linked to several warehouses it serves. Empty: a typical warehouse.' }]
+        fields: [
+            { key: 'floorArea', label: 'Floor area', unit: 'm²', value: null, detail: 'Weights how much of a demand pin linked to several warehouses it serves. Empty: a typical warehouse.' },
+            capacityField('The most it can hold. It never orders more than it has room for. Empty: no limit.'),
+            coverField(3, 'The stock it aims to hold, in days of what it sends out, on top of what is on its way.'),
+            { key: 'holdingCost', label: 'Holding cost', unit: 'a pallet a day', value: 0.5, detail: 'What a pallet in stock costs a day (space, capital, insurance).' }
+        ]
     },
     store: {
         label: 'Store', kind: 'demand',
-        fields: [{ key: 'demand', label: 'Sells', unit: 'units a day', value: 5, detail: 'Holds no stock of its own yet: its orders wait until a warehouse delivers.' }]
+        fields: [
+            { key: 'demand', label: 'Sells', unit: 'pallets a day', value: 5, detail: 'Sold from its own stock; what it cannot sell for want of stock waits until a delivery comes.' },
+            capacityField('Shelves and back room: the most it can hold. Empty: no limit.'),
+            coverField(2, 'The stock it aims to hold, in days of sales, on top of what is on its way.')
+        ]
     },
     darkStore: {
         label: 'Dark store', kind: 'demand',
-        fields: [{ key: 'demand', label: 'Delivers', unit: 'units a day', value: 3, detail: 'Works as a store until online orders and the last mile come.' }]
+        fields: [
+            { key: 'demand', label: 'Delivers', unit: 'pallets a day', value: 3, detail: 'Sold from its own stock, as a store, until online orders and the last mile come.' },
+            capacityField('The most it can hold. Empty: no limit.'),
+            coverField(1, 'The stock it aims to hold, in days of orders, on top of what is on its way.')
+        ]
     },
     customerArea: {
         label: 'Customer area', kind: 'demand',
         fields: [
-            { key: 'demand', label: 'Orders', unit: 'units a day', value: null, detail: 'Empty: a share of what the sources supply, by population.' },
+            { key: 'demand', label: 'Orders', unit: 'pallets a day', value: null, detail: 'Empty: a share of what the sources supply, by population. Delivered by a parcel or courier service, with no stock or vehicles of its own.' },
             { key: 'population', label: 'Population', unit: 'people', value: 20000, detail: 'Weights its share when it has no orders of its own.' }
         ]
     }
@@ -80,9 +102,18 @@ export function setField(pin, key, text) {
     const field = roles[pin.role].fields.find((item) => item.key === key);
     if (!field) return pin;
     const value = Number(text);
-    pin.fields[key] = text !== '' && text !== null && Number.isFinite(value) && value >= 0
+    pin.fields[key] = text !== '' && text !== null && Number.isFinite(value) && (field.positive ? value > 0 : value >= 0)
         ? { value, basis: 'user' }
         : { value: field.value, basis: field.value === null ? null : 'assumed' };
+    return pin;
+}
+
+// A pin from an older session made whole: the role's fields it lacks start as their assumed defaults.
+export function completeFields(pin) {
+    pin.fields ??= {};
+    for (const field of roles[pin.role]?.fields ?? []) {
+        if (!pin.fields[field.key]) pin.fields[field.key] = { value: field.value, basis: field.value === null ? null : 'assumed' };
+    }
     return pin;
 }
 
@@ -167,7 +198,8 @@ export function routeLinks(pins, links, router) {
 }
 
 // What stops the network from being built (errors) and what the user should know (warnings), each naming its pins.
-export function networkProblems(pins, links) {
+// `catalogue`: the vehicle types, when the network runs on them.
+export function networkProblems(pins, links, catalogue = null) {
     const problems = [];
     const byId = new Map(pins.map((pin) => [pin.id, pin]));
     const add = (level, text, ids = []) => problems.push({ level, text, pins: ids });
@@ -181,6 +213,16 @@ export function networkProblems(pins, links) {
     for (const link of links) {
         const problem = linkProblem(byId.get(link.from), byId.get(link.to));
         if (problem) add('error', problem, [link.from, link.to].filter((id) => byId.has(id)));
+        else if (catalogue) {
+            const [from, to] = [byId.get(link.from), byId.get(link.to)];
+            const kind = linkKind(from.role, to.role);
+            const vehicleIssue = linkVehicleProblem(vehiclesOf(link, kind, catalogue), kind, catalogue, { from: from.name, to: to.name });
+            if (vehicleIssue) add('error', vehicleIssue, [from.id, to.id]);
+        }
+    }
+    for (const type of catalogue ?? []) {
+        const issue = vehicleProblem(type);
+        if (issue) add('error', issue);
     }
     const into = (pin) => links.filter((link) => link.to === pin.id && byId.has(link.from));
     const outOf = (pin) => links.filter((link) => link.from === pin.id && byId.has(link.to));
@@ -197,19 +239,28 @@ export function networkProblems(pins, links) {
 }
 
 // What the importer builds from: the pins as the region builder's selection (by the candidate a pin was adopted from,
-// so the importer reads its sourced data again), and the links with their legs.
+// so the importer reads its sourced data again), the links with their legs and vehicles, and the vehicle catalogue.
 // `paths: false` leaves the supply links' roads out, when they would be more than the host accepts in one request: the
-// lanes are then drawn straight.
-export function networkSelection(pins, links, { paths = true } = {}) {
+// lanes are then drawn straight. With no `catalogue`, links carry no vehicles and the model runs on two truck sizes.
+export function networkSelection(pins, links, { paths = true, catalogue = null } = {}) {
     const selection = { ports: [], zones: [], towns: [] };
     const byId = new Map(pins.map((pin) => [pin.id, pin]));
     const siteId = (pin) => pin.candidate?.id ?? pin.id;
     for (const pin of pins) {
         const entry = { id: siteId(pin), pin: pin.id, role: pin.role, name: pin.name, lat: pin.lat, lon: pin.lon };
         const field = (key) => pin.fields?.[key];
+        // A figure set, with where it came from: `name` and `nameBasis` on the entry.
+        const carry = (key, name) => { if (field(key)?.value > 0) Object.assign(entry, { [name]: field(key).value, [`${name}Basis`]: field(key).basis }); };
         if (pin.role === 'supplier') Object.assign(entry, { supplier: true, teuPerDay: field('supply').value, teuPerDayBasis: field('supply').basis });
-        if (pin.role === 'port' && field('teuPerDay')?.value > 0) Object.assign(entry, { teuPerDay: field('teuPerDay').value, teuPerDayBasis: field('teuPerDay').basis });
-        if (pin.role === 'warehouse' && field('floorArea')?.value > 0) Object.assign(entry, { floorAreaSquareMetres: field('floorArea').value, floorAreaBasis: field('floorArea').basis });
+        if (pin.role === 'port') carry('teuPerDay', 'teuPerDay');
+        if (pin.role === 'warehouse') {
+            if (field('floorArea')?.value > 0) Object.assign(entry, { floorAreaSquareMetres: field('floorArea').value, floorAreaBasis: field('floorArea').basis });
+            carry('holdingCost', 'holdingCost');
+        }
+        if (pin.role === 'warehouse' || pin.role === 'store' || pin.role === 'darkStore') {
+            carry('capacity', 'capacity');
+            carry('cover', 'coverDays');
+        }
         if (kindOf(pin.role) === 'demand') {
             if (field('demand')?.value > 0) Object.assign(entry, { teuPerDay: field('demand').value, teuPerDayBasis: field('demand').basis });
             if (field('population')?.value > 0) Object.assign(entry, { population: field('population').value, populationBasis: field('population').basis === 'user' ? 'user' : field('population').basis === 'sourced' ? 'OpenStreetMap' : 'assumed' });
@@ -223,12 +274,18 @@ export function networkSelection(pins, links, { paths = true } = {}) {
         kilometres: link.leg.kilometres, hours: link.leg.hours, basis: link.leg.basis,
         path: withPath && paths && link.leg.path?.points?.length ? { points: link.leg.path.points.map((point) => [point.lat, point.lon]) } : null
     } : null);
+    const vehicles = (link) => {
+        if (!catalogue) return {};
+        const carried = vehiclesOf(link, linkKind(byId.get(link.from).role, byId.get(link.to).role), catalogue);
+        return carried.length ? { vehicles: carried } : {};
+    };
     return {
         selection,
         links: {
-            supply: usable.filter((link) => kindOf(byId.get(link.from).role) === 'source').map((link) => ({ port: siteId(byId.get(link.from)), zone: siteId(byId.get(link.to)), leg: leg(link, true), ...(link.basis === 'user' ? { user: true } : {}) })),
-            serve: usable.filter((link) => kindOf(byId.get(link.from).role) === 'warehouse').map((link) => ({ zone: siteId(byId.get(link.from)), town: siteId(byId.get(link.to)), leg: leg(link, false) }))
-        }
+            supply: usable.filter((link) => kindOf(byId.get(link.from).role) === 'source').map((link) => ({ port: siteId(byId.get(link.from)), zone: siteId(byId.get(link.to)), leg: leg(link, true), ...(link.basis === 'user' ? { user: true } : {}), ...vehicles(link) })),
+            serve: usable.filter((link) => kindOf(byId.get(link.from).role) === 'warehouse').map((link) => ({ zone: siteId(byId.get(link.from)), town: siteId(byId.get(link.to)), leg: leg(link, false), ...vehicles(link) }))
+        },
+        ...(catalogue ? { vehicles: catalogueForModel(catalogue), unit } : {})
     };
 }
 
@@ -250,6 +307,8 @@ export function networkFromSites(sites, pins = []) {
         if (site.teuPerDay > 0) fields[role === 'supplier' ? 'supply' : role === 'port' ? 'teuPerDay' : 'demand'] = site.teuPerDay;
         if (site.floorAreaSquareMetres > 0) fields.floorArea = site.floorAreaSquareMetres;
         if (site.population > 0) fields.population = site.population;
+        if (site.capacity > 0) fields.capacity = site.capacity;
+        if (site.coverDays > 0) fields.cover = site.coverDays;
         added.push({ site, pin: createPin(role, site, { name: site.name, pins: [...pins, ...added.map((item) => item.pin)], fields, source: 'your sites' }) });
     }
     const all = [...pins, ...added.map((item) => item.pin)];

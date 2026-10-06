@@ -49,7 +49,7 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 | Select | Click it, or its row in the list | Click it on the map | Shift-click or command-click to add; Shift-drag a box (with the command key: add); select all |
 | Rename | The name on its card, or in the bar beside it | Click it twice | `Enter` or `F2` |
 | Change its role | The role on its card | Its menu, "Make it a …" | |
-| Change a figure | Its card | | |
+| Change a figure (storage capacity, stock cover and the rest) | Its card | | |
 | Move | | Drag it (dragging one of several selected moves them all) | Arrow keys (Shift: further) |
 | Duplicate | Its card, or the selection's card | Its menu | Command+D |
 | Delete | Delete on its card, or in the bar beside it | Its menu | The delete key |
@@ -57,6 +57,9 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 | Remove a link | ✕ beside it on the card, or Delete on the link's card | Click it, then Delete in the bar; its menu | Click it, then `Delete` |
 | Move a link's end | | Drag the end of a selected link | |
 | Keep a suggested link | "Make it mine" on the link's card | Its menu | |
+| Choose a link's vehicles | The vehicle on the link's card (and "+ a second type", ✕ to take it off); with several links selected, "Carry them by" on the selection's card | Its menu, "Carry it by …" (every type that may take it) | `V`: the selected links take the next type that may |
+| Set how many vehicles a link has | The number beside each type on the link's card (empty: sized to its flow) | | |
+| Change a vehicle type | Vehicles in the Network step: its name, figures and "May deliver to stores"; Add a vehicle type; ✕ to delete one | | |
 | Undo, redo | ↶ ↷ above the map; Undo in the message after a change | | Command+Z; Command+Shift+Z (or Ctrl+Y) |
 | Fit the map | Fit above the map | Map menu | `F` (the selection, or the network), `0` (the region) |
 | Zoom | + and − above the map | Wheel | `+`, `-` |

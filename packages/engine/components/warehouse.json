@@ -6,7 +6,7 @@
     "domains": [
         "logistics"
     ],
-    "description": "A warehouse that replenishes from road and rail lanes. On order counts everything it has placed with its inbound lanes and not yet received, so its order rule is local however many lanes feed it. Each lane places its order share of the order rate; while the shares add up to less than 1 (cargo that no port can supply), the rest is not ordered, and its customers wait. It forecasts demand by exponential smoothing and orders by an order-up-to rule: the forecast plus a correction towards forecast x (planned replenishment time + stock cover), but only while stock plus on order is below target. The planned replenishment time is the planner's assumption, which may differ from the lanes' real travel times. Holding cost accrues per TEU per day in stock.",
+    "description": "A warehouse, or a store's stock room, that replenishes from road and rail lanes. On order counts everything it has placed with its inbound lanes and not yet received, so its order rule is local however many lanes feed it. Each lane places its order share of the order rate; while the shares add up to less than 1 (goods that no source can supply), the rest is not ordered, and its customers wait. It forecasts demand by exponential smoothing and orders by an order-up-to rule: the forecast plus a correction towards forecast x planned replenishment time plus the stock it aims to hold, never below nothing. The stock it aims to hold is forecast x stock cover target, or its storage capacity if that is less, and the correction never aims past its storage capacity whatever is on its way: once full, it orders only what it expects to send out. Goods already on their way still arrive, so stock can pass the capacity for a while when demand falls faster than its forecast; Space used (stock over capacity) shows it above 1. The planned replenishment time is the planner's assumption, which may differ from the lanes' real travel times. Holding cost accrues per unit per day in stock.",
     "shape": "box",
     "color": "#c16f55",
     "states": [
@@ -39,6 +39,12 @@
             "label": "Holding cost",
             "initialValue": 0,
             "unit": "cost"
+        },
+        {
+            "symbol": "spaceUsed",
+            "label": "Space used",
+            "initialValue": 0.00021,
+            "unit": ""
         }
     ],
     "sharedParameters": [
@@ -48,6 +54,14 @@
             "symbol": "planningLeadTime",
             "value": 2.5,
             "unit": "day",
+            "scope": "instance"
+        },
+        {
+            "key": "storageCapacity",
+            "name": "Storage capacity",
+            "symbol": "storageCapacity",
+            "value": 1000000,
+            "unit": "TEU",
             "scope": "instance"
         },
         {
@@ -94,7 +108,7 @@
     "sourceTerms": [
         {
             "state": "orderRate",
-            "expression": "\\begin{cases} \\mathrm{forecast} + \\frac{\\mathrm{forecast} \\cdot (\\mathrm{planningLeadTime} + \\mathrm{coverDays}) - (\\mathrm{stock} + \\mathrm{onOrder})}{\\mathrm{adjustDays}} & \\mathrm{stock} + \\mathrm{onOrder} < \\mathrm{forecast} \\cdot (\\mathrm{planningLeadTime} + \\mathrm{coverDays} + \\mathrm{adjustDays}) \\\\ 0 & \\text{otherwise} \\end{cases}",
+            "expression": "\\max(0, \\mathrm{forecast} + \\frac{\\min(\\mathrm{forecast} \\cdot \\mathrm{planningLeadTime} + \\min(\\mathrm{forecast} \\cdot \\mathrm{coverDays}, \\mathrm{storageCapacity}) - (\\mathrm{stock} + \\mathrm{onOrder}), \\mathrm{storageCapacity} - \\mathrm{stock})}{\\mathrm{adjustDays}})",
             "parameters": [
                 {
                     "name": "Planned replenishment time",
@@ -105,6 +119,11 @@
                     "name": "Stock cover target",
                     "symbol": "coverDays",
                     "shared": "coverDays"
+                },
+                {
+                    "name": "Storage capacity",
+                    "symbol": "storageCapacity",
+                    "shared": "storageCapacity"
                 },
                 {
                     "name": "Inventory adjustment time",
@@ -145,6 +164,18 @@
                     "shared": "secondsPerDay"
                 }
             ]
+        },
+        {
+            "state": "spaceUsed",
+            "expression": "\\frac{\\mathrm{stock}}{\\mathrm{storageCapacity}}",
+            "parameters": [
+                {
+                    "name": "Storage capacity",
+                    "symbol": "storageCapacity",
+                    "shared": "storageCapacity"
+                }
+            ],
+            "setsValue": true
         }
     ]
 }

@@ -32,7 +32,7 @@ import { parseSites } from '../lib/sites.mjs';
 export const osmRoles = ['ports', 'logistics', 'roads', 'rail', 'places'];
 // IMF PortWatch: the ports around the region, and the history of each matched port.
 export const portwatchRoles = ['portwatchPorts', 'portwatchActivity'];
-export const templateIds = ['port', 'roadLane', 'railLane', 'warehouse', 'demandZone', 'roadShipment', 'railShipment', 'delivery'];
+export const templateIds = ['port', 'roadLane', 'railLane', 'warehouse', 'demandZone', 'roadShipment', 'railShipment', 'delivery', 'storeShipment'];
 const kinds = { ports: 'port', zones: 'zone', towns: 'town' };
 // The suggestions the user can ask for: the OpenStreetMap answers each reads (beside the roads and place names every
 // step reads), and the group of candidates it shows.
@@ -78,8 +78,28 @@ function resolvePin(entry, known, kind) {
     }
     if (Number(entry.population) > 0 && ours(entry.populationBasis)) Object.assign(site, { population: Number(entry.population), populationBasis: entry.populationBasis ?? 'user' });
     if (Number(entry.floorAreaSquareMetres) > 0 && ours(entry.floorAreaBasis)) Object.assign(site, { floorAreaSquareMetres: Number(entry.floorAreaSquareMetres), floorAreaBasis: entry.floorAreaBasis === 'user' ? 'user' : entry.floorAreaBasis, ...(entry.floorAreaBasis === 'user' ? { significance: null } : {}) });
+    // A warehouse's, store's or dark store's stock: its room, its cover and what holding a pallet costs, with where each
+    // came from.
+    for (const key of ['capacity', 'coverDays', 'holdingCost']) {
+        if (Number(entry[key]) > 0) Object.assign(site, { [key]: Number(entry[key]), [`${key}Basis`]: entry[`${key}Basis`] === 'assumed' ? 'assumed' : 'user' });
+    }
     if (base && (entry.lat !== base.lat || entry.lon !== base.lon)) site.moved = true;
     return site;
+}
+
+// A network's vehicle types as the window sends them, checked: each with a name and figures above nothing.
+const vehicleKeys = ['capacity', 'costPerKm', 'costPerDay', 'speed', 'loadingHours'];
+function checkedVehicles(types) {
+    if (!Array.isArray(types) || !types.length) return null;
+    return types.map((type) => {
+        if (!type?.id || !String(type.name ?? '').trim()) throw new Error('A vehicle type has no name. Name it in the Vehicles list.');
+        for (const key of vehicleKeys) if (!(Number(type[key]) > 0)) throw new Error(`${type.name}: its ${key.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`)} must be more than nothing.`);
+        return {
+            id: String(type.id), name: String(type.name).trim(), toStores: type.toStores !== false,
+            ...Object.fromEntries(vehicleKeys.map((key) => [key, Number(type[key])])),
+            basis: Object.fromEntries(vehicleKeys.map((key) => [key, type.basis?.[key] === 'user' ? 'user' : 'assumed']))
+        };
+    });
 }
 
 // The settings the window sends with a build, checked.
@@ -94,6 +114,10 @@ function buildSettings(options) {
     if (inland > 0 && inland <= 1) settings.inlandShare = inland;
     // Standby lanes from these ports (by name), for a scenario that diverts cargo to them.
     if (Array.isArray(options.settings?.standbyPorts)) settings.standbyPorts = options.settings.standbyPorts.map(String);
+    // A network placed on the map runs on its own vehicle types, and counts pallets.
+    const vehicles = checkedVehicles(options.network?.vehicles);
+    if (vehicles) settings.vehicles = vehicles;
+    if (options.network?.unit === 'pallets') settings.unit = 'pallets';
     return settings;
 }
 
@@ -230,7 +254,7 @@ async function finishBuild({ templates, helpers, selection, route, links, option
         parameterIndex: built.parameterIndex,
         data: {
             step, lanes: built.lanes, served: built.served, provenance: built.provenance, warnings: built.warnings, histories: built.histories, ports: built.ports, days: built.days,
-            operator: built.operator, towns: built.towns, trucking: built.trucking, standbyPorts: built.standbyPorts, corridors: built.corridors,
+            operator: built.operator, towns: built.towns, stores: built.stores, unit: built.unit, perTeu: built.perTeu, vehicles: built.vehicles, trucking: built.trucking, standbyPorts: built.standbyPorts, corridors: built.corridors,
             unusedZones: built.unusedZones, unusedLinks: built.unusedLinks, nodes: built.document.nodes.length, edges: built.document.edges.length, lanesByBasis
         },
         report: {

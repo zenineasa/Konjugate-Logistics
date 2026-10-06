@@ -3,7 +3,8 @@
 // A stand-in for Konjugate's launcher host, so the toolbox window can be tested in a plain browser: the window's
 // files are served from the package, `window.konjugateLauncher` calls back into Node, the importer runs here as the
 // host runs it (with the host's limits on what goes in and comes out), and the network is answered from the synthetic
-// region. No engine: a scenario cannot run here (the Electron interaction test runs them).
+// region. No engine, unless KONJUGATE_ENGINE=export: then a scenario runs as Konjugate's code export writes the model
+// (the Electron interaction test runs them in the real app).
 
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -46,6 +47,8 @@ export const placeAnswer = [{ display_name: 'Port Alder, Synthetic Coast', type:
 
 export async function createHost() {
     const cache = createAddonCache({ directory: join(await mkdtemp(join(tmpdir(), 'konjugate-window-cache-')), 'cache') });
+    // Where scenario runs write their programs and results.
+    const scratch = await mkdtemp(join(tmpdir(), 'konjugate-window-runs-'));
     const region = syntheticRegion();
     const portwatch = syntheticPortwatch();
     const files = new Map(); // `${role}/${name}` -> { role, name, text, retrievedAt }
@@ -117,6 +120,7 @@ export async function createHost() {
             const result = await importRegion({ files: [...files.values()].map(({ role, name, text }) => ({ role, name, text, encoding: 'utf-8' })), helpers, options });
             if (result.data && JSON.stringify(result.data).length > limits.importerData) throw new Error('The importer returned more data than the host accepts.');
             if (!result.ok || !result.document) return { imported: false, report: result.report, data: result.data };
+            host.imported = { document: result.document, parameterIndex: result.parameterIndex };
             return { imported: true, report: result.report, data: result.data };
         },
         async openInCanvas({ session: kept }) {
@@ -130,10 +134,34 @@ export async function createHost() {
         async restoreSession() {
             return { session, savedAt: session ? new Date().toISOString() : null, inputs: [...files.values()].map(({ role, url, retrievedAt }) => ({ role, url, retrievedAt })) };
         },
-        async runScenario() { throw new Error('No engine in the window test.'); }
+        // With KONJUGATE_ENGINE=export, a scenario runs as Konjugate's code export writes the model (see
+        // tests/engine/harness.mjs): the baseline, and the model with the supplied paths as stored schedules from the fork,
+        // which before the fork hold the baseline's values, as a fork from the baseline does. Otherwise there is no engine.
+        async runScenario({ supplied, forkAt = 0, runTime, signals = [] }) {
+            if (process.env.KONJUGATE_ENGINE !== 'export') throw new Error('No engine in the window test.');
+            if (!host.imported) throw new Error('Import your data first.');
+            const { runDocument } = await import('../engine/harness.mjs');
+            const days = runTime / 86400;
+            const branch = async (name, document) => {
+                const run = await runDocument(scratch, name, document, days);
+                const step = document.runConfigurations[0].outputInterval;
+                return Object.fromEntries(document.nodes.map((node) => [node.name, Object.fromEntries(node.states.filter((state) => signals.includes(state.symbol))
+                    .map((state) => [state.symbol, run.series(`${node.name}.${state.symbol}`).map((value, index) => [index * step, value])]))]));
+            };
+            const forked = structuredClone(host.imported.document);
+            for (const [key, { entities, samples }] of Object.entries(supplied?.byParameter ?? {})) {
+                for (const entity of entities) {
+                    const indexed = host.imported.parameterIndex.find((entry) => entry.key === key && entry.entity === entity);
+                    if (!indexed) throw new Error(`No ${key} of ${entity} to change.`);
+                    forked.sharedParameters.find((item) => item.id === indexed.sharedParameterId).schedule = { interpolation: 'linear', samples: samples[entity].map(([time, value]) => [forkAt + time, value]) };
+                }
+            }
+            host.scenarioRuns += 1;
+            return { forkTime: forkAt, runTime, branches: [{ id: 'baseline', label: 'Baseline', series: await branch('baseline', host.imported.document) }, { id: 'scenario', label: 'Scenario', series: await branch(`scenario${host.scenarioRuns}`, forked) }] };
+        }
     };
     const host = {
-        files, requests, chosen, cache, kept: 0,
+        files, requests, chosen, cache, kept: 0, imported: null, scenarioRuns: 0,
         get session() { return session; },
         set session(value) { session = value; },
         async call(name, args) {

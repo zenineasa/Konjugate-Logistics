@@ -8,7 +8,8 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import importRegion from '../../packages/toolbox/importers/region.mjs';
-import { createPin, linkId, networkSelection, pinFromCandidate, routeLinks, suggestLinks } from '../../packages/toolbox/lib/network.mjs';
+import { createPin, linkId, networkProblems, networkSelection, pinFromCandidate, routeLinks, suggestLinks } from '../../packages/toolbox/lib/network.mjs';
+import { defaultCatalogue, setVehicleField } from '../../packages/toolbox/lib/vehicles.mjs';
 import { defaultSelection, discoverRegion } from '../../packages/toolbox/lib/discovery.mjs';
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
 import { createRouter } from '../../packages/toolbox/lib/roadGraph.mjs';
@@ -146,6 +147,84 @@ test('a network placed on the map builds a model whose lanes are its links, rout
     // Without the roads (a network too large to send them), the lanes are straight.
     const straight = await importRegion({ files: roadsOnly(), helpers, options: { step: 'buildNetwork', network: networkSelection(pins, links, { paths: false }) } });
     assert.ok(straight.data.corridors.every((corridor) => corridor.points.length === 2));
+});
+
+test('a network with vehicles builds stores that hold stock, restocked over lanes of the vehicles each link names, in pallets', async () => {
+    const router = await windowRouter();
+    const pins = placed();
+    const byName = (name) => pins.find((pin) => pin.name === name);
+    byName('Central depot').fields.capacity = { value: 40, basis: 'user' };
+    byName('Harbour shop').fields.cover = { value: 1.5, basis: 'user' };
+    const links = suggestLinks(pins, [], router);
+    routeLinks(pins, links, router);
+    const catalogue = defaultCatalogue();
+    setVehicleField(catalogue.find((type) => type.id === 'miniVan'), 'capacity', '2.5');
+    const toHarbour = links.find((link) => link.to === byName('Harbour shop').id);
+    toHarbour.vehicles = [{ type: 'smallTruck', fleet: 3 }, { type: 'miniVan', fleet: null }];
+    const build = (network) => importRegion({ files: roadsOnly(), helpers, options: { step: 'buildNetwork', network } });
+    const result = await build(networkSelection(pins, links, { catalogue }));
+    assert.equal(result.ok, true, JSON.stringify(result.report));
+    const { data, document } = result;
+    assert.equal(data.unit, 'pallets');
+    assert.deepEqual(data.stores.map((item) => item.name).sort(), ['Harbour shop', 'High street', 'Night hub']);
+    assert.deepEqual(data.vehicles.map((type) => type.id), ['heavyTruck', 'mediumTruck', 'smallTruck', 'miniVan']);
+    // Supply links on heavy trucks; each store restocked over a lane of its own, the dark store's on mini-vans.
+    const supply = data.lanes.filter((lane) => lane.kind === 'supply');
+    assert.ok(supply.length && supply.every((lane) => lane.vehicles.map((item) => item.type).join() === 'heavyTruck'));
+    const harbour = data.lanes.find((lane) => lane.kind === 'store' && lane.site === 'Harbour shop');
+    assert.equal(harbour.to, 'Harbour shop stock');
+    assert.deepEqual(harbour.vehicles.map((item) => [item.type, item.user]), [['smallTruck', true], ['miniVan', false]]);
+    assert.equal(harbour.fleet, 3, 'the fleet the user set');
+    assert.ok(harbour.fleet2 >= 1, 'the fleet the toolbox sized');
+    assert.equal(harbour.truckCapacity2, 2.5, 'the van\'s capacity as the user set it');
+    assert.equal(data.lanes.find((lane) => lane.site === 'Night hub').vehicles[0].type, 'miniVan');
+    // A type is one shared parameter for every lane and shipment it runs on, in pallets a vehicle.
+    const shared = (symbol) => document.sharedParameters.filter((item) => item.symbol === symbol);
+    assert.equal(shared('heavyTruckCapacity').length, 1);
+    assert.deepEqual([shared('miniVanCapacity')[0].value, shared('miniVanCapacity')[0].unit], [2.5, 'pallets/vehicle']);
+    assert.equal(shared('truckCapacity').length, 0, 'no two-size truck capacity');
+    const node = (name) => document.nodes.find((item) => item.name === name);
+    assert.equal(node('Central depot').states.find((state) => state.symbol === 'stock').unit, 'pallets');
+    assert.equal(node('Harbour shop stock').type, 'Warehouse');
+    assert.equal(node('Harbour shop').type, 'Demand zone');
+    // The figures the user set, with where they came from; the room that binds, said.
+    const provenance = (entity, parameter) => data.provenance.find((entry) => entry.entity === entity && entry.parameter === parameter);
+    assert.deepEqual([provenance('Harbour shop', 'Stock cover target').value, provenance('Harbour shop', 'Stock cover target').basis], [1.5, 'user']);
+    assert.equal(provenance('High street', 'Stock cover target').basis, 'assumed');
+    assert.equal(provenance('Mini-van', 'Capacity').basis, 'user');
+    assert.equal(provenance('Heavy truck', 'Capacity').basis, 'assumed');
+    assert.ok(data.warnings.some((text) => text.startsWith('Central depot has room for 40 pallets')), data.warnings.join(' / '));
+    // Stock rooms and warehouses start full to their targets, within their room.
+    const initial = (name, symbol) => node(name).states.find((state) => state.symbol === symbol).initialValue;
+    assert.equal(initial('Central depot', 'stock'), 40);
+    close(initial('Central depot', 'spaceUsed'), 1, 1e-12, 'a full warehouse');
+    const harbourDemand = data.towns.find((town) => town.name === 'Harbour shop').demand;
+    close(initial('Harbour shop stock', 'stock'), 1.5 * harbourDemand, 1e-9, 'a day and a half of sales');
+
+    // Heavy trucks may not deliver to stores; a type with no capacity cannot run; a store with no room cannot sell.
+    toHarbour.vehicles = [{ type: 'heavyTruck', fleet: null }];
+    assert.match(networkProblems(pins, links, catalogue).find((problem) => problem.level === 'error').text, /^Heavy truck may not deliver to stores: choose another vehicle for Central depot → Harbour shop\.$/);
+    const barred = await build(networkSelection(pins, links, { catalogue }));
+    assert.match(barred.report.errors[0], /Heavy truck may not deliver to stores/);
+    toHarbour.vehicles = [{ type: 'smallTruck', fleet: null }];
+    const broken = defaultCatalogue();
+    broken[0].fields.capacity = { value: 0, basis: 'user' };
+    assert.match((await build(networkSelection(pins, links, { catalogue: broken }))).report.errors[0], /Heavy truck: its capacity must be more than nothing/);
+    byName('High street').fields.capacity = { value: 0.1, basis: 'user' };
+    assert.match((await build(networkSelection(pins, links, { catalogue }))).report.errors[0], /^High street can hold 0\.1 pallets, less than the [\d.]+ it sells in 2\.4 hours/);
+});
+
+test('a port in a network of pallets counts each container as ten pallets', async () => {
+    const router = await windowRouter();
+    const pins = placed().filter((pin) => pin.role !== 'supplier');
+    pins.unshift(createPin('port', { lat: -29.72, lon: -19.88 }, { name: 'River port', pins, fields: { teuPerDay: 12 } }));
+    const links = suggestLinks(pins, [], router);
+    routeLinks(pins, links, router);
+    const result = await importRegion({ files: roadsOnly(), helpers, options: { step: 'buildNetwork', network: networkSelection(pins, links, { catalogue: defaultCatalogue() }) } });
+    assert.equal(result.ok, true, JSON.stringify(result.report));
+    const handed = result.data.provenance.find((entry) => entry.entity === 'River port' && entry.parameter === 'Containers handed inland');
+    assert.deepEqual([handed.value, handed.unit, handed.basis], [120, 'pallets/day', 'user']);
+    assert.match(handed.detail, /Each TEU counted as an assumed 10 pallets/);
 });
 
 test('a port adopted from a suggestion keeps its IMF PortWatch volume; one of the user\'s own takes theirs', async () => {

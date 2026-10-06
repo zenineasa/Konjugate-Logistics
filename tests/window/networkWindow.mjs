@@ -7,7 +7,10 @@
 //   - pins of every role placed from the palette snap to the roads, and links are suggested and routed
 //   - a pin's card changes its name and figures; moving a pin re-routes only its own links, quickly
 //   - a link drawn from a selected pin's handle, a link refused with its reason, a link deleted and not suggested again
-//   - the model is built from the pins and links
+//   - a warehouse given its storage capacity; the vehicle catalogue edited; a link's vehicles chosen on its card, from
+//     its menu and with V, and a type kept off stores refused on a link to one
+//   - the model is built from the pins and links, its stores holding stock; with an engine, a store whose road closes
+//     runs out
 //   - suggestions appear only when asked for, as hollow pins, and are adopted by a click or from the list
 //   - the network saves as a CSV and loads back from one
 //   - the session is kept, and restored on reopening; a session of the earlier workflow is migrated
@@ -30,6 +33,9 @@ const log = [];
 try {
     const context = await browser.newContext({ viewport: { width: 1500, height: 950 }, acceptDownloads: true });
     const page = await context.newPage();
+    // The main pass is a Windows or Linux user's, whatever this machine is (step 14 is a Mac user's): Chromium on a Mac
+    // reports MacIntel, and the window would then take ⌘, not Ctrl.
+    await page.addInitScript(() => Object.defineProperty(Navigator.prototype, 'platform', { get: () => 'Linux x86_64' }));
     page.on('console', (message) => log.push(`${message.type()}: ${message.text().slice(0, 300)}`));
     page.on('pageerror', (error) => log.push(`pageerror: ${error.message}`));
     const host = await createHost();
@@ -124,7 +130,7 @@ try {
     await page.dispatchEvent('#field-demand', 'change');
     assert.equal((await pins())[4].name, 'Harbour shop');
     assert.equal(await page.textContent('#selectionCard .field .basis'), 'yours');
-    assert.match(await page.textContent('#pinList'), /Harbour shop.*20 units a day/s);
+    assert.match(await page.textContent('#pinList'), /Harbour shop.*20 pallets a day/s);
     assert.match(await page.textContent('#selectionCard .road'), /On the roads/);
 
     // 3b. Beside the selected site on the map: its name, to rename it there, and Delete, which can be undone.
@@ -320,17 +326,120 @@ try {
     assert.equal(await page.textContent('#networkStatus'), '');
     noErrors();
 
+    // 6b. Stock and vehicles: a warehouse's room on its card; the vehicle catalogue; a link's vehicles chosen on its card,
+    // from its menu and with V, each undone as one step; a type kept off stores refused on a link to one.
+    await clickAt(placements[2][1]);
+    await page.waitForSelector('#selectionCard:not([hidden]) #field-capacity');
+    assert.equal(await page.getAttribute('#field-capacity', 'placeholder'), 'no limit');
+    await page.fill('#field-capacity', '400');
+    await page.dispatchEvent('#field-capacity', 'change');
+    assert.deepEqual(await stateOf(() => window.logisticsToolboxState.pins[2].fields.capacity), { value: 400, basis: 'user' });
+    assert.deepEqual(await stateOf(() => window.logisticsToolboxState.pins[2].fields.cover), { value: 3, basis: 'assumed' });
+    await page.click('#vehicles summary');
+    assert.deepEqual(await page.$$eval('#vehicleList [data-vehicle-name]', (inputs) => inputs.map((input) => input.value)), ['Heavy truck', 'Medium truck', 'Small truck', 'Mini-van']);
+    const vanCapacity = '#vehicleList [data-type="miniVan"] [data-vehicle-field="capacity"]';
+    await page.fill(vanCapacity, '2.5');
+    await page.dispatchEvent(vanCapacity, 'change');
+    assert.deepEqual(await stateOf(() => window.logisticsToolboxState.vehicles.find((type) => type.id === 'miniVan').fields.capacity), { value: 2.5, basis: 'user' });
+    assert.equal(await page.textContent('#vehicleList [data-type="miniVan"] .field .basis'), 'yours');
+    await page.click('#addVehicleButton');
+    assert.deepEqual(await stateOf(() => window.logisticsToolboxState.vehicles.map((type) => type.name)), ['Heavy truck', 'Medium truck', 'Small truck', 'Mini-van', 'Vehicle 1']);
+    await page.click('#undoButtonTool');
+    assert.equal(await stateOf(() => window.logisticsToolboxState.vehicles.length), 4, 'adding a type undone');
+    // Harbour shop's link, from its card: medium trucks until another is chosen; heavy trucks may not go to a store.
+    const harbourLink = (await links()).find((link) => link.to === placed[4].id);
+    await clickAt(placements[4][1]);
+    await page.click(`#selectionCard [data-select-link="${harbourLink.id}"]`);
+    await page.waitForSelector('#selectionCard [data-link-vehicle="0"]');
+    assert.equal(await page.inputValue('#selectionCard [data-link-vehicle="0"]'), 'mediumTruck');
+    assert.equal(await page.isDisabled('#selectionCard [data-link-vehicle="0"] option[value="heavyTruck"]'), true);
+    await page.selectOption('#selectionCard [data-link-vehicle="0"]', 'smallTruck');
+    const harbourVehicles = () => page.evaluate((id) => window.logisticsToolboxState.links.find((link) => link.id === id).vehicles, harbourLink.id);
+    assert.deepEqual(await harbourVehicles(), [{ type: 'smallTruck', fleet: null }]);
+    await page.click('#selectionCard #addLinkVehicle');
+    await page.fill('#selectionCard [data-link-fleet="1"]', '3');
+    await page.dispatchEvent('#selectionCard [data-link-fleet="1"]', 'change');
+    assert.deepEqual(await harbourVehicles(), [{ type: 'smallTruck', fleet: null }, { type: 'mediumTruck', fleet: 3 }]);
+    await page.click('#selectionCard [data-link-vehicle-remove]');
+    assert.deepEqual(await harbourVehicles(), [{ type: 'smallTruck', fleet: null }]);
+    // From its menu on the map: every type that may deliver to a store, and not the one it has.
+    const linkPoint = (id) => page.evaluate((linkId) => {
+        const path = document.querySelector(`#map path.link[data-link="${CSS.escape(linkId)}"]`);
+        const point = path.getPointAtLength(path.getTotalLength() * 0.4).matrixTransform(path.getScreenCTM());
+        return { x: point.x, y: point.y };
+    }, id);
+    // (Nothing selected first, so the popover beside the selection is not over the link.)
+    await page.keyboard.press('Escape');
+    const onLink = await linkPoint(harbourLink.id);
+    await page.mouse.click(onLink.x, onLink.y, { button: 'right' });
+    await page.waitForSelector('#contextMenu:not([hidden])');
+    const linkMenu = await page.textContent('#contextMenu');
+    assert.match(linkMenu, /Carry it by medium truckV.*Carry it by mini-vanV/s);
+    assert.ok(!/heavy truck|small truck/.test(linkMenu), linkMenu);
+    await page.click('#contextMenu button:has-text("Carry it by mini-van")');
+    assert.deepEqual(await harbourVehicles(), [{ type: 'miniVan', fleet: null }]);
+    // With V: the next type that may take it, round the catalogue.
+    await page.keyboard.press('v');
+    assert.deepEqual(await harbourVehicles(), [{ type: 'mediumTruck', fleet: null }]);
+    assert.match(await page.textContent('#undoText'), /carried by medium trucks/);
+    // Medium trucks kept off stores: the link to Harbour shop cannot be built, and says why.
+    await page.uncheck('#vehicleList [data-type="mediumTruck"] [data-vehicle-stores]');
+    assert.match(await page.textContent('#networkStatus'), /Medium truck may not deliver to stores: choose another vehicle for Warehouse 1 → Harbour shop\./);
+    assert.equal(await page.isDisabled('#buildButton'), true);
+    await page.click('#undoButtonTool');
+    assert.ok(!/may not deliver/.test(await page.textContent('#networkStatus')));
+    // Undo, step by step: V, the menu, the type taken off, the fleet, the type added, the type chosen.
+    for (let step = 0; step < 6; step += 1) await page.click('#undoButtonTool');
+    assert.equal(await harbourVehicles(), undefined, 'back to its kind\'s vehicles');
+    await page.click('#redoButtonTool');
+    assert.deepEqual(await harbourVehicles(), [{ type: 'smallTruck', fleet: null }]);
+    await page.keyboard.press('Escape');
+    noErrors();
+
     // 7. The model, built from the pins and links.
     await page.click('#buildButton');
     await page.waitForSelector('#buildStatus .notice.ok, #buildStatus .notice.error', { timeout: 60000 }).catch(fail);
     const built = await page.textContent('#buildStatus');
-    assert.match(built, /^2 suppliers, \d road lanes?, 6 stores and customer areas served: \d+ nodes and \d+ relationships, now in the canvas\./, built);
+    assert.match(built, /^2 suppliers, \d+ road lanes?, 6 stores and customer areas served: \d+ nodes and \d+ relationships, now in the canvas\./, built);
     const lanes = await page.evaluate(() => document.querySelector('#buildResult table').tBodies[0].rows.length);
+    const supplyLanes = await stateOf(() => window.logisticsToolboxState.built.lanes.filter((lane) => lane.kind === 'supply').length);
     const unusedLinks = await stateOf(() => window.logisticsToolboxState.built.unusedLinks.length);
-    assert.equal(lanes + unusedLinks, 4, 'a lane for each supply link, or the link said to be left out');
+    assert.equal(supplyLanes + unusedLinks, 4, 'a lane for each supply link, or the link said to be left out');
+    // And one to each store and dark store from each of its warehouses: they hold stock, restocked by road.
+    const stocked = placements.filter(([role]) => role === 'store' || role === 'darkStore').length;
+    const storeLanes = await stateOf(() => window.logisticsToolboxState.built.lanes.filter((lane) => lane.kind === 'store'));
+    assert.equal(new Set(storeLanes.map((lane) => lane.site)).size, stocked, 'a lane to every store and dark store');
+    assert.equal(lanes, supplyLanes + storeLanes.length, 'every lane in the table');
     assert.match(await page.textContent('#buildResult'), /Harbour shop/);
     assert.ok(host.session?.version === 2 && host.session.pins.length === placements.length, 'the session went with the model');
+    assert.match(await page.textContent('#buildResult'), /pallets\/day.*vehicles/s);
+    assert.ok(storeLanes.some((lane) => lane.site === 'Harbour shop' && lane.vehicles[0].type === 'smallTruck'), 'Harbour shop restocked by small trucks');
+    assert.deepEqual(host.session.vehicles.find((type) => type.id === 'miniVan').fields.capacity, { value: 2.5, basis: 'user' });
+    assert.deepEqual(host.session.links.find((link) => link.id === harbourLink.id).vehicles, [{ type: 'smallTruck', fleet: null }]);
     noErrors();
+
+    // 7b. With an engine (KONJUGATE_ENGINE=export runs the model as Konjugate's code export writes it): Harbour shop's
+    // only lane closed for ten days, and the summary shows its shelves empty and its shoppers waiting.
+    if (process.env.KONJUGATE_ENGINE === 'export') {
+        assert.equal(await page.isVisible('#scenarioTabs'), true, 'the scenarios show once the model is built');
+        await page.click('#scenarioTabs [data-scenario="roadClosure"]');
+        const harbourLane = storeLanes.find((lane) => lane.site === 'Harbour shop');
+        await page.selectOption('#closureLaneSelect', harbourLane.name);
+        assert.match(await page.textContent('#closureHint'), /Harbour shop's orders over it queue until it reopens/);
+        await page.fill('#startInput', '5');
+        await page.fill('#durationInput', '10');
+        await page.click('#runScenarioButton');
+        await page.waitForSelector('#scenarioResult table', { timeout: 120000 }).catch(fail);
+        const result = await page.textContent('#scenarioResult');
+        assert.match(result.trim(), /^Warehouse 1 → Harbour shop closed from day 5 for 10 days: [\d.]+ pallets a day it no longer carries, its orders waiting for the road to reopen\./, result);
+        const row = await page.evaluate(() => [...document.querySelectorAll('#scenarioResult table')].find((table) => /Store/.test(table.tHead.textContent))
+            ?.querySelector('tbody tr')?.textContent);
+        assert.match(row ?? '', /^Harbour shop/, 'the store that ran lowest comes first');
+        const empty = await stateOf(() => window.logisticsToolboxState.scenario.stores.find((item) => item.name === 'Harbour shop').emptyDays);
+        assert.ok(empty.scenario > 5 && empty.baseline === 0, `its shelves were empty for most of the closure (${empty.scenario} days)`);
+        assert.match(result, /fullest/, 'a warehouse with room for 400 pallets says how full it got');
+        noErrors();
+    }
 
     // 8. Suggestions, only when asked for: ports from the sample's data (nothing fetched), shown hollow, adopted by a click.
     assert.deepEqual(host.requests, [], 'the sample region fetches nothing');
@@ -362,7 +471,7 @@ try {
     assert.deepEqual(parsed.errors, []);
     const all = await pins();
     assert.deepEqual([...parsed.sites.ports, ...parsed.sites.zones, ...parsed.sites.towns].map((site) => site.name).sort(), all.map((pin) => pin.name).sort());
-    assert.match(csv, /^Harbour shop,store,[-\d.]+,[-\d.]+,20,,,Warehouse 1$/m);
+    assert.match(csv, /^Harbour shop,store,[-\d.]+,[-\d.]+,20,,,,,Warehouse 1$/m);
 
     // 10. The session, kept with the project, restores the network on reopening.
     const kept = { pins: await pins(), links: (await links()).map((link) => [link.from, link.to, link.basis]) };
@@ -372,6 +481,9 @@ try {
     assert.deepEqual(await pins(), kept.pins);
     assert.deepEqual((await links()).map((link) => [link.from, link.to, link.basis]), kept.links);
     assert.ok((await links()).every((link) => link.routed), 'routed again');
+    assert.deepEqual(await harbourVehicles(), [{ type: 'smallTruck', fleet: null }], 'a link keeps its vehicles');
+    assert.equal(await stateOf(() => window.logisticsToolboxState.vehicles.find((type) => type.id === 'miniVan').fields.capacity.value), 2.5, 'the catalogue is kept');
+    assert.equal(await stateOf(() => window.logisticsToolboxState.pins[2].fields.capacity.value), 400, 'a warehouse keeps its room');
     assert.match(await page.textContent('#buildResult'), /Harbour shop/);
     assert.equal(await page.locator('#map .site.dropped').count(), 2, 'the suggestions asked for are shown again (Birch Harbour and the third town)');
     noErrors();
@@ -517,7 +629,7 @@ try {
     await macPage.close();
     noErrors();
 
-    console.log(`✓ logistics network window: the sample region loads its roads alone; ${placements.length} pins placed from the palette are linked and routed as suggested; every action works from a button or menu, a drag or a right click, and the keyboard, and undoes; a moved store re-routes its one link in ${routing.milliseconds < 1 ? 'under a millisecond' : `${routing.milliseconds.toFixed(0)} ms`}; links are drawn, refused with a reason, deleted and not suggested again; the model is built from the pins and links (${built.match(/\d+ nodes/)[0]}); ports and towns are suggested only when asked for and adopted; the network saves as a CSV and loads back; the session restores it, and an earlier session is migrated; shortcuts behave and read as Windows and Linux users and Mac users expect; a network is kept with the project before any build; an area loaded is kept on the computer and loads again with nothing fetched, fresh on request, and the cache clears; a searched region fetches its roads and place names alone, and ports only when asked for.`);
+    console.log(`✓ logistics network window: the sample region loads its roads alone; ${placements.length} pins placed from the palette are linked and routed as suggested; every action works from a button or menu, a drag or a right click, and the keyboard, and undoes; a moved store re-routes its one link in ${routing.milliseconds < 1 ? 'under a millisecond' : `${routing.milliseconds.toFixed(0)} ms`}; links are drawn, refused with a reason, deleted and not suggested again; the model is built from the pins and links (${built.match(/\d+ nodes/)[0]}), its stores holding stock and its links on the vehicles chosen on their cards, from their menus and with V;${process.env.KONJUGATE_ENGINE === 'export' ? ' a store whose road closes runs out of stock;' : ''} ports and towns are suggested only when asked for and adopted; the network saves as a CSV and loads back; the session restores it, and an earlier session is migrated; shortcuts behave and read as Windows and Linux users and Mac users expect; a network is kept with the project before any build; an area loaded is kept on the computer and loads again with nothing fetched, fresh on request, and the cache clears; a searched region fetches its roads and place names alone, and ports only when asked for.`);
 } finally {
     await browser.close();
     await rm(scratch, { recursive: true, force: true });

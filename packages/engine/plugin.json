@@ -54,6 +54,12 @@
             "entry": "components/delivery.json"
         },
         {
+            "kind": "component",
+            "componentId": "storeShipment",
+            "apiVersion": 1,
+            "entry": "components/storeShipment.json"
+        },
+        {
             "kind": "example",
             "exampleId": "portWarehouseNetwork",
             "apiVersion": 1,

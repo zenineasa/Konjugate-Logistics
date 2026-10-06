@@ -35,7 +35,7 @@ link = { id, from, to, basis: 'suggested' | 'user', leg: { kilometres, hours, ba
 | Dark store | `demandZone` + `delivery` | Delivers, units a day (3 assumed) | Works as a store until H |
 | Customer area | `demandZone` + `delivery` | Orders, units a day; population (20,000 assumed) | None new |
 
-Every unit counts as one TEU in the model until categories come in C, and the Network step says so. Where the sources' total and the demand pins' own figures differ, the builder scales the demand together to match, and its warning says by how much.
+Every unit counted as one TEU in the model when A and B were built; since the first part of C the network counts pallets, a port's containers as ten each, and the Network step says so. Where the sources' total and the demand pins' own figures differ, the builder scales the demand together to match, and its warning says by how much.
 
 ## What was built, by file
 

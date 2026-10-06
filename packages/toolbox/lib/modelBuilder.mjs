@@ -37,21 +37,37 @@ export class ModelBuilder {
         return template;
     }
 
+    // Unit words to say otherwise in every unit the model shows: { TEU: 'pallets', trucks: 'vehicles' } for a network
+    // that counts pallets and runs on vehicles of several kinds. The templates' equations do not change.
+    unitNames = {};
+
+    relabel(unit = '') {
+        return Object.entries(this.unitNames).reduce((text, [word, said]) => text.replace(new RegExp(`\\b${word}\\b`, 'g'), said), unit);
+    }
+
     // `values` overrides the value of a shared parameter this placement creates, by key -- what a
     // user does by editing it after placing. A project-scoped one that already exists is reused as is.
-    resolveShared(declaredList = [], values = {}) {
+    // `as` places a shared parameter as another one, by key: { symbol, name, unit, value, own }. Without `own` it is
+    // the one shared parameter of that symbol, created by the first placement that names it and reused by the rest (so
+    // a vehicle type's capacity is one parameter for every lane and shipment it runs on, though the template declares a
+    // lane's truck capacity once for the whole model); with `own`, this placement's alone (so one warehouse can have
+    // a stock cover of its own). What a user does by linking parameters in the parameters panel.
+    resolveShared(declaredList = [], values = {}, as = {}) {
         const byKey = new Map();
         for (const declared of declaredList) {
-            const existing = declared.scope === 'project' ? this.sharedParameters.find((shared) => shared.symbol === declared.symbol) : null;
+            const alias = as[declared.key];
+            const symbolWanted = alias?.symbol ?? declared.symbol;
+            const reuse = alias ? !alias.own : declared.scope === 'project';
+            const existing = reuse ? this.sharedParameters.find((shared) => shared.symbol === symbolWanted) : null;
             if (existing) {
                 byKey.set(declared.key, existing);
                 continue;
             }
-            let symbol = declared.symbol;
-            for (let suffix = 2; this.sharedParameters.some((shared) => shared.symbol === symbol); suffix += 1) symbol = `${declared.symbol}${suffix}`;
+            let symbol = symbolWanted;
+            for (let suffix = 2; this.sharedParameters.some((shared) => shared.symbol === symbol); suffix += 1) symbol = `${symbolWanted}${suffix}`;
             const created = {
-                id: this.id(), name: declared.name, symbol, value: values[declared.key] ?? declared.value,
-                unit: declared.unit ?? '', mode: declared.mode ?? 'constant'
+                id: this.id(), name: alias?.name ?? declared.name, symbol, value: alias?.value ?? values[declared.key] ?? declared.value,
+                unit: this.relabel(alias?.unit ?? declared.unit ?? ''), mode: declared.mode ?? 'constant'
             };
             this.sharedParameters.push(created);
             byKey.set(declared.key, created);
@@ -67,7 +83,7 @@ export class ModelBuilder {
         const source = shared ?? parameter;
         return {
             id: this.id(), name: parameter.name, symbol: parameter.symbol, value: Number(source.value) || 0,
-            unit: source.unit ?? '', mode: source.mode ?? 'constant', ...(shared ? { sharedParameterId: shared.id } : {})
+            unit: shared ? shared.unit : this.relabel(source.unit ?? ''), mode: source.mode ?? 'constant', ...(shared ? { sharedParameterId: shared.id } : {})
         };
     }
 
@@ -102,14 +118,14 @@ export class ModelBuilder {
         ];
     }
 
-    placeNode(templateId, { name, position = [0, 0, 0], initialValues = {}, shared = {} } = {}) {
+    placeNode(templateId, { name, position = [0, 0, 0], initialValues = {}, shared = {}, as = {} } = {}) {
         const template = this.template(templateId, 'node');
-        const sharedByKey = this.resolveShared(template.sharedParameters, shared);
+        const sharedByKey = this.resolveShared(template.sharedParameters, shared, as);
         const node = {
             id: this.id(), name: name ?? template.name, type: template.name, position, sourceTerms: [],
             states: template.states.map((state) => ({
                 id: this.id(), name: state.label, symbol: state.symbol,
-                initialValue: initialValues[state.symbol] ?? state.initialValue, unit: state.unit ?? ''
+                initialValue: initialValues[state.symbol] ?? state.initialValue, unit: this.relabel(state.unit ?? '')
             })),
             appearance: { type: 'primitive', shape: template.shape ?? 'box', color: template.color ?? '#34727a' }
         };
@@ -135,10 +151,10 @@ export class ModelBuilder {
     }
 
     // `endpoints` maps each of the bundle's endpoint ids to a placed node.
-    applyBundle(templateId, endpoints, { shared = {} } = {}) {
+    applyBundle(templateId, endpoints, { shared = {}, as = {} } = {}) {
         const template = this.template(templateId, 'bundle');
         for (const endpoint of template.endpoints) if (!endpoints[endpoint.id]) throw new Error(`${template.name}: no node for endpoint "${endpoint.id}".`);
-        const sharedByKey = this.resolveShared(template.sharedParameters, shared);
+        const sharedByKey = this.resolveShared(template.sharedParameters, shared, as);
         const created = [];
         for (const edge of template.edges) {
             const source = endpoints[edge.from];

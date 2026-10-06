@@ -9,8 +9,8 @@
 //   - a port's volume is set on its card, the model is built from the pins and links and appears in the canvas
 //   - dragging a warehouse on the map rebuilds the model with new lane distances
 //   - a customer area placed on the map is served in the rebuilt model
-//   - a chokepoint disruption, its cargo lost, delayed or diverted to another port; then an invented fleet operator, labelled synthetic, and a road closure, a fleet cut
-//     and a demand surge from the scenario tabs
+//   - a chokepoint disruption, its cargo lost, delayed or diverted to another port, in pallets; then lanes on heavy trucks,
+//     and a road closure, a cut in heavy trucks and a demand surge from the scenario tabs
 //   - the session is kept with the project, saved with it, and restored from it with no network
 // Uses Playwright from the Konjugate checkout, as the other interaction test does.
 
@@ -191,7 +191,8 @@ try {
         assert.match(built, /^2 ports, \d+ road lanes?, 3 stores and customer areas served: (\d+) nodes and (\d+) relationships, now in the canvas\./);
         const [, nodes, edges] = built.match(/(\d+) nodes and (\d+) relationships/).map(Number);
         await window.waitForFunction(([n, e]) => new RegExp(`${n} nodes`).test(document.querySelector('.modelStatus').textContent) && new RegExp(`${e} relationships`).test(document.querySelector('.modelStatus').textContent), [nodes, edges], { timeout: 30000 });
-        assert.match(await toolbox.textContent('#buildResult'), /Containers handed inland: 150/);
+        // Counted in pallets, ten a container.
+        assert.match(await toolbox.textContent('#buildResult'), /Containers handed inland: 1,500 pallets\/day/);
         assert.ok(await toolbox.locator('#map .lane').count() > 0, 'The lanes are drawn on the map.');
 
         // 5. Drag Alder Industrial Park a little north: the model is rebuilt with new distances to it.
@@ -223,7 +224,7 @@ try {
         assert.equal(log.filter((line) => line.startsWith('pageerror') || line.startsWith('error')).length, 0, log.join('\n'));
 
         // 5b. A chokepoint disruption. Port Alder lies on open sea, so it depends on Suez only once its share is set; then
-        // three days at a quarter of the usual transits (the drop PortWatch shows) cost it 150 x 75% x 3 TEU.
+        // three days at a quarter of the usual transits (the drop PortWatch shows) cost it 150 x 75% x 3 TEU, 3,375 pallets.
         await toolbox.waitForFunction(() => !document.querySelector('#stepScenario').hidden && !document.querySelector('#buildButton').disabled, null, { timeout: 30000 }).catch(fail);
         await toolbox.selectOption('#chokepointSelect', 'chokepoint1');
         await toolbox.waitForFunction(() => /10\.0 container ships a day .* against 40\.0 in 2023, its busiest full year: 75% fewer/.test(document.querySelector('#transitSummary').textContent), null, { timeout: 30000 }).catch(fail);
@@ -238,21 +239,21 @@ try {
         await alderShare.fill('100');
         await alderShare.dispatchEvent('change');
         await toolbox.click('#runScenarioButton');
-        await toolbox.waitForFunction(() => /Kept out \(TEU\)/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
+        await toolbox.waitForFunction(() => /Kept out \(pallets\)/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
         const alderRow = () => toolbox.evaluate(() => [...[...document.querySelectorAll('#scenarioResult tr')].find((row) => row.cells[0]?.textContent === 'Port Alder').cells].map((cell) => Number(cell.textContent.replace(/,/g, ''))));
         const [, keptOut, caughtUp, lost] = await alderRow();
-        assert.ok(Math.abs(keptOut - 337.5) <= 1 && Math.abs(lost - 337.5) <= 1 && caughtUp === 0, `Port Alder should miss 150 x 75% x 3 = 337.5 TEU, all of it lost (shown ${keptOut}, ${caughtUp}, ${lost}).`);
-        // Again with 60% of it delayed, arriving over 5 days after: 202.5 TEU arrive later, and 135 never do.
+        assert.ok(Math.abs(keptOut - 3375) <= 10 && Math.abs(lost - 3375) <= 10 && caughtUp === 0, `Port Alder should miss 1,500 x 75% x 3 = 3,375 pallets, all of it lost (shown ${keptOut}, ${caughtUp}, ${lost}).`);
+        // Again with 60% of it delayed, arriving over 5 days after: 2,025 pallets arrive later, and 1,350 never do.
         await toolbox.fill('#delayedInput', '60');
         await toolbox.fill('#catchUpInput', '5');
         await toolbox.click('#runScenarioButton');
         await toolbox.waitForFunction(() => /60% of the cargo kept out arrives over the 5 days after/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
         const [, keptOutAgain, caughtUpAgain, lostAgain] = await alderRow();
-        assert.ok(Math.abs(keptOutAgain - 337.5) <= 1 && Math.abs(caughtUpAgain - 202.5) <= 1 && Math.abs(lostAgain - 135) <= 1, `60% of 337.5 TEU should arrive later and 135 never (shown ${keptOutAgain}, ${caughtUpAgain}, ${lostAgain}).`);
+        assert.ok(Math.abs(keptOutAgain - 3375) <= 10 && Math.abs(caughtUpAgain - 2025) <= 10 && Math.abs(lostAgain - 1350) <= 10, `60% of 3,375 pallets should arrive later and 1,350 never (shown ${keptOutAgain}, ${caughtUpAgain}, ${lostAgain}).`);
         assert.match(await toolbox.textContent('#scenarioResult'), /Suez Canal: transits cut by 75% from day 2 for 3 days, reaching Port Alder \(100% of its ships\)/);
         assert.equal(await toolbox.locator('#showScenarioButton').isDisabled(), false);
         // Again with half of it diverted to Birch Harbour, outside the canal, whose berths take 400 TEU a day meanwhile:
-        // 168.75 TEU land there instead, and its lanes hire trucks for them.
+        // 168.75 TEU (1,687.5 pallets) land there instead, and its lanes hire trucks for them.
         await toolbox.fill('#delayedInput', '0');
         await toolbox.fill('#divertedInput', '50');
         await toolbox.dispatchEvent('#divertedInput', 'input');
@@ -260,7 +261,7 @@ try {
         assert.deepEqual(await toolbox.evaluate(() => [...document.querySelectorAll('#divertToSelect option')].map((option) => option.value)), ['Birch Harbour'], 'only ports outside the chokepoint');
         await toolbox.fill('#divertBerthsInput', '400');
         await toolbox.click('#runScenarioButton');
-        await toolbox.waitForFunction(() => /50% of it is diverted to Birch Harbour \(169 TEU\), whose berths take 400 TEU\/day, and trucked inland over \d lanes? with \d+ trucks/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
+        await toolbox.waitForFunction(() => /50% of it is diverted to Birch Harbour \(1,688 pallets\), whose berths take 4,000 pallets\/day, and trucked inland over \d lanes? with \d+ trucks/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
         // Birch Harbour shows the cargo it received as diverted here, not as a negative loss.
         const birchRow = await toolbox.evaluate(() => {
             const table = [...document.querySelectorAll('#scenarioResult table')].find((item) => /Kept out/.test(item.textContent));
@@ -268,7 +269,7 @@ try {
             return [...row.cells].map((cell) => Number(cell.textContent.replace(/,/g, '')));
         });
         assert.deepEqual(birchRow.slice(1, 4), [0, 0, 0], 'it kept nothing out');
-        assert.ok(Math.abs(birchRow[4] - 168.75) <= 1, `about 169 TEU diverted here (shown ${birchRow[4]})`);
+        assert.ok(Math.abs(birchRow[4] - 1687.5) <= 10, `about 1,688 pallets diverted here (shown ${birchRow[4]})`);
         // The summary says how long orders waited, not only whether they were delivered.
         assert.match(await toolbox.textContent('#scenarioResult'), /Days an order waited/);
         // The map shows what the lanes carried while the cut lasted: Port Alder's less, Birch Harbour's standby lanes more.
@@ -297,18 +298,14 @@ try {
         await toolbox.fill('#tonnesPerTeuInput', '12'); await toolbox.dispatchEvent('#tonnesPerTeuInput', 'change');
         await toolbox.waitForFunction(() => /Building the model/.test(document.querySelector('#buildStatus').textContent), null, { timeout: 10000 }).catch(() => {});
         await toolbox.fill('#portVolume', '80'); await toolbox.dispatchEvent('#portVolume', 'change');
-        await toolbox.waitForFunction((volume) => [...document.querySelectorAll('#buildResult details tr')].some((row) => row.cells[0]?.textContent === 'Birch Harbour' && row.cells[1]?.textContent.startsWith(`Containers handed inland: ${volume}`)) && document.querySelector('#buildStatus .notice.ok'), '80', { timeout: 120000 }).catch(fail);
+        await toolbox.waitForFunction((volume) => [...document.querySelectorAll('#buildResult details tr')].some((row) => row.cells[0]?.textContent === 'Birch Harbour' && row.cells[1]?.textContent.startsWith(`Containers handed inland: ${volume}`)) && document.querySelector('#buildStatus .notice.ok'), '800 pallets', { timeout: 120000 }).catch(fail);
         await toolbox.fill('#tonnesPerTeuInput', '10'); await toolbox.dispatchEvent('#tonnesPerTeuInput', 'change');
         await toolbox.fill('#portVolume', '100'); await toolbox.dispatchEvent('#portVolume', 'change');
-        await toolbox.waitForFunction((volume) => [...document.querySelectorAll('#buildResult details tr')].some((row) => row.cells[0]?.textContent === 'Birch Harbour' && row.cells[1]?.textContent.startsWith(`Containers handed inland: ${volume}`)) && document.querySelector('#buildStatus .notice.ok'), '100', { timeout: 120000 }).catch(fail);
+        await toolbox.waitForFunction((volume) => [...document.querySelectorAll('#buildResult details tr')].some((row) => row.cells[0]?.textContent === 'Birch Harbour' && row.cells[1]?.textContent.startsWith(`Containers handed inland: ${volume}`)) && document.querySelector('#buildStatus .notice.ok'), '1,000 pallets', { timeout: 120000 }).catch(fail);
 
-        // 5c. An invented fleet operator: the model is rebuilt with its trucks, labelled synthetic.
-        await toolbox.selectOption('#operatorSelect', 'synthetic');
-        await toolbox.waitForFunction(() => /Quayside Haulage \(an invented operator\)/.test(document.querySelector('#buildResult').textContent), null, { timeout: 60000 }).catch(fail);
-        assert.match(await toolbox.textContent('#buildResult'), /synthetic: invented and plausible, not a real company/);
-        assert.ok(await toolbox.locator('#buildResult .basis.synthetic', { hasText: 'operator' }).count() >= 2, 'its lanes are marked');
-        assert.match(await toolbox.textContent('#buildResult details summary'), /\d+ synthetic/);
-        assert.ok(!/fall behind/.test(await toolbox.textContent('#buildStatus')), 'it keeps up with its lanes');
+        // 5c. The network runs on its vehicle types: heavy trucks from the ports (no fleet operator in a network of its own).
+        assert.equal(await toolbox.locator('#operatorRow').isVisible(), false);
+        assert.match(await toolbox.textContent('#buildResult'), /heavy trucks/);
         const runTab = async (tab, expected, setUp = async () => {}) => {
             await toolbox.click(`#scenarioTabs [data-scenario="${tab}"]`);
             assert.equal(await toolbox.locator(`.scenarioPanel[data-panel="${tab}"]`).isVisible(), true);
@@ -321,7 +318,7 @@ try {
         };
         // The busiest lane closed for 3 days from day 2, its trucks waiting: the cargo waits at the port, and its
         // warehouse lives on its stock (three days' cover, so its towns are still served).
-        await runTab('roadClosure', /closed from day 2 for 3 days: \d+ TEU a day it no longer carries, its orders waiting/);
+        await runTab('roadClosure', /closed from day 2 for 3 days: [\d,.]+ pallets a day it no longer carries, its orders waiting/);
         const lowest = () => toolbox.evaluate(() => [...document.querySelectorAll('#scenarioResult table')].find((table) => /Lowest stock/.test(table.textContent))
             .querySelectorAll('td.worse').length);
         assert.ok(await lowest() >= 1, 'the closed lane\'s warehouse runs down its stock');
@@ -331,13 +328,13 @@ try {
             assert.equal(await toolbox.locator('#closureDetourRow').isVisible(), true);
             await toolbox.fill('#detourHoursInput', '4');
         });
-        // The operator's trucks cut by 40%.
-        await runTab('fleetChange', /Trucks on the lanes Quayside Haulage \(an invented operator\) carries changed by -40% from day 2 for 3 days: \d+ to \d+\./, async () => {
-            assert.equal(await toolbox.inputValue('#fleetLanesSelect'), 'operator');
+        // The heavy trucks cut by 40%, on every lane they run on.
+        await runTab('fleetChange', /Vehicles on every lane with heavy trucks changed by -40% from day 2 for 3 days: \d+ to \d+\./, async () => {
+            await toolbox.selectOption('#fleetLanesSelect', 'type:heavyTruck');
             await toolbox.fill('#fleetChangeInput', '-40');
         });
         // Demand up by half everywhere.
-        const surge = await runTab('demandSurge', /Demand up 50% in every town from day 2 for 3 days: \d+ TEU more ordered\./, () => toolbox.fill('#demandChangeInput', '50'));
+        const surge = await runTab('demandSurge', /Demand up 50% in every store, dark store and customer area from day 2 for 3 days: [\d,]+ pallets more ordered\./, () => toolbox.fill('#demandChangeInput', '50'));
         assert.ok(/Highest backlog/.test(surge));
         assert.equal(log.filter((line) => line.startsWith('pageerror') || line.startsWith('error')).length, 0, log.join('\n'));
 
@@ -351,11 +348,10 @@ try {
         assert.equal(await toolbox.inputValue('#field-teuPerDay'), '150');
         assert.equal(await toolbox.locator('#map .site.dropped').count(), 0, 'every suggestion asked for was adopted');
         assert.match(await toolbox.textContent('#buildResult'), /Harbour customers/);
-        assert.match(await toolbox.textContent('#scenarioResult'), /Demand up 50% in every town/, 'and the last scenario run');
+        assert.match(await toolbox.textContent('#scenarioResult'), /Demand up 50% in every store, dark store and customer area/, 'and the last scenario run');
         assert.equal(await toolbox.evaluate(() => document.querySelector('#scenarioTabs .active').dataset.scenario), 'demandSurge', 'on its tab');
         assert.equal(await toolbox.inputValue('#demandChangeInput'), '50');
         assert.equal(await toolbox.inputValue('#closureModeSelect'), 'detour');
-        assert.equal(await toolbox.inputValue('#operatorSelect'), 'synthetic');
         assert.equal(await toolbox.inputValue('#chokepointSelect'), 'chokepoint1');
         // A scenario run straight after the session is restored builds the model again first, then runs.
         await toolbox.fill('#demandChangeInput', '40');
@@ -387,7 +383,7 @@ try {
         assert.equal(entry.window.pins.filter((pin) => pin.role === 'customerArea').length, 4, 'the three towns and the customer area placed on the map');
         assert.ok(entry.window.pins.some((pin) => pin.name === 'Harbour customers'));
         assert.deepEqual(entry.window.suggestions.sort(), ['ports', 'towns', 'warehouses'], 'and the suggestions asked for');
-        assert.equal(entry.window.operator, 'synthetic', 'and the invented operator');
+        assert.deepEqual(entry.window.vehicles.map((type) => type.id), ['heavyTruck', 'mediumTruck', 'smallTruck', 'miniVan'], 'and the vehicle types');
         assert.equal(saved.nodes.length, nodes + 1, 'the model with the added customer');
         assert.equal(entry.window.scenarioSettings.demand.change, 35, 'and the change shown in Konjugate just before saving');
         await app.close();
@@ -411,7 +407,7 @@ try {
         } finally {
             await offline.close().catch(() => {});
         }
-        console.log(`✓ logistics region window: the sample region and a searched region load their roads alone; ports, warehouses and towns are fetched and suggested only when asked for, and adopted; the model (${nodes} nodes, ${edges} relationships) is built from the pins and links and opens in the canvas; dragging Alder Industrial Park moves its lane from ${before} to ${after} km; a customer area placed on the map is served; a chokepoint's cargo is diverted to Birch Harbour; an invented operator is labelled synthetic; a road closure, a detour, a fleet cut and a demand surge run from their tabs; the session is kept with the project (and a scenario runs straight after it is restored), saved with it, and restored from it with no network.`);
+        console.log(`✓ logistics region window: the sample region and a searched region load their roads alone; ports, warehouses and towns are fetched and suggested only when asked for, and adopted; the model (${nodes} nodes, ${edges} relationships) is built from the pins and links and opens in the canvas; dragging Alder Industrial Park moves its lane from ${before} to ${after} km; a customer area placed on the map is served; a chokepoint's cargo is diverted to Birch Harbour; the lanes run on heavy trucks, counted in pallets; a road closure, a detour, a cut in heavy trucks and a demand surge run from their tabs; the session is kept with the project (and a scenario runs straight after it is restored), saved with it, and restored from it with no network.`);
     } finally {
         await app?.close().catch(() => {});
     }

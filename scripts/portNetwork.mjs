@@ -55,9 +55,11 @@ export async function buildPortNetworkModel(options = {}) {
     // position, forecast x (planned replenishment time + stock cover).
     const warehouse = (name, position, demand, planningLeadTime, lanes) => {
         const onOrder = lanes.reduce((total, { rate, leadTime }) => total + rate * (0.5 + leadTime), 0);
+        const stock = demand * (planningLeadTime + 3) - onOrder;
+        // Space used is stock over the template's storage capacity, which is large enough to be no limit here.
         return model.placeNode('warehouse', {
             name, position,
-            initialValues: { stock: demand * (planningLeadTime + 3) - onOrder, onOrder, forecast: demand, orderRate: demand },
+            initialValues: { stock, onOrder, forecast: demand, orderRate: demand, spaceUsed: stock / 1000000 },
             shared: { planningLeadTime }
         });
     };
