@@ -16,3 +16,5 @@ Conventions:
 - Every input is labelled with where it came from; results compare choices, never forecast; never tune a scenario to look better; state limits and bugs plainly.
 - Every fix comes with a test that would have caught it. Keep `ReadMe.md` and `docs/direction.md` current.
 - Fetch from public map servers one region at a time.
+- Design the window for newcomers, regular users and power users alike: every action has a button or menu item, a gesture on the map and a key, acts on the whole selection and can be undone, on Windows, Linux and macOS alike, each with its own keys (`lib/platform.mjs`; [docs/interaction.md](docs/interaction.md)). Keep that document's table current when an action changes.
+- `npm run test:window` drives the window in a plain browser (no Konjugate build needed); run it with `npm test` on any change to the window.

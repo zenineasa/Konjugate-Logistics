@@ -7,15 +7,19 @@
 export const overpassHost = 'overpass-api.de';
 
 const majorRoads = 'motorway|trunk|primary|motorway_link|trunk_link|primary_link';
+// For a city: the streets stores and dark stores are on as well.
+const cityRoads = `${majorRoads}|secondary|tertiary|secondary_link|tertiary_link`;
+export const roadLevels = ['major', 'city'];
 
-// `bbox` is { south, west, north, east } in degrees.
-export function overpassQueries(bbox) {
+// `bbox` is { south, west, north, east } in degrees. `roadLevel` is 'major' (motorways, trunk and primary roads, for a
+// region) or 'city' (secondary and tertiary roads too).
+export function overpassQueries(bbox, { roadLevel = 'major' } = {}) {
     const box = `(${bbox.south},${bbox.west},${bbox.north},${bbox.east})`;
     const head = '[out:json][timeout:90];';
     return {
         ports: `${head}(nwr["landuse"="port"]${box};nwr["industrial"="port"]${box};nwr["harbour"="yes"]${box};nwr["seamark:type"="harbour"]${box};nwr["leisure"="marina"]${box};nwr["seamark:type"="anchorage"]${box};nwr["seamark:type"="anchor_berth"]${box};);out geom qt;`,
         logistics: `${head}(way["building"="warehouse"]${box};nwr["industrial"~"^(warehouse|logistics|distribution)$"]${box};)->.w;.w out bb qt;(way["landuse"="industrial"]${box};relation["landuse"="industrial"]${box};)->.l;.l out geom qt;`,
-        roads: `${head}way["highway"~"^(${majorRoads})$"]${box};out geom qt;`,
+        roads: `${head}way["highway"~"^(${roadLevel === 'city' ? cityRoads : majorRoads})$"]${box};out geom qt;`,
         rail: `${head}(way["railway"="rail"]["service"!~"^(siding|spur|yard)$"]${box};)->.r;.r out geom qt;(nwr["railway"="yard"]${box};nwr["landuse"="railway"]${box};nwr["railway"="station"]["usage"="freight"]${box};)->.y;.y out center qt;`,
         places: `${head}node["place"~"^(city|town|suburb|quarter)$"]${box};out qt;`
     };
@@ -25,6 +29,9 @@ export function overpassQueries(bbox) {
 // this, so no single query is heavy enough for a busy public server to give up on.
 export const tiledKinds = ['logistics', 'roads'];
 export const maximumTileKilometres = 40;
+// City streets are several times denser: smaller tiles, and a smaller area in all.
+export const cityTileKilometres = 10;
+export const maximumCityKilometres = 40;
 
 export function splitBbox(bbox, maximumKilometres = maximumTileKilometres) {
     const height = (bbox.north - bbox.south) * 111.32;
@@ -43,12 +50,15 @@ export function splitBbox(bbox, maximumKilometres = maximumTileKilometres) {
     return tiles;
 }
 
-// Every request a region needs: { kind, part, parts, depth, bbox, query }, one per kind, or one per tile for the tiled kinds.
-export function overpassRequests(bbox) {
+// Every request a region needs: { kind, part, parts, depth, bbox, roadLevel, query }, one per kind, or one per tile for
+// the tiled kinds. `kinds` limits them (the roads and place names alone, say); all five by default.
+export function overpassRequests(bbox, { kinds = null, roadLevel = 'major' } = {}) {
     const requests = [];
     for (const kind of Object.keys(overpassQueries(bbox))) {
-        const tiles = tiledKinds.includes(kind) ? splitBbox(bbox) : [bbox];
-        tiles.forEach((tile, index) => requests.push({ kind, part: `${index + 1}`, parts: tiles.length, depth: 0, bbox: tile, query: overpassQueries(tile)[kind] }));
+        if (kinds && !kinds.includes(kind)) continue;
+        const size = kind === 'roads' && roadLevel === 'city' ? cityTileKilometres : maximumTileKilometres;
+        const tiles = tiledKinds.includes(kind) ? splitBbox(bbox, size) : [bbox];
+        tiles.forEach((tile, index) => requests.push({ kind, part: `${index + 1}`, parts: tiles.length, depth: 0, bbox: tile, roadLevel, query: overpassQueries(tile, { roadLevel })[kind] }));
     }
     return requests;
 }
@@ -64,7 +74,7 @@ export function splitRequest(request) {
     return [
         { south, west, north: middleLat, east: middleLon }, { south, west: middleLon, north: middleLat, east },
         { south: middleLat, west, north, east: middleLon }, { south: middleLat, west: middleLon, north, east }
-    ].map((tile, index) => ({ ...request, part: `${request.part}.${index + 1}`, depth: request.depth + 1, bbox: tile, query: overpassQueries(tile)[request.kind] }));
+    ].map((tile, index) => ({ ...request, part: `${request.part}.${index + 1}`, depth: request.depth + 1, bbox: tile, query: overpassQueries(tile, { roadLevel: request.roadLevel })[request.kind] }));
 }
 
 // A public server that is busy answers 429 (too many requests) or 502 to 504 (gave up waiting): worth another try later.

@@ -221,7 +221,7 @@ test('a CSV of the user\'s own sites is read with loose headers, and bad lines a
     const bad = parseSites('name,kind,latitude,longitude\n,port,1,2\nA,shipyard,1,2\nB,port,95,2\n');
     assert.deepEqual(bad.errors, [
         'Line 2: the site has no name.',
-        'Line 3: "shipyard" is not a kind of site. Use port, warehouse or customer.',
+        'Line 3: "shipyard" is not a kind of site. Use supplier, port, warehouse, store, dark store or customer area.',
         'Line 4: B needs a latitude between -90 and 90 and a longitude between -180 and 180.'
     ]);
     assert.deepEqual(parseSites('name,latitude\nA,1').errors, ['The header has no kind column.', 'The header has no longitude column.']);
@@ -1074,4 +1074,18 @@ test('a routed lane gives the roads it follows, and lanes sharing a road are dra
     assert.ok(corridors.some((item) => item.lanes.join() === 'C' && item.standby), 'alone, it is standby');
     const estimated = corridors.find((item) => item.lanes.join() === 'D');
     assert.deepEqual([estimated.basis, estimated.points], ['straight-line', [[2, 2], [3, 3]]], 'an estimated lane stays straight, and says so');
+});
+
+test('a road-only load asks for the roads and place names alone, and city streets come in smaller tiles, quarters included', () => {
+    const bbox = { south: 25.0, west: 55.0, north: 25.3, east: 55.3 };
+    const light = overpassRequests(bbox, { kinds: ['roads', 'places'] });
+    assert.deepEqual([...new Set(light.map((request) => request.kind))], ['roads', 'places']);
+    assert.ok(light.every((request) => !/"(secondary|tertiary)/.test(request.query)), 'major roads by default');
+    const city = overpassRequests(bbox, { kinds: ['roads'], roadLevel: 'city' });
+    // 33 km by just over 30 km at 25 degrees north: four rows of four tiles, none wider than 10 km.
+    assert.equal(city.length, 16);
+    assert.ok(city.every((request) => request.roadLevel === 'city' && /secondary\|tertiary/.test(request.query)));
+    assert.ok(splitRequest(city[0]).every((request) => /secondary\|tertiary/.test(request.query)), 'a tile split into quarters keeps its road level');
+    assert.ok(!/secondary/.test(overpassQueries(bbox).roads));
+    assert.match(overpassQueries(bbox, { roadLevel: 'city' }).roads, /tertiary_link/);
 });

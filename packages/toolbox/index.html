@@ -11,13 +11,13 @@
         <aside class="panel" id="panel">
             <section class="step" id="stepRegion">
                 <div class="stepHeader" data-step="stepRegion">
-                    <h2><span class="stepNumber">1</span> Region</h2>
+                    <h2><span class="stepNumber">1</span> Map</h2>
                     <span class="stepSummary" id="stepRegionSummary"></span>
-                    <button type="button" class="stepToggle" aria-label="Toggle Region section">▾</button>
+                    <button type="button" class="stepToggle" aria-label="Toggle Map section">▾</button>
                 </div>
                 <div class="stepContent">
                     <form id="searchForm" class="row">
-                        <input id="searchInput" type="search" placeholder="A port, city or area" autocomplete="off" aria-label="Search for a place">
+                        <input id="searchInput" type="search" placeholder="A city, region or port" autocomplete="off" aria-label="Search for a place">
                         <button class="button" type="submit" id="searchButton">Search</button>
                     </form>
                     <ul class="results" id="searchResults" hidden></ul>
@@ -31,58 +31,65 @@
                                 <option value="50">50 km around it</option>
                             </select>
                         </label>
+                        <label class="row small" title="Major roads suit a region: motorways, trunk and primary roads. City streets add secondary and tertiary roads, where stores and dark stores are, for an area up to 40 km across.">Roads
+                            <select id="roadLevelSelect">
+                                <option value="major" selected>Major roads (a region)</option>
+                                <option value="city">City streets too (a city)</option>
+                            </select>
+                        </label>
                         <div class="muted small" id="areaSize"></div>
-                        <button class="button primary" type="button" id="fetchButton">Fetch map data</button>
+                        <button class="button primary" type="button" id="fetchButton">Load roads</button>
                     </div>
                     <ul class="progress" id="fetchProgress" hidden></ul>
                     <div class="row small">
                         <button class="link" type="button" id="sampleButton">Use the sample region</button>
                         <span class="muted">·</span>
-                        <button class="link" type="button" id="sitesButton">Add your own sites (CSV)</button>
+                        <button class="link" type="button" id="sitesButton">Load your sites (CSV)</button>
+                        <span class="muted">·</span>
+                        <button class="link" type="button" id="saveSitesButton" disabled>Save your sites (CSV)</button>
                     </div>
                     <div id="regionStatus"></div>
-                </div>
-            </section>
-
-            <section class="step" id="stepCoverage" hidden>
-                <div class="stepHeader" data-step="stepCoverage">
-                    <h2><span class="stepNumber">2</span> What the map data shows</h2>
-                    <span class="stepSummary" id="stepCoverageSummary"></span>
-                    <button type="button" class="stepToggle" aria-label="Toggle Coverage section">▾</button>
-                </div>
-                <div class="stepContent">
-                    <div id="coverageSummary" class="coverage"></div>
+                    <div id="coverageSummary" class="coverage" hidden></div>
                     <div id="notices"></div>
                 </div>
             </section>
 
-            <section class="step" id="stepCurate" hidden>
-                <div class="stepHeader" data-step="stepCurate">
-                    <h2><span class="stepNumber">3</span> Keep what matters</h2>
-                    <span class="stepSummary" id="stepCurateSummary"></span>
-                    <button type="button" class="stepToggle" aria-label="Toggle Curate section">▾</button>
+            <section class="step" id="stepNetwork" hidden>
+                <div class="stepHeader" data-step="stepNetwork">
+                    <h2><span class="stepNumber">2</span> Network</h2>
+                    <span class="stepSummary" id="stepNetworkSummary"></span>
+                    <button type="button" class="stepToggle" aria-label="Toggle Network section">▾</button>
                 </div>
                 <div class="stepContent">
-                    <p class="muted small">Tick sites here or click them on the map. Drag a kept site to move it. Most significant first.</p>
-                    <div class="tabs" role="tablist" id="kindTabs">
-                        <button type="button" role="tab" data-group="ports" class="active">Ports <span class="count" data-count="ports"></span></button>
-                        <button type="button" role="tab" data-group="zones">Logistics zones <span class="count" data-count="zones"></span></button>
-                        <button type="button" role="tab" data-group="towns">Towns <span class="count" data-count="towns"></span></button>
-                    </div>
-                    <div class="row small">
-                        <label>Keep the top <input type="number" id="topN" min="0" max="99" step="1"></label>
-                        <button class="link" type="button" id="applyTop">Apply</button>
-                    </div>
-                    <div class="row small" id="portVolumeRow">
-                        <label title="For ports with no IMF PortWatch activity: shared among them by their port land">Assumed volume, on average per port <input type="number" id="portVolume" min="1" step="10"> TEU/day</label>
-                    </div>
-                    <ul class="candidates" id="candidateList"></ul>
+                    <p class="muted small">Pick a role above the map (or press 1 to 6) and click the map to place sites; they snap to the nearest road. Links are suggested. Click a site or a link to change it here or beside it on the map, right-click for its menu, and press ? for the keyboard shortcuts. Everything can be undone. Until product categories come, every unit counts as one TEU in the model.</p>
+                    <div id="networkStatus"></div>
+                    <div class="card" id="selectionCard" hidden></div>
+                    <div class="tabs" role="tablist" id="roleTabs"></div>
+                    <ul class="candidates pins" id="pinList"></ul>
+                    <details id="suggestions">
+                        <summary>Suggestions from public data</summary>
+                        <p class="muted small">Nothing is fetched until you ask. Each source shows what it finds as hollow sites on the map; click one, or Adopt it here, to place it in your network with what was found there.</p>
+                        <div class="sources">
+                            <div class="source" data-source="ports"><button class="button small" type="button" data-fetch-source="ports">Ports</button> <span class="muted small">OpenStreetMap port land, and its activity from IMF PortWatch</span> <span class="state small" data-source-state="ports"></span></div>
+                            <div class="source" data-source="warehouses"><button class="button small" type="button" data-fetch-source="warehouses">Warehouses</button> <span class="muted small">OpenStreetMap warehouses and industrial land</span> <span class="state small" data-source-state="warehouses"></span></div>
+                            <div class="source" data-source="towns"><button class="button small" type="button" data-fetch-source="towns">Towns as customer areas</button> <span class="muted small">the place names loaded with the roads</span> <span class="state small" data-source-state="towns"></span></div>
+                        </div>
+                        <div id="suggestionView" hidden>
+                            <div class="tabs" role="tablist" id="sourceTabs"></div>
+                            <div class="row small">
+                                <label>Adopt the top <input type="number" id="topN" min="1" max="99" step="1" value="3"></label>
+                                <button class="link" type="button" id="applyTop">Adopt</button>
+                            </div>
+                            <div id="suggestionNotices"></div>
+                            <ul class="candidates" id="candidateList"></ul>
+                        </div>
+                    </details>
                 </div>
             </section>
 
             <section class="step" id="stepBuild" hidden>
                 <div class="stepHeader" data-step="stepBuild">
-                    <h2><span class="stepNumber">4</span> Model</h2>
+                    <h2><span class="stepNumber">3</span> Model</h2>
                     <span class="stepSummary" id="stepBuildSummary"></span>
                     <button type="button" class="stepToggle" aria-label="Toggle Model section">▾</button>
                 </div>
@@ -90,6 +97,10 @@
                     <div class="row">
                         <button class="button primary" type="button" id="buildButton">Build model</button>
                         <button class="button" type="button" id="showButton" disabled>Show in Konjugate</button>
+                    </div>
+                    <div id="portSettings" hidden>
+                    <div class="row small">
+                        <label title="For ports with no IMF PortWatch activity and no volume of your own: shared among them by their port land">Assumed volume, on average per port <input type="number" id="portVolume" min="1" step="10"> TEU/day</label>
                     </div>
                     <label class="row small" title="For ports matched to IMF PortWatch. Steady average: the baseline holds still. Follow history: each day's arrivals over the run are that port's container imports on the matching day, the latest days of its history.">Port arrivals
                         <select id="arrivalsSelect">
@@ -102,6 +113,7 @@
                     </div>
                     <label class="row small" title="The days of PortWatch history the model uses: the arrivals it replays, or the days it averages over. Empty: the latest days (replayed), or the whole year fetched (averaged).">History from
                         <input type="date" id="historyFromInput"> <span class="muted" id="historyFromHint">empty: the latest days</span></label>
+                    </div>
                     <div class="row small" title="A haulier's trucks: its truck sizes and costs become the region's, and the lanes it carries run on its trucks. An invented operator is plausible, and labelled synthetic wherever it is used.">
                         <label>Fleet operator
                             <select id="operatorSelect">
@@ -119,7 +131,7 @@
 
             <section class="step" id="stepScenario" hidden>
                 <div class="stepHeader" data-step="stepScenario">
-                    <h2><span class="stepNumber">5</span> Scenarios</h2>
+                    <h2><span class="stepNumber">4</span> Scenarios</h2>
                     <span class="stepSummary" id="stepScenarioSummary"></span>
                     <button type="button" class="stepToggle" aria-label="Toggle Scenarios section">▾</button>
                 </div>
@@ -211,36 +223,52 @@
 
         <section class="mapArea">
             <div class="mapTools">
-                <span class="muted small">Add a site:</span>
-                <button type="button" class="tool" data-add="port">Port</button>
-                <button type="button" class="tool" data-add="zone">Warehouse</button>
-                <button type="button" class="tool" data-add="town">Customer</button>
+                <span class="muted small">Place:</span>
+                <span class="palette" id="palette">
+                    <button type="button" class="tool" data-add="supplier" title="A supplier or factory: a source of goods (key 1)"><i class="swatch supplier"></i>Supplier<kbd>1</kbd></button>
+                    <button type="button" class="tool" data-add="port" title="A port: a source whose arrivals follow ships (key 2)"><i class="swatch port"></i>Port<kbd>2</kbd></button>
+                    <button type="button" class="tool" data-add="warehouse" title="A warehouse or distribution centre (key 3)"><i class="swatch warehouse"></i>Warehouse<kbd>3</kbd></button>
+                    <button type="button" class="tool" data-add="store" title="A store: sells to walk-in customers (key 4)"><i class="swatch store"></i>Store<kbd>4</kbd></button>
+                    <button type="button" class="tool" data-add="darkStore" title="A dark store: serves online orders (key 5)"><i class="swatch darkStore"></i>Dark store<kbd>5</kbd></button>
+                    <button type="button" class="tool" data-add="customerArea" title="A customer area: demand only (key 6)"><i class="swatch customerArea"></i>Customers<kbd>6</kbd></button>
+                </span>
                 <span class="spacer"></span>
                 <span class="flowView" id="flowView" hidden title="What the lanes carried while the scenario lasted, or the baseline">
                     <button type="button" class="tool" data-flows="scenario">Scenario</button><button type="button" class="tool" data-flows="baseline">Baseline</button>
                 </span>
-                <button type="button" class="tool" id="zoomInButton" title="Zoom in">+</button>
-                <button type="button" class="tool" id="zoomOutButton" title="Zoom out">−</button>
-                <button type="button" class="tool" id="fitButton">Fit</button>
+                <button type="button" class="tool" id="undoButtonTool" title="Undo" aria-label="Undo" disabled>↶</button>
+                <button type="button" class="tool" id="redoButtonTool" title="Redo" aria-label="Redo" disabled>↷</button>
+                <button type="button" class="tool" id="zoomInButton" title="Zoom in (+)">+</button>
+                <button type="button" class="tool" id="zoomOutButton" title="Zoom out (-)">−</button>
+                <button type="button" class="tool" id="fitButton" title="Fit the map to the region (0)">Fit</button>
+                <button type="button" class="tool" id="shortcutsButton" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
             </div>
             <svg id="map" role="img" aria-label="Map of the region"></svg>
-            <form class="addSite" id="addSiteForm" hidden>
-                <input id="addSiteName" placeholder="Name" required>
-                <button class="button primary small" type="submit">Add</button>
-                <button class="button small" type="button" id="addSiteCancel">Cancel</button>
-            </form>
+            <div class="mapHint" id="mapHint" hidden></div>
+            <div class="pinPopover" id="pinPopover" hidden>
+                <input type="text" id="popoverName" aria-label="Name" title="The site's name: type to rename it">
+                <span class="muted small" id="popoverRole"></span>
+                <button class="button small" type="button" id="popoverDelete" title="Delete it (or press Delete)">Delete</button>
+            </div>
+            <div class="toast" id="undoToast" hidden role="status"><span id="undoText"></span> <button class="link" type="button" id="undoButton">Undo</button><button class="link" type="button" id="redoButton" hidden>Redo</button></div>
+            <div class="contextMenu" id="contextMenu" role="menu" hidden></div>
+            <div class="shortcuts" id="shortcuts" hidden role="dialog" aria-label="Keyboard shortcuts">
+                <div class="row"><b>Keyboard shortcuts</b><span class="spacer"></span><button class="link" type="button" id="shortcutsClose">Close</button></div>
+                <p class="muted small">Every one of these is also a button, a menu item (right-click) or a drag; the keys are only quicker.</p>
+                <table><tbody id="shortcutList"></tbody></table>
+            </div>
             <div class="legend">
-                <span><i class="swatch port"></i>Port</span>
-                <span><i class="swatch zone"></i>Logistics zone</span>
-                <span><i class="swatch town"></i>Town</span>
-                <span><i class="swatch lane"></i>Road lane</span>
+                <span><i class="swatch link suggested"></i>Suggested link</span>
+                <span><i class="swatch link drawn"></i>Your link</span>
+                <span><i class="swatch hollow"></i>Suggestion</span>
+                <span><i class="swatch lane"></i>Road lane, as built</span>
                 <span id="legendFell" hidden><i class="swatch lane fell"></i>Carried less</span>
                 <span id="legendRose" hidden><i class="swatch lane rose"></i>Carried more</span>
                 <span id="legendBorder" hidden><i class="swatch border"></i>Border</span>
                 <span id="legendUnsettled" hidden title="Disputed, indefinite or a line of control, as Natural Earth classes it"><i class="swatch border unsettled"></i>Disputed or undefined</span>
                 <span class="attribution" id="attribution">Map data © OpenStreetMap contributors</span>
             </div>
-            <div class="mapEmpty" id="mapEmpty">Search for a place, or use the sample region, to see its ports, logistics sites and towns here.</div>
+            <div class="mapEmpty" id="mapEmpty">Search for a city or region and load its roads, or use the sample region, then place your suppliers, warehouses and stores on it.</div>
         </section>
     </main>
     <script type="module" src="toolbox.mjs"></script>

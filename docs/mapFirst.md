@@ -1,121 +1,109 @@
 <!-- Copyright © 2026 Zenin Easa Panthakkalakath -->
 
-# Map first: the plan for milestones A and B
+# Map first: milestones A and B
 
-The first slice of the general supply network ([direction](direction.md), milestones A and B). The user loads the roads of a city or region, places pins from a palette (supplier, port, warehouse, store, dark store, customer area), sees links suggested between them, edits those links by dragging, and builds a model from the pins and links. Nothing is discovered unless the user asks: today's discovery of ports, warehouses and industrial land becomes an import the user starts, whose results appear as suggestions to adopt one by one.
+The first slice of the general supply network ([direction](direction.md), milestones A and B), as built. The user loads the roads of a city or region, places pins from a palette (supplier, port, warehouse, store, dark store, customer area), sees links suggested between them, edits those links by dragging and builds a model from the pins and links. Nothing is discovered unless the user asks: the earlier discovery of ports, warehouses and industrial land is an import the user starts, one source at a time, whose results appear as suggestions to adopt.
 
-What this slice does not do: stock held at stores, categories, the vehicle catalogue and calendars (milestones C and F). Until then every pin maps onto today's templates, and the window says so (see "Roles on today's templates").
+What this slice does not do: stock held at stores, categories, the vehicle catalogue and calendars (milestones C and F). Until then every pin maps onto the port-era templates, and the window says so (see "Roles on today's templates").
 
 ## The workflow
 
-1. **Load roads.** Search a place, choose the area, press *Load roads*. One light fetch: roads and place names, nothing else. The map shows the roads and town labels and an empty palette. The road level is a choice: *Major roads* (as today, for a region) or *City streets* (adds secondary and tertiary roads, for a city, with a smaller maximum area).
-2. **Place pins.** Pick a role in the palette and click the map. The pin snaps to the nearest road (the snap distance shows on its card; a pin more than 2 km from a road is drawn with a warning ring). A card opens with a name and the role's fields, each prefilled with a default labelled *assumed*. Changing a field labels it *yours*. Pins drag to move; the card has *Delete*.
-3. **Links appear.** As pins are placed, links are suggested: each store, dark store and customer area from its nearest warehouse by road time; each warehouse from its nearest supplier or port. Suggested links are drawn dashed and routed along the roads. Drag from a pin's edge to another pin to add a link; drag a link's end to another pin to move it; select a link and press Delete to remove it. A link the user has touched is solid and is never re-suggested.
-4. **Import suggestions (optional).** A section *Suggestions from public data*, closed by default, with one button per source: *Ports* (OpenStreetMap and IMF PortWatch), *Warehouses and industrial land*, *Towns as customer areas*. Each fetches only when pressed, for the area already loaded, and shows what it found as hollow pins with a list beside them. Nothing is adopted until the user clicks a hollow pin (or ticks it in the list, or presses *Adopt the top N*). An adopted pin keeps its source (*sourced*: its port activity, floor area or population) and behaves like any other pin.
-5. **Build.** *Build model* turns pins and links into the canvas model, as today. Scenarios run on it unchanged.
-6. **Save.** Pins, links, the road level and fetched data are saved in the project session, so a network reopens offline. A CSV of pins (role, name, lat, lon, fields) loads and saves the same network.
+1. **Load roads.** Search a place, choose the area, choose the road level and press *Load roads*. One light fetch: roads and place names, nothing else. *Major roads* (motorways, trunk and primary roads) suits a region up to 250 km across; *City streets too* adds secondary and tertiary roads, for an area up to 40 km across, in 10 km tiles. The map shows the roads and as many place names as stay readable: cities always, towns, suburbs and quarters as the map is zoomed in, the larger first, none over another (`lib/labels.mjs`).
+2. **Place pins.** Pick a role in the palette and click the map; keep clicking to place more, Escape to stop. A pin is named by its role and number ("Store 4") and its card opens: name, role and the role's figures, each prefilled with a default labelled *assumed*, labelled *yours* once changed and back to assumed when cleared. The card says how far the pin is from the nearest road loaded; a pin more than 2 km away is ringed on the map, since its legs start with a long access leg. A selected pin also shows its name and Delete beside it on the map; a double click puts its name up for renaming. Pins drag to move; the card, the button beside the pin and the Delete key remove them, and Undo brings a deleted pin back with its links for a few seconds.
+3. **Links appear.** As pins are placed, links are suggested: each store, dark store and customer area from its nearest warehouse by road, and each warehouse from every source while the network is small (up to 24 supply links), else from its nearest four sources with each source to its nearest two warehouses. Suggested links are dashed and drawn along the roads they were routed over, with an arrow half way. Drag from a selected pin's handle (or Shift-drag from any pin) to another pin to add a link; select a link and drag either end to another pin to move it; select a link and press Delete to remove it. A link the user drew is solid and never suggested away; drawing a link into a pin makes the suggested links into it the user's too; a suggested link the user deleted is not suggested again.
+4. **Suggestions from public data (optional).** A section *Suggestions from public data*, closed by default, with one button per source: *Ports* (OpenStreetMap and IMF PortWatch), *Warehouses* (warehouses and industrial land), *Towns as customer areas* (from the place names already loaded). Each fetches only when pressed, for the area already loaded (the sample region holds the data and fetches nothing), and shows what it found as hollow pins with a list beside them. Nothing is adopted until the user clicks a hollow pin, presses *Adopt* in the list, or presses *Adopt the top N*. An adopted pin keeps what was found there (*sourced*: its port activity, floor area or population) and behaves like any other pin.
+5. **Build.** *Build model* turns pins and links into the canvas model. Scenarios run on it unchanged; a network with no port has no chokepoint tab.
+6. **Save.** Pins, links, the road level, the suggestions asked for and the fetched data are kept in the project session, so a network reopens offline. A CSV of pins (name, kind, latitude, longitude, the figures the user set, and `from`, the pins each is supplied from) loads and saves the same network.
 
 ## Data the window holds
 
 ```js
-pin  = { id, role, name, lat, lon, basis: 'user' | 'sourced', source, fields: { [key]: { value, basis } }, snap: { vertex, metres } }
-link = { id, from, to, mode: 'road', basis: 'suggested' | 'user', leg: { kilometres, hours, basis, path } }
+pin  = { id, role, name, lat, lon, basis: 'user' | 'sourced', source, fields: { [key]: { value, basis } }, candidate }
+link = { id, from, to, basis: 'suggested' | 'user', leg: { kilometres, hours, basis, path: { points } }, ends }
 ```
 
-Roles: `supplier`, `port`, `warehouse`, `store`, `darkStore`, `customerArea`. A link goes from a source (supplier, port) to a warehouse, or from a warehouse to a demand pin (store, dark store, customer area). A supplier straight to a store is allowed when the user draws it. The window refuses a link that runs backwards (a store to a warehouse) and says why.
+`candidate` is what a pin adopted from a suggestion keeps of it (its id, position, port activity, floor area, population). `ends` records where the link's pins were when it was routed, so only a link whose pins moved is routed again. A link runs from a source (supplier, port) to a warehouse, or from a warehouse to a demand pin (store, dark store, customer area). The window refuses any other link and says why: a store supplying anything, a source supplied, a supplier straight to a store (through a warehouse in this version), a warehouse supplying a warehouse (a later version).
 
 ## Roles on today's templates
 
-| Role | Template in this slice | Fields on the card | Limit stated in the window |
+| Role | Template | Fields on the card | Limit stated in the window |
 |---|---|---|---|
-| Supplier | `port`, berth capacity set far above its supply | Units a day it supplies | Ships at a steady rate whatever is ordered; ordering from suppliers comes in C |
-| Port | `port` (today's) | TEU a day, berths, PortWatch match | None new |
-| Warehouse | `warehouse` (today's) | Cover target, replenishment time | None new |
-| Store | `demandZone` + `delivery` | Demand a day | Holds no stock of its own; that comes in C |
-| Dark store | `demandZone` + `delivery` | Demand a day | Same as a store until H |
-| Customer area | `demandZone` + `delivery` | Population or demand a day | None new |
+| Supplier | `port`, its berths its loading bays | Supplies, units a day (50 assumed) | Ships at a steady rate whatever is ordered; ordering from suppliers comes in C |
+| Port | `port` | Handed inland, TEU a day (PortWatch, else the assumed volume a port) | None new |
+| Warehouse | `warehouse` | Floor area, m² (weights a demand pin's share between warehouses) | None new |
+| Store | `demandZone` + `delivery` | Sells, units a day (5 assumed) | Holds no stock of its own yet: that comes in C |
+| Dark store | `demandZone` + `delivery` | Delivers, units a day (3 assumed) | Works as a store until H |
+| Customer area | `demandZone` + `delivery` | Orders, units a day; population (20,000 assumed) | None new |
 
-Units stay TEU a day inside the model in this slice; the card says "units a day" for suppliers and stores, and the model's units become per category in C. Where a supplier's total and the stores' total differ, the builder balances them as today (`balanceFlows`) and the provenance says by how much.
+Every unit counts as one TEU in the model until categories come in C, and the Network step says so. Where the sources' total and the demand pins' own figures differ, the builder scales the demand together to match, and its warning says by how much.
 
-## Changes by file
+## What was built, by file
 
 ### `packages/toolbox/lib/overpass.mjs`
 
-- `overpassQueries(bbox, { roadLevel })`: the roads query takes the level (`major` as today, `city` adds `secondary|tertiary` and their links).
-- `overpassRequests(bbox, kinds)`: takes the kinds to fetch, so *Load roads* asks for `roads` and `places` only and each import asks for its own kind.
-- City streets are heavier: `maximumTileKilometres` stays 40 for major roads and is 10 for city streets; the window caps the area at 40 km across for city streets.
+- `overpassQueries(bbox, { roadLevel })`: the roads query takes the level (`major`, or `city` with `secondary|tertiary` and their links).
+- `overpassRequests(bbox, { kinds, roadLevel })`: only the kinds asked for, city streets in 10 km tiles (`cityTileKilometres`), the road level kept when a tile is split into quarters. The window caps city streets at 40 km across (`maximumCityKilometres`).
 
-### `packages/toolbox/lib/roadGraph.mjs`
+### `packages/toolbox/lib/routing.mjs` (new)
 
-The routing needed for live editing (see "Incremental routing"): `compactGraph`, `createGrid`, `routeLeg` with A*, and `nearestSources` (one multi-source Dijkstra). `createRouter` stays for the region builder until that is retired.
+The routing for live editing (see "Incremental routing"): `compactRoadGraph`, and `createNetworkRouter` with `snap`, `route`, `routeOnRoads` and `nearestSources`. `roadGraph.mjs` still builds the graph, and its `createRouter` still routes the earlier workflow.
 
-### `packages/toolbox/importers/region.mjs`
+### `packages/toolbox/lib/network.mjs` (new)
 
-- A new step `roads`: reads `roads` and `places` only and returns the map layers, the compact road graph and the coverage of roads. No candidates.
-- The step `discover` runs only when an import asks for it, and only over the kinds fetched. It returns candidates as today; nothing is kept by default (`defaultKeep` goes).
-- A new step `buildNetwork`: takes pins and links (with their legs, routed in the window) and calls the new builder. The window and the importer use the same routing code, so the importer checks each leg's end points against the graph and routes again only a leg whose pins moved since; a leg it routes itself is noted in the report.
-- `templateIds` unchanged in this slice.
-
-### `packages/toolbox/lib/networkModel.mjs` (new, about 300 lines)
-
-`buildNetworkModel({ builder, pins, links, options })`: places a node per pin by the table above, a `roadLane` and `roadShipment` bundle per source to warehouse link, and a `delivery` bundle per warehouse to demand link. It reuses from `regionModel.mjs` (moved to a shared `lanes.mjs`): `roadLaneState`, `balanceFlows`, the provenance notes, the operator and the corridor output, so scenarios and the results panel work without change. Order shares come from the links instead of from the gravity rule; a demand pin with two links splits by road time unless the user set shares on the link. It returns the same shape as `buildRegionModel` (`document`, `lanes`, `served`, `provenance`, `corridors`, `towns`, `ports` and so on), with `towns` holding every demand pin.
-
-`regionModel.mjs` stays until the network builder covers the port showcase; then the region workflow becomes an import followed by *Adopt the top N* and the network build, and `regionModel.mjs` goes.
-
-### `packages/toolbox/lib/links.mjs` (new, about 120 lines)
-
-`suggestLinks(pins, links, router)`: the suggestion rule above, using `nearestSources` so one pass labels every road vertex with its nearest warehouse (and one with its nearest source). Keeps every `user` link, replaces `suggested` ones. `validateLinks(pins, links)`: backwards links, demand pins with no supply, warehouses with no source, each as a message the window shows.
+Roles with their fields and defaults; `createPin`, `setField` and `defaultName`; `linkProblem`; `suggestLinks(pins, links, router, dismissed)`; `routeLinks`, which routes only links whose ends moved; `networkProblems` (no source, no warehouse or no demand; a demand pin with no warehouse; a warehouse with no source, or serving no one; a source supplying no one; two pins of one name; a link that cannot be); `networkSelection` (what the importer builds from: pins by group, an adopted one by its candidate's id, and the links with their legs, a supply link with its road as `[lat, lon]` pairs); `pinFromCandidate`; `networkFromSites`.
 
 ### `packages/toolbox/lib/sites.mjs`
 
-`parseSites` and a new `writeSites` accept the role column (`supplier`, `port`, `warehouse`, `store`, `dark store`, `customer area`) and an optional `from` column naming linked pins. Today's `port`, `zone`, `town` still read, as port, warehouse and customer area.
+`parseSites` reads every role (and the earlier kinds: customer, town, depot) and a `from` column; `writeSites` writes the network back, with only the figures the user set.
+
+### `packages/toolbox/lib/regionModel.mjs`
+
+Rather than a new builder, `buildRegionModel` takes the network's links (`links: { supply: [{ port, zone, leg, user }], serve: [{ zone, town, leg }] }`) beside the gravity it used before, so the scenarios, the operator, PortWatch histories and standby lanes work unchanged on a placed network. With links, each demand pin draws on the warehouses linked to it, weighted by their size and nearness; the lanes are the supply links, balanced so every source ships what it supplies; a suggested supply link that would carry next to nothing is left out and returned in `unusedLinks` with why, while a link the user drew is built as drawn. A supplier is a source with its own figure, labelled *Supplied* and *Dispatch capacity* in the provenance. Errors name the site: a store with no warehouse, a source with nowhere to send its supply, links that cannot balance, two sites of one name. Built the gravity way's own links, a network gives the gravity model exactly (a unit test).
+
+### `packages/toolbox/lib/corridors.mjs`
+
+A lane's road without node ids (the window's router) is matched by position, so lanes over the same road still share one corridor on the map.
+
+### `packages/toolbox/importers/region.mjs`
+
+- `roads`: reads the roads and place names alone and returns the map (roads, place names, land and borders) and the compacted road graph, refusing an area whose roads would be more than the window may receive.
+- `discover` with `sources`: the suggestions asked for, from the answers fetched for them, with their coverage, notices and the map layers that show them (port land, anchorages, industrial land).
+- `sites`: a CSV of sites, for the window to place.
+- `buildNetwork`: resolves each pin (an adopted one from its candidate, read again from the map data, so its sourced figures stay sourced; the user's figures where set), builds with the links and the legs the window routed (routing here only a link that comes without one), and warns when a pin was adopted from data no longer loaded.
+- The earlier `discover` and `build` stay, for `liveRegionCheck.mjs` and the engine tests.
 
 ### `packages/toolbox/mapView.mjs`
 
-- `setSites` becomes `setPins(pins)`: a shape per role (port square, supplier triangle, warehouse diamond, store circle, dark store circle with a dot, customer area soft disc), hollow for an unadopted suggestion, a warning ring for a far snap, labels as today.
-- `setLinks(links)`: dashed for suggested, solid for the user's, drawn along `leg.path` when routed and straight while a pin is being dragged.
-- Link editing: pointer down on a pin's edge starts a new link (`onLink(from, to)`), on a link's end moves it (`onRelink(id, end, to)`), a click on a link selects it (`onSelectLink(id)`), and Delete removes it (`onDeleteLink`).
-- `onMove` fires on pointer up only, with `onDrag` for the straight preview while dragging, so routing runs once per move.
-- `setAddKind` takes a role. `onToggle` stays for adopting suggestions.
+A shape per role (port square, supplier triangle, warehouse diamond, store circle, dark store ringed circle, customer area soft disc), hollow for a suggestion, a ring for a pin far from the roads; place names; an overlay layer for the suggestions' port and industrial land; a links layer (dashed suggested, solid the user's, faint when left out of the model, straight while a pin is dragged); a link handle on the selected pin and end handles on the selected link; `onSelect`, `onToggle` (adopt), `onAdd`, `onMove` (once, on pointer up), `onDrag`, `onLink` and `onRelink`.
 
-### `packages/toolbox/toolbox.mjs`
+### `packages/toolbox/toolbox.mjs`, `index.html`, `styles.css`
 
-- State: `pins`, `links`, `graph`, `roadLevel` and `suggestions` (by source) replace `kept`, `changes` and `added` for the new workflow.
-- *Load roads* replaces *Fetch*: fetches `roads` and `places`, runs the `roads` step, builds the compact graph and grid once.
-- The palette, the pin card and the link card (from, to, how routed, kilometres and hours, delete).
-- After each pin added, moved or deleted: re-snap that pin, re-route its links, re-run `suggestLinks`, redraw. Each step timed in development so the B target can be checked.
-- *Suggestions from public data*: one button per source; each fetches its kinds, runs `discover`, draws hollow pins. PortWatch is fetched with *Ports* only.
-- `sessionState` and `restoreSession` save pins, links, road level and which suggestions were fetched.
-- `updateStepSummaries` for the new steps.
-
-### `packages/toolbox/index.html` and `styles.css`
-
-Steps become: 1 Map (search, area, road level, *Load roads*), 2 Network (palette, pin and link cards, suggestions section, list of pins), 3 Model (build settings, today's arrivals and operator controls when a port is present), 4 Scenarios, 5 Compare. The coverage step folds into Map (roads) and into each suggestion source.
+Four steps: Map (search, area, road level, *Load roads*, sample, CSV in and out, roads coverage), Network (instructions, problems, the card, the pins by role, suggestions), Model (as before, the port settings showing once there is a port) and Scenarios. `networkChanged` suggests links, routes what moved, redraws and marks the model out of date (and rebuilds when kept in step). The session is version 2; a version 1 session reopens with its kept and added sites as pins.
 
 ## Incremental routing
 
-Today `createRouter` finds the nearest road vertex by scanning every vertex, and runs a full Dijkstra from each origin. That is fine for a build of twenty legs but not for re-routing as a pin moves. Milestone B asks for under a second per move; the aim is under 100 ms for a city.
+The earlier router found the nearest road node by scanning every node and ran a full Dijkstra from each origin: fine for a build of twenty legs, too slow to follow a dragged pin. Milestone B asks for under a second per move.
 
-1. **The graph goes to the window once.** The `roads` step returns the graph compacted: chains of road nodes with no junction become one edge carrying its geometry, which cuts vertices by around ten times. Sent as flat arrays (vertex coordinates, edge from, to, metres, hours, geometry offsets), cached in `out/` with the roads answer.
-2. **Snap with a grid.** A grid of 1 km cells over the vertices and the edge segments; a snap checks the pin's cell and its neighbours, and snaps onto the nearest point of the nearest segment rather than the nearest vertex, so a pin on a long road snaps where it is.
-3. **Route one leg with A\*.** Straight-line distance at the fastest road speed is an admissible bound, so A\* stops once the destination is settled instead of settling the whole region. Legs are cached by snapped end points; a pin move invalidates only the legs that touch it.
-4. **Suggestions in one pass.** A multi-source Dijkstra from every warehouse labels each vertex with its nearest warehouse and the time to it; a store's suggested warehouse is the label at its snap. It runs again only when a warehouse is added, moved or deleted. The same for sources feeding warehouses.
-5. **During a drag** the link is drawn straight; routing runs on pointer up.
-6. **The builder trusts the window's legs** (see the importer), so a build does not route again.
+1. **The graph goes to the window once.** The roads step compacts the graph's main network: chains of road nodes with no junction become one edge carrying its geometry, simplified to within 8 m of the road (its length and time stay the road's own), as plain arrays. On the roads of the region around Dubai (185,000 road nodes) that is 13,000 junctions and 17,000 edges, 1.7 MB, ready in the window in about 100 ms.
+2. **Snap with a grid.** A grid of 1 km cells over the edges' segments; a snap searches outwards from the pin's cell until no nearer segment can be left, and snaps onto the nearest point of the nearest segment, not the nearest node.
+3. **Route one leg with A\*.** Straight-line distance at the fastest road speed is an admissible bound, so A\* stops once the destination is settled. Two pins on one edge are routed along it. Legs are cached by their end points, and a link remembers where its pins were, so moving one pin routes only its links.
+4. **Suggestions in one pass.** A multi-source Dijkstra from every warehouse labels each junction with its nearest warehouse and the time to it; a demand pin's suggestion is read from the two ends of the edge it snaps to (or a warehouse on the same edge, or one close enough by local streets).
+5. **During a drag** the pin's links are drawn straight; routing runs once, on pointer up.
+6. **The importer trusts the window's legs,** so a build does not route.
 
-Tests (`node --test`): a compacted graph routes the same times as the full one on the sample region; A\* and Dijkstra agree on a hundred random pairs; moving one pin changes only its links' legs; the multi-source labels match a brute force; a suggested link is replaced and a user link is kept.
+On the Dubai region (`scripts/routingCheck.mjs`): a snap takes 0.1 ms, a leg about 4 ms, the nearest of five warehouses for every junction about 25 ms, and a moved store re-routed about 2 ms.
 
-## Order of work
+## Tests
 
-1. Road-only load and the compact graph, grid and A\* (with tests). Shows: a road map loads in a third of today's time, and a pin snaps onto it.
-2. Pins with roles and cards in `mapView.mjs` and `toolbox.mjs`, session save and CSV. Shows: milestone A without links.
-3. Suggested links, link editing and incremental re-routing. Shows: milestone B.
-4. `networkModel.mjs` and the `buildNetwork` step. Shows: three suppliers, two warehouses and twenty stores built and run under today's scenarios.
-5. Discovery as suggestions: the per-source buttons, hollow pins, adopt. Shows: the Dubai showcase rebuilt from an import and *Adopt the top N*, with its results unchanged to within rounding (a test).
-6. Retire the old curation steps and `regionModel.mjs` once 5 passes.
+- `tests/unit/routing.test.mjs`: compacting keeps every kilometre and joins chains; a ring road with no junction; the compacted router finds the full graph's times between road nodes; grid snapping matches a search of every segment; A\* and Dijkstra agree on a hundred random legs, and a leg's road is as long as the leg; two pins on one road; local streets between close pins; the nearest source matches routing to every source; straight-line estimates with no roads; a city of 40,000 road nodes routed in milliseconds.
+- `tests/unit/network.test.mjs`: pins and their figures; names; which links may be; suggestions in a small and a larger network; links the user drew kept, suggested ones deleted not suggested again, a link suggested again keeping its leg; moving one pin re-routing only its links, moving a warehouse handing its stores to another; three suppliers, two warehouses and twenty stores suggested and routed in well under a second; what stops a build; what the importer gets; the CSV round trip; a file's bad links reported; every role read from a file.
+- `tests/unit/networkImport.test.mjs`: the importer's roads step, suggestions only from the sources asked for, the sites step, a network built with one lane per supply link routed as the window routed it (and drawn along shared roads), a PortWatch port adopted keeping its sourced volume, small suggested lanes left out and drawn ones kept, errors naming the site and a network linked as gravity links giving the gravity model.
+- `tests/engine/networkModel.mjs`: a placed network through the engine CLI, conserving goods, trucks and orders in its baseline, a demand surge and a closed lane.
+- `tests/window/networkWindow.mjs` (`npm run test:window`): the window in a plain browser with a stand-in host, through the whole workflow.
+- `tests/interaction/regionWindow.mjs`: the real app, rewritten for the map-first workflow, through to the scenarios and the session saved and restored offline.
 
 ## Open questions
 
-- Demand for a store in this slice: one number a day, or from a customer area it is linked to? (Proposed: a number, default by role, labelled assumed.)
-- Suggestion rule for warehouses: nearest source only, or every source in proportion to supply? (Proposed: nearest, since it is easy to see and to change.)
-- City streets from Overpass for a city of 40 km may be several megabytes; if too slow, a vector tile source is the next step.
+- Demand for a store is one figure a day, labelled assumed until set; from a customer area it lies in, or from sales data, once categories come?
+- Suggested supply links: every source to every warehouse keeps a small network buildable, but a larger one can still fail to balance with its nearest few; a builder that adds suggested links until it balances (as gravity does) may be better.
+- City streets for a large city may come close to the 8 MB the window may receive; untried on real data. If too large, simplify the map's roads more, or load the city's centre in more detail than its edges.

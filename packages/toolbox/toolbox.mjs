@@ -1,32 +1,47 @@
 /* Copyright © 2026 Zenin Easa Panthakkalakath */
 
-// The Logistics Toolbox window: pick a region, fetch what OpenStreetMap holds for it, see what the data
-// can and can't show, keep the sites that matter, and build a model in Konjugate's canvas. The window
-// only names declared things to the host (an importer, a file role, a listed host); the host fetches,
-// reads files and runs the importer.
+// The Logistics Toolbox window: load the roads of a city or region, place the network on them (suppliers,
+// ports, warehouses, stores, dark stores and customer areas, linked as suggested or as the user draws), bring
+// in suggestions from public data only when asked, and build a model in Konjugate's canvas. The window only
+// names declared things to the host (an importer, a file role, a listed host); the host fetches, reads files
+// and runs the importer.
 
 import { MapView } from './mapView.mjs';
-import { maximumSplitDepth, overpassRequests, overpassStatusUrl, overpassUrl, retryDelaysSeconds, retryPauseSeconds, splitRequest, statusWaitSeconds } from './lib/overpass.mjs';
+import { cityTileKilometres, maximumCityKilometres, maximumSplitDepth, overpassRequests, overpassStatusUrl, overpassUrl, retryDelaysSeconds, retryPauseSeconds, splitRequest, statusWaitSeconds } from './lib/overpass.mjs';
 import { nominatimSearchUrl, rankPlaces } from './lib/places.mjs';
 import { chokepointById, chokepointDependence, chokepointRecentUrl, chokepoints, chokepointYearlyUrl, disruptionPlan, summariseTransits } from './lib/chokepoints.mjs';
 import { portwatchActivityUrl, portwatchPortsUrl } from './lib/portwatch.mjs';
 import { closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan } from './lib/scenarios.mjs';
+import { createNetworkRouter } from './lib/routing.mjs';
+import { createPin, kindOf, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
+import { writeSites } from './lib/sites.mjs';
+import { addsToSelection, commandHeld, platformKeys } from './lib/platform.mjs';
 
 const api = window.konjugateLauncher;
 const $ = (selector) => document.querySelector(selector);
 const importerId = 'region';
-const groups = ['ports', 'zones', 'towns'];
-const kindOfGroup = { ports: 'port', zones: 'zone', towns: 'town' };
-const groupOfKind = { port: 'ports', zone: 'zones', town: 'towns' };
-const defaultKeep = { ports: 3, zones: 6, towns: 12 };
 const maximumSpanKilometres = 250;
+// What a build may send the host (it accepts 2 MB of options), with room for the settings.
+const maximumNetworkBytes = 1.8 * 1024 * 1024;
+// What each suggestion source fetches from OpenStreetMap (beside the roads and place names), and the candidates it shows.
+const sources = {
+    ports: { label: 'Ports', kinds: ['ports'], group: 'ports', portwatch: true },
+    warehouses: { label: 'Warehouses', kinds: ['logistics'], group: 'zones' },
+    towns: { label: 'Towns', kinds: [], group: 'towns' }
+};
+const noticeKinds = { ports: ['ports', 'portwatch'], warehouses: ['warehouses'], towns: ['towns'] };
+const allRoles = ['roads', 'places', 'ports', 'logistics', 'rail', 'portwatchPorts', 'portwatchActivity'];
+const basisLabel = { user: 'yours', assumed: 'assumed', sourced: 'sourced' };
 
 const state = {
-    place: null, bbox: null, discovered: null, group: 'ports',
-    kept: { ports: new Set(), zones: new Set(), towns: new Set() },
-    changes: new Map(), // id -> { lat, lon, name, teuPerDay }
-    added: [], // sites placed on the map: { id, kind, name, lat, lon }
-    portVolume: null, built: null, busy: false, pendingAdd: null, rebuildTimer: null,
+    place: null, bbox: null, roadLevel: 'major',
+    // The roads step's answer (map, graph, coverage, notices) and the router over its graph.
+    roads: null, router: null,
+    // The user's network: pins and links, the suggested links the user deleted and what is selected.
+    pins: [], links: [], dismissed: new Set(), selection: [], selected: null, listRole: 'all',
+    // Suggestions from public data, by source, once asked for; the roles whose answers the host holds.
+    suggestions: {}, available: new Set(), sourceTab: null,
+    portVolume: null, built: null, busy: false, rebuildTimer: null,
     // The chokepoint disruption: the user's own shares (port name -> { chokepoint id -> share }), the transits
     // fetched per chokepoint, and the last run's summary.
     dependence: new Map(), transits: new Map(), scenario: null,
@@ -46,22 +61,98 @@ async function call(promise) {
     return answer;
 }
 
+const pinById = (id) => state.pins.find((pin) => pin.id === id);
+const pinNamed = (name) => state.pins.find((pin) => pin.name === name);
+
 const map = new MapView($('#map'), {
-    onToggle: (id) => toggle(id),
-    onMove: (id, lat, lon) => {
-        const added = state.added.find((site) => site.id === id);
-        if (added) Object.assign(added, { lat, lon });
-        else state.changes.set(id, { ...state.changes.get(id), lat, lon });
-        changed();
-    },
-    onAdd: (kind, point) => {
-        state.pendingAdd = { kind, ...point };
-        $('#addSiteForm').hidden = false;
-        $('#addSiteName').value = '';
-        $('#addSiteName').placeholder = `Name of the new ${kind === 'zone' ? 'warehouse' : kind === 'town' ? 'customer' : 'port'}`;
-        $('#addSiteName').focus();
-    }
+    onAdd: (role, point) => addPin(role, point),
+    onMove: (id, lat, lon) => movePins([{ id, lat, lon }]),
+    onMoveMany: (moves) => movePins(moves),
+    onSelect: (selected, { adding = false } = {}) => select(selected, { adding }),
+    onSelectArea: (bounds, { adding }) => selectArea(bounds, { adding }),
+    onToggle: (id) => adopt(id),
+    onLink: (from, to) => drawLink(from, to),
+    onRelink: (id, end, pin) => relink(id, end, pin),
+    onView: () => { placePopover(); closeMenu(); },
+    onRename: (id) => rename(id),
+    onContextMenu: (context) => openMenu(context)
 });
+
+// The platform's keys, as its users press and read them: ⌘ and ⌫ on a Mac, Ctrl and Delete on Windows and Linux.
+const keys = platformKeys();
+
+// ---- selection and history ----------------------------------------------------------------------------------
+// What is selected: pins and links ([{ kind, id }]); the last one selected is the one the card and the popover show.
+function setSelection(list) {
+    const seen = new Set();
+    state.selection = list.filter((item) => item && !seen.has(`${item.kind}:${item.id}`) && seen.add(`${item.kind}:${item.id}`));
+    state.selected = state.selection.at(-1) ?? null;
+}
+const selectedPins = () => state.selection.filter((item) => item.kind === 'pin').map((item) => pinById(item.id)).filter(Boolean);
+const selectedLinks = () => state.selection.filter((item) => item.kind === 'link').map((item) => state.links.find((link) => link.id === item.id)).filter(Boolean);
+
+// Every change to the network can be undone, and redone: a copy of the network before each change, the last hundred
+// kept. Changes of one kind in quick succession (a pin nudged with the arrow keys, a figure typed) are one step.
+const history = { past: [], future: [], lastLabel: null, lastTime: 0 };
+const snapshot = () => ({ pins: structuredClone(state.pins), links: state.links.map((link) => ({ ...link })), dismissed: [...state.dismissed], selection: [...state.selection] });
+function checkpoint(label, { merge = false } = {}) {
+    const now = performance.now();
+    if (merge && label === history.lastLabel && now - history.lastTime < 1500) { history.lastTime = now; return; }
+    history.past.push({ label, network: snapshot() });
+    if (history.past.length > 100) history.past.shift();
+    history.future = [];
+    history.lastLabel = label;
+    history.lastTime = now;
+    renderHistoryButtons();
+}
+function restore(network) {
+    state.pins = structuredClone(network.pins);
+    state.links = network.links.map((link) => ({ ...link }));
+    state.dismissed = new Set(network.dismissed);
+    setSelection(network.selection.filter((item) => (item.kind === 'pin' ? pinById(item.id) : state.links.some((link) => link.id === item.id))));
+    $('#selectionCard').dataset.for = '';
+    networkChanged();
+    renderSuggestions();
+}
+function undo() {
+    const step = history.past.pop();
+    if (!step) return;
+    history.future.push({ label: step.label, network: snapshot() });
+    history.lastLabel = null;
+    restore(step.network);
+    renderHistoryButtons();
+    toast(`Undone: ${step.label}.`, { redo: true });
+}
+function redo() {
+    const step = history.future.pop();
+    if (!step) return;
+    history.past.push({ label: step.label, network: snapshot() });
+    history.lastLabel = null;
+    restore(step.network);
+    renderHistoryButtons();
+    toast(`Redone: ${step.label}.`);
+}
+function renderHistoryButtons() {
+    $('#undoButtonTool').disabled = !history.past.length;
+    $('#redoButtonTool').disabled = !history.future.length;
+    $('#undoButtonTool').title = history.past.length ? `Undo ${history.past.at(-1).label} (${keys.undo})` : `Nothing to undo (${keys.undo})`;
+    $('#redoButtonTool').title = history.future.length ? `Redo ${history.future.at(-1).label} (${keys.redo})` : `Nothing to redo (${keys.redo})`;
+}
+$('#undoButtonTool').addEventListener('click', undo);
+$('#popoverDelete').title = `Delete it (${keys.delete})`;
+$('#redoButtonTool').addEventListener('click', redo);
+
+// A short message at the foot of the map, with Undo (or Redo) beside it for a few seconds.
+function toast(text, { undoable = false, redo: offerRedo = false } = {}) {
+    clearTimeout(state.toastTimer);
+    $('#undoText').textContent = text;
+    $('#undoButton').hidden = !undoable;
+    $('#redoButton').hidden = !offerRedo;
+    $('#undoToast').hidden = false;
+    state.toastTimer = setTimeout(() => { $('#undoToast').hidden = true; }, 8000);
+}
+$('#undoButton').addEventListener('click', undo);
+$('#redoButton').addEventListener('click', redo);
 
 // ---- layout, accordion & splitter ---------------------------------------------------------------------
 
@@ -78,20 +169,13 @@ function updateStepSummaries() {
     const regSummary = $('#stepRegionSummary');
     if (regSummary) {
         if (state.place) regSummary.textContent = `${state.place.display_name.split(',')[0]} · ${$('#marginSelect').value} km`;
-        else if (state.discovered) regSummary.textContent = 'Sample region';
+        else if (state.roads) regSummary.textContent = 'Sample region';
         else regSummary.textContent = '';
     }
-    const covSummary = $('#stepCoverageSummary');
-    if (covSummary && state.discovered?.coverage) {
-        const c = state.discovered.coverage;
-        covSummary.textContent = `${c.ports.found} ports · ${c.towns.found} towns`;
-    }
-    const curSummary = $('#stepCurateSummary');
-    if (curSummary && state.discovered) {
-        const kp = state.kept.ports.size;
-        const kz = state.kept.zones.size;
-        const kt = state.kept.towns.size;
-        curSummary.textContent = `${kp} ports · ${kz} zones · ${kt} towns`;
+    const networkSummary = $('#stepNetworkSummary');
+    if (networkSummary) {
+        const count = (kind) => state.pins.filter((pin) => kindOf(pin.role) === kind).length;
+        networkSummary.textContent = state.pins.length ? `${count('source')} sources · ${count('warehouse')} warehouses · ${count('demand')} demand · ${state.links.length} links` : '';
     }
     const bldSummary = $('#stepBuildSummary');
     if (bldSummary && state.built) {
@@ -141,8 +225,9 @@ if (splitter && panel) {
 
 $('#zoomInButton')?.addEventListener('click', () => map.zoom(0.75));
 $('#zoomOutButton')?.addEventListener('click', () => map.zoom(1.33));
+$('#fitButton').addEventListener('click', () => map.fit());
 
-// ---- region -------------------------------------------------------------------------------------------
+// ---- the map: a place, its roads ----------------------------------------------------------------------
 
 function boundsAround(place, marginKilometres) {
     const [south, north, west, east] = place.boundingbox.map(Number);
@@ -161,10 +246,12 @@ function showArea() {
     if (!state.place) return;
     state.bbox = boundsAround(state.place, Number($('#marginSelect').value));
     const { width, height } = spanOf(state.bbox);
-    const tooLarge = Math.max(width, height) > maximumSpanKilometres;
+    const city = $('#roadLevelSelect').value === 'city';
+    const limit = city ? maximumCityKilometres : maximumSpanKilometres;
+    const tooLarge = Math.max(width, height) > limit;
     $('#areaSize').innerHTML = tooLarge
-        ? `<span style="color:var(--danger)">${number(width)} × ${number(height)} km: too large. Public map servers answer areas up to ${maximumSpanKilometres} km across; choose a smaller place or area.</span>`
-        : `${number(width)} × ${number(height)} km${Math.max(width, height) > 120 ? '. A large area: fetching may take a minute.' : ''}`;
+        ? `<span style="color:var(--danger)">${number(width)} × ${number(height)} km: too large${city ? ` for city streets, which are loaded for areas up to ${limit} km across; choose major roads, or a smaller place or area` : `. Public map servers answer areas up to ${limit} km across; choose a smaller place or area`}.</span>`
+        : `${number(width)} × ${number(height)} km${Math.max(width, height) > (city ? 2 * cityTileKilometres : 120) ? '. A large area: loading may take a minute.' : ''}`;
     $('#fetchButton').disabled = tooLarge || state.busy;
 }
 
@@ -198,6 +285,7 @@ $('#searchForm').addEventListener('submit', async (event) => {
     }
 });
 $('#marginSelect').addEventListener('change', showArea);
+$('#roadLevelSelect').addEventListener('change', showArea);
 
 const wait = (seconds) => new Promise((resolve) => setTimeout(resolve, seconds * 1000));
 // The host reports a busy server by its status (429, 502 to 504) or a timeout: worth trying again after a pause.
@@ -217,57 +305,64 @@ const countdown = async (row, seconds, why) => {
     }
 };
 
+const labels = { ports: 'Ports and anchorages', logistics: 'Warehouses and industrial land', roads: 'Roads', rail: 'Rail', places: 'Place names' };
+
+// Fetches some kinds of OpenStreetMap data for the region, one request at a time (the public server is shared), with
+// a row of `progress` per kind. Tiles too large or too slow are fetched again as quarters; a busy server is waited for.
+async function fetchKinds(kinds, progress) {
+    const requests = overpassRequests(state.bbox, { kinds, roadLevel: state.roadLevel });
+    const bytes = {};
+    const queue = [...requests];
+    while (queue.length) {
+        const request = queue.shift();
+        const row = progress.querySelector(`[data-kind="${request.kind}"]`);
+        const label = request.parts > 1 || request.depth ? `part ${request.part} of ${request.parts}` : 'fetching';
+        for (let attempt = 0; ; attempt += 1) {
+            const before = await serverWait();
+            if (before > 0) await countdown(row, before + 1, 'waiting for a free slot');
+            row.querySelector('.state').textContent = `${label}…`;
+            try {
+                const answer = await call(api.fetchFile(importerId, request.kind, overpassUrl(request.query), `${request.kind}-${request.part}.json`));
+                bytes[request.kind] = (bytes[request.kind] ?? 0) + answer.bytes;
+                break;
+            } catch (error) {
+                // Too large to accept, or too slow to answer in time: fetch the tile again as four quarters.
+                if (/larger than the size limit|did not answer within/.test(error.message) && request.depth < maximumSplitDepth) {
+                    queue.unshift(...splitRequest(request));
+                    break;
+                }
+                if (!busy(error.message) || attempt >= retryDelaysSeconds.length) {
+                    row.classList.add('failed');
+                    row.querySelector('.state').textContent = 'failed';
+                    throw new Error(`${labels[request.kind]}: ${error.message}${/larger than the size limit/.test(error.message) ? ' Choose a smaller area.' : busy(error.message) ? ' The public map server is overloaded; try again later, or choose a smaller area.' : ''}`);
+                }
+                await countdown(row, retryPauseSeconds(attempt, await serverWait()), `server busy (${attempt + 1} of ${retryDelaysSeconds.length})`);
+            }
+        }
+        if (!queue.some((next) => next.kind === request.kind) && bytes[request.kind] !== undefined) {
+            row.classList.add('done');
+            row.querySelector('.state').textContent = `${number(bytes[request.kind] / 1024)} KB`;
+            state.available.add(request.kind);
+        }
+    }
+}
+
 $('#fetchButton').addEventListener('click', async () => {
     if (!state.bbox) return;
     setBusy(true);
-    const requests = overpassRequests(state.bbox);
-    const labels = { ports: 'Ports and anchorages', logistics: 'Warehouses and industrial land', roads: 'Major roads', rail: 'Rail', places: 'Towns and cities' };
-    const kinds = [...new Set(requests.map((request) => request.kind))];
+    state.roadLevel = $('#roadLevelSelect').value;
     const progress = $('#fetchProgress');
     progress.hidden = false;
-    progress.innerHTML = [...kinds.map((kind) => `<li data-kind="${kind}"><span>${labels[kind]}</span><span class="state">waiting</span></li>`),
-        '<li data-kind="portwatch"><span>Port activity (IMF PortWatch)</span><span class="state">waiting</span></li>'].join('');
+    progress.innerHTML = ['roads', 'places'].map((kind) => `<li data-kind="${kind}"><span>${state.roadLevel === 'city' && kind === 'roads' ? 'Roads and city streets' : labels[kind]}</span><span class="state">waiting</span></li>`).join('');
     $('#regionStatus').innerHTML = '';
     try {
-        // A new region replaces the last one's data (your own sites file stays).
-        for (const kind of [...kinds, 'portwatchPorts', 'portwatchActivity']) await call(api.clearFile(importerId, kind));
-        const bytes = {};
-        // One request at a time: the public server is shared.
-        const queue = [...requests];
-        while (queue.length) {
-            const request = queue.shift();
-            const row = progress.querySelector(`[data-kind="${request.kind}"]`);
-            const label = request.parts > 1 || request.depth ? `part ${request.part} of ${request.parts}` : 'fetching';
-            for (let attempt = 0; ; attempt += 1) {
-                const before = await serverWait();
-                if (before > 0) await countdown(row, before + 1, 'waiting for a free slot');
-                row.querySelector('.state').textContent = `${label}…`;
-                try {
-                    const answer = await call(api.fetchFile(importerId, request.kind, overpassUrl(request.query), `${request.kind}-${request.part}.json`));
-                    bytes[request.kind] = (bytes[request.kind] ?? 0) + answer.bytes;
-                    break;
-                } catch (error) {
-                    // Too large to accept, or too slow to answer in time: fetch the tile again as four quarters.
-                    if (/larger than the size limit|did not answer within/.test(error.message) && request.depth < maximumSplitDepth) {
-                        queue.unshift(...splitRequest(request));
-                        break;
-                    }
-                    if (!busy(error.message) || attempt >= retryDelaysSeconds.length) {
-                        row.classList.add('failed');
-                        row.querySelector('.state').textContent = 'failed';
-                        throw new Error(`${labels[request.kind]}: ${error.message}${/larger than the size limit/.test(error.message) ? ' Choose a smaller area.' : busy(error.message) ? ' The public map server is overloaded; try again later, or choose a smaller area.' : ''}`);
-                    }
-                    await countdown(row, retryPauseSeconds(attempt, await serverWait()), `server busy (${attempt + 1} of ${retryDelaysSeconds.length})`);
-                }
-            }
-            if (!queue.some((next) => next.kind === request.kind) && bytes[request.kind] !== undefined) {
-                row.classList.add('done');
-                row.querySelector('.state').textContent = `${number(bytes[request.kind] / 1024)} KB`;
-            }
-        }
-        const portwatchProblem = await fetchPortActivity(progress.querySelector('[data-kind="portwatch"]'));
-        await discover();
-        if (portwatchProblem) $('#regionStatus').insertAdjacentHTML('beforeend', notice('warning', `Port activity could not be fetched from IMF PortWatch (${portwatchProblem}), so every port starts with an assumed volume. Fetch again later to match it.`));
+        // A new region replaces the last one's data, suggestions included (your own sites file stays).
+        for (const role of allRoles) await call(api.clearFile(importerId, role));
+        state.available.clear();
+        state.suggestions = {};
+        state.sample = false;
+        await fetchKinds(['roads', 'places'], progress);
+        await loadRoads({ keepNetwork: true });
     } catch (error) {
         $('#regionStatus').innerHTML = notice('error', error.message);
     } finally {
@@ -275,8 +370,819 @@ $('#fetchButton').addEventListener('click', async () => {
     }
 });
 
+// The roads step: the map and the road graph the network is routed over. A network already placed is kept where it
+// lies within the new map, so the roads can be loaded again (city streets after major roads, say).
+async function loadRoads({ keepNetwork = false } = {}) {
+    const answer = await call(api.runImport(importerId, { step: 'roads', roadLevel: state.roadLevel, ...(state.bbox ? { bbox: state.bbox } : {}) }));
+    if (answer.report?.errors?.length) throw new Error(answer.report.errors.join(' '));
+    state.roads = answer.data;
+    const started = performance.now();
+    state.router = createNetworkRouter(answer.data.graph);
+    state.routerMilliseconds = performance.now() - started;
+    state.portVolume ??= answer.data.defaults.portTeuPerDay;
+    $('#portVolume').value = state.portVolume;
+    const bbox = answer.data.map.bbox;
+    const inside = (pin) => pin.lat >= bbox.south && pin.lat <= bbox.north && pin.lon >= bbox.west && pin.lon <= bbox.east;
+    const outside = keepNetwork ? state.pins.filter((pin) => !inside(pin)) : state.pins;
+    if (outside.length) {
+        const gone = new Set(outside.map((pin) => pin.id));
+        state.pins = state.pins.filter((pin) => !gone.has(pin.id));
+        state.links = state.links.filter((link) => !gone.has(link.from) && !gone.has(link.to));
+        if (keepNetwork) $('#regionStatus').insertAdjacentHTML('beforeend', notice('warning', `${outside.map((pin) => pin.name).join(', ')} ${outside.length === 1 ? 'lies' : 'lie'} outside the new map, so ${outside.length === 1 ? 'it was' : 'they were'} taken off the network.`));
+    }
+    // Every leg is routed again over these roads.
+    for (const link of state.links) delete link.ends;
+    $('#mapEmpty').hidden = true;
+    $('#attribution').textContent = answer.data.map.attribution;
+    map.setOverlay(null);
+    map.setMap(answer.data.map);
+    const borders = answer.data.map.geography?.borders ?? [];
+    $('#legendBorder').hidden = !borders.some((border) => border.settled);
+    $('#legendUnsettled').hidden = !borders.some((border) => !border.settled);
+    renderCoverage();
+    for (const section of ['#stepNetwork', '#stepBuild']) $(section).hidden = false;
+    $('#stepRegion').classList.add('completed');
+    $('#saveSitesButton').disabled = false;
+    renderSuggestions();
+    if (!state.restoring) networkChanged({ rebuild: Boolean(state.built) });
+}
+
+function renderCoverage() {
+    const roads = state.roads?.coverage?.roads;
+    const box = $('#coverageSummary');
+    box.hidden = !roads;
+    if (!roads) return;
+    const level = (value) => (value ? `<span class="level ${value}">${value}</span>` : '');
+    const byClass = Object.entries(roads.byClass ?? {}).filter(([, value]) => value > 0).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([name, value]) => `${name} ${number(value)}`).join(', ');
+    box.innerHTML = [
+        ['Roads', `${number(roads.kilometres)} km${byClass ? ` (${byClass})` : ''}`, roads.level],
+        ['Place names', `${number(state.roads.coverage.places)} cities, towns and suburbs`, null],
+        ['Routing', `${number(state.roads.graph.vertices.length)} junctions${state.routerMilliseconds !== undefined ? `, ready in ${number(state.routerMilliseconds)} ms` : ''}`, null]
+    ].map(([title, text, value]) => `<div class="item"><b>${title}${level(value)}</b><span>${escape(text)}</span></div>`).join('');
+    $('#notices').innerHTML = (state.roads.notices ?? []).map((item) => notice(item.level, item.text)).join('');
+}
+
+$('#sampleButton').addEventListener('click', async () => {
+    setBusy(true);
+    try {
+        await call(api.useSample(importerId));
+        state.place = null;
+        state.bbox = null;
+        state.sample = true;
+        // The sample holds every kind of data, so its suggestions need no fetch; none is shown until asked for.
+        state.available = new Set(allRoles.filter((role) => !role.startsWith('portwatch')));
+        state.suggestions = {};
+        $('#chosenRegion').hidden = true;
+        $('#fetchProgress').hidden = true;
+        $('#regionStatus').innerHTML = notice('ok', 'The sample region: a made-up stretch of coast, for trying the toolbox without a network.');
+        resetNetwork();
+        await loadRoads();
+    } catch (error) {
+        $('#regionStatus').innerHTML = notice('error', error.message);
+    } finally {
+        setBusy(false);
+    }
+});
+
+// ---- the network: pins and links ----------------------------------------------------------------------
+
+function resetNetwork() {
+    state.pins = [];
+    state.links = [];
+    state.dismissed.clear();
+    setSelection([]);
+    history.past = [];
+    history.future = [];
+    renderHistoryButtons();
+    state.built = null;
+    state.scenario = null;
+    map.setFlows(null);
+    $('#buildResult').innerHTML = '';
+    $('#buildStatus').innerHTML = '';
+}
+
+// A pin is far from the roads when its access leg is long: its legs are estimates more than routes.
+const farMetres = 2000;
+function snapOf(pin) {
+    const snapped = state.router?.snap(pin);
+    return snapped ? snapped.metres : null;
+}
+
+// Everything that follows a change to the network: links suggested and routed again (only the legs whose ends moved),
+// the map, the lists and the card redrawn and the model marked out of date (and rebuilt, when kept in step).
+function networkChanged({ rebuild = true } = {}) {
+    if (state.router) {
+        state.links = suggestLinks(state.pins, state.links, state.router, state.dismissed);
+        const started = performance.now();
+        state.lastRouted = { legs: routeLinks(state.pins, state.links, state.router), milliseconds: performance.now() - started };
+    }
+    renderNetwork();
+    updateStepSummaries();
+    const errors = networkProblems(state.pins, state.links).filter((problem) => problem.level === 'error');
+    $('#buildButton').disabled = state.busy || errors.length > 0 || !state.pins.length;
+    $('#buildStatus').innerHTML = errors.length && state.pins.length ? notice('warning', 'Resolve what Network lists to build a model.') : '';
+    if (state.built) {
+        $('#buildStatus').innerHTML += notice('warning', 'The model no longer matches the network.');
+        // Counted, so a rebuild queued behind other work runs only if something changed after the last build began.
+        state.edits = (state.edits ?? 0) + 1;
+        if (rebuild && $('#keepInStep').checked && !errors.length) {
+            clearTimeout(state.rebuildTimer);
+            state.rebuildTimer = setTimeout(() => build({ focus: false }), 600);
+        }
+    }
+}
+
+const legHow = (leg) => ({ routed: 'over the roads', local: 'by local streets (the sites are close)', 'straight-line': 'as a straight-line estimate (no road route found)' })[leg.basis] ?? '';
+
+function renderNetwork() {
+    const problems = networkProblems(state.pins, state.links);
+    const troubled = new Set(problems.filter((problem) => problem.level === 'error').flatMap((problem) => problem.pins));
+    const adopted = new Set(state.pins.map((pin) => pin.candidate?.id).filter(Boolean));
+    const roleOfGroup = { ports: 'port', zones: 'warehouse', towns: 'customerArea' };
+    const suggestions = Object.entries(state.suggestions).flatMap(([source, found]) => (found.candidates?.[sources[source].group] ?? [])
+        .filter((candidate) => !adopted.has(candidate.id))
+        .map((candidate) => ({ id: candidate.id, role: roleOfGroup[sources[source].group], name: candidate.name, lat: candidate.lat, lon: candidate.lon, kept: false })));
+    map.setSites([
+        ...suggestions,
+        ...state.pins.map((pin) => {
+            const metres = snapOf(pin);
+            const far = !state.router ? null : metres === null ? 'too far from any road: its legs are straight-line estimates' : metres > farMetres ? `${number(metres / 1000, 1)} km from the nearest road` : null;
+            return { id: pin.id, role: pin.role, name: pin.name, lat: pin.lat, lon: pin.lon, kept: true, problem: troubled.has(pin.id), far };
+        })
+    ]);
+    const unused = new Set((state.built?.unusedLinks ?? []).map((item) => `${item.from}>${item.to}`));
+    map.setLinks(state.links.map((link) => {
+        const from = pinById(link.from);
+        const to = pinById(link.to);
+        const leg = link.leg;
+        return {
+            id: link.id, from: link.from, to: link.to, basis: link.basis, points: leg?.path?.points ?? null,
+            unused: Boolean(from && to && unused.has(`${from.name}>${to.name}`)),
+            title: leg ? `${number(leg.kilometres, 1)} km, ${number(leg.hours, 1)} h ${legHow(leg)}; ${link.basis === 'user' ? 'your link' : 'suggested'}` : ''
+        };
+    }));
+    map.setSelected(state.selection);
+    renderNetworkStatus(problems);
+    showPortSettings();
+    renderPinList(troubled);
+    renderCard();
+    renderPopover();
+}
+
+// Beside what is selected on the map: its name, to rename it there, and Delete.
+function renderPopover() {
+    const popover = $('#pinPopover');
+    const pin = state.selected?.kind === 'pin' ? pinById(state.selected.id) : null;
+    const link = state.selected?.kind === 'link' ? state.links.find((item) => item.id === state.selected.id) : null;
+    // Not while placing pins: it would sit where the next one goes.
+    popover.hidden = (!pin && !link) || Boolean(map.addKind);
+    if (popover.hidden) return;
+    const name = $('#popoverName');
+    const several = state.selection.length > 1;
+    name.hidden = !pin || several;
+    if (pin && document.activeElement !== name) name.value = pin.name;
+    $('#popoverRole').textContent = several ? `${state.selection.length} selected` : pin ? roles[pin.role].label : `${pinById(link.from)?.name ?? ''} → ${pinById(link.to)?.name ?? ''}`;
+    popover.dataset.for = state.selected.id;
+    placePopover();
+}
+
+function placePopover() {
+    const popover = $('#pinPopover');
+    if (popover.hidden || !state.selected) return;
+    const pin = state.selected.kind === 'pin' ? pinById(state.selected.id) : null;
+    const link = state.selected.kind === 'link' ? state.links.find((item) => item.id === state.selected.id) : null;
+    const at = pin ?? (link && pinById(link.to));
+    const screen = at ? map.toScreen(at.lat, at.lon) : null;
+    if (!screen) { popover.hidden = true; return; }
+    // Placed within the map area (an SVG has no offsetTop: measured from both rectangles instead).
+    const area = $('.mapArea').getBoundingClientRect();
+    const rect = $('#map').getBoundingClientRect();
+    const left = Math.max(4, Math.min(rect.width - popover.offsetWidth - 4, screen.x + 16));
+    const top = Math.max(4, screen.y - popover.offsetHeight - 14);
+    popover.style.left = `${rect.left - area.left + left}px`;
+    popover.style.top = `${rect.top - area.top + top}px`;
+}
+
+$('#popoverName').addEventListener('change', () => {
+    const pin = state.selected?.kind === 'pin' ? pinById(state.selected.id) : null;
+    if (pin) renamePin(pin, $('#popoverName').value);
+});
+// Enter keeps the new name; Escape puts the old one back. Either way the keyboard goes back to the map.
+$('#popoverName').addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+        const pin = state.selected?.kind === 'pin' ? pinById(state.selected.id) : null;
+        if (pin) $('#popoverName').value = pin.name;
+    }
+    if (event.key === 'Enter' || event.key === 'Escape') { event.stopPropagation(); $('#popoverName').blur(); }
+});
+$('#popoverDelete').addEventListener('click', () => deleteSelected());
+
+function renderPinList(troubled) {
+    const counts = Object.fromEntries(roleIds.map((role) => [role, state.pins.filter((pin) => pin.role === role).length]));
+    const shown = ['all', ...roleIds.filter((role) => counts[role])];
+    if (!shown.includes(state.listRole)) state.listRole = 'all';
+    $('#roleTabs').innerHTML = shown.map((role) => `<button type="button" role="tab" data-role="${role}" class="${state.listRole === role ? 'active' : ''}">${role === 'all' ? 'All' : roles[role].label} <span class="count" data-count="${role}">${role === 'all' ? state.pins.length : counts[role]}</span></button>`).join('');
+    $('#roleTabs').hidden = !state.pins.length;
+    $('#roleTabs').querySelectorAll('button').forEach((button) => button.addEventListener('click', () => { state.listRole = button.dataset.role; renderNetwork(); }));
+    const listed = state.pins.filter((pin) => state.listRole === 'all' || pin.role === state.listRole);
+    $('#pinList').innerHTML = listed.map((pin) => {
+        const into = state.links.filter((link) => link.to === pin.id).map((link) => pinById(link.from)?.name).filter(Boolean);
+        const first = roles[pin.role].fields[0];
+        const field = pin.fields[first.key];
+        const figure = field?.value !== null && field?.value !== undefined ? `${number(field.value)} ${first.unit}${field.basis === 'assumed' ? ' (assumed)' : ''}` : '';
+        return `<li data-id="${escape(pin.id)}" class="${state.selection.some((item) => item.id === pin.id) ? 'selected' : ''}${troubled.has(pin.id) ? ' problem' : ''}">
+            <i class="swatch ${pin.role}"></i><span class="name" title="${escape(pin.name)}">${escape(pin.name)}</span><span class="muted small">${escape(figure)}</span>
+            <span class="detail">${escape(roles[pin.role].label)}${into.length ? ` · from ${into.join(', ')}` : ''}${pin.basis === 'sourced' ? ' · from OpenStreetMap' : ''}</span>
+        </li>`;
+    }).join('');
+    $('#pinList').querySelectorAll('li').forEach((row) => {
+        row.addEventListener('click', (event) => select({ kind: 'pin', id: row.dataset.id }, { adding: addsToSelection(event, keys) }));
+        row.addEventListener('dblclick', () => rename(row.dataset.id));
+        row.addEventListener('mouseenter', () => map.setHighlight(row.dataset.id));
+        row.addEventListener('mouseleave', () => map.setHighlight(null));
+    });
+}
+
+// A pin or link clicked: selected alone, or (with Shift, Cmd or Ctrl) added to the selection, or taken out of it. While
+// a link is being drawn from the menu (Link to...), the pin clicked is where it goes.
+// The Network step's status: for a network not yet begun, the steps to take, ticked off as they are done (no errors for
+// what a newcomer has not had the chance to do yet); then what stops a build, and what to know.
+function renderNetworkStatus(problems) {
+    const has = (kind) => state.pins.some((pin) => kindOf(pin.role) === kind);
+    const steps = [
+        ['source', 'Place where goods come from: a supplier (1) or a port (2).'],
+        ['warehouse', 'Place a warehouse (3).'],
+        ['demand', 'Place stores (4), dark stores (5) or customer areas (6). Links appear on their own.']
+    ];
+    const starting = steps.some(([kind]) => !has(kind));
+    const missing = /^Place (a supplier|a warehouse|a store)/;
+    $('#networkStatus').innerHTML = (starting && state.roads ? `<ol class="checklist">${steps.map(([kind, text]) => `<li class="${has(kind) ? 'done' : ''}">${escape(text)}</li>`).join('')}</ol>` : '')
+        + problems.filter((problem) => !(starting && missing.test(problem.text))).map((problem) => notice(problem.level, problem.text)).join('');
+    const errors = problems.filter((problem) => problem.level === 'error');
+    $('#buildButton').title = errors.length ? `Not yet: ${errors[0].text}` : 'Build the model from the network (it opens in the canvas)';
+}
+
+function select(selected, { adding = false } = {}) {
+    if (state.linkFrom && selected?.kind === 'pin') {
+        const from = state.linkFrom;
+        stopLinking();
+        // That click finished the link: the next one on this pin is not the second of a double click.
+        map.lastClick = null;
+        if (from !== selected.id) drawLink(from, selected.id);
+        return;
+    }
+    stopLinking();
+    if (adding && selected) {
+        const has = state.selection.some((item) => item.kind === selected.kind && item.id === selected.id);
+        setSelection(has ? state.selection.filter((item) => !(item.kind === selected.kind && item.id === selected.id)) : [...state.selection, selected]);
+    } else {
+        setSelection(selected ? [selected] : []);
+    }
+    renderNetwork();
+}
+
+// Every pin in a box drawn on the map with Shift.
+function selectArea(bounds, { adding }) {
+    const inside = state.pins.filter((pin) => pin.lat >= bounds.south && pin.lat <= bounds.north && pin.lon >= bounds.west && pin.lon <= bounds.east).map((pin) => ({ kind: 'pin', id: pin.id }));
+    setSelection(adding ? [...state.selection, ...inside] : inside);
+    renderNetwork();
+}
+
+function selectAll() {
+    setSelection(state.pins.map((pin) => ({ kind: 'pin', id: pin.id })));
+    renderNetwork();
+}
+
+function addPin(role, point) {
+    checkpoint(`placing a ${roles[role].label.toLowerCase()}`);
+    const pin = createPin(role, point, { pins: state.pins });
+    state.pins.push(pin);
+    setSelection([{ kind: 'pin', id: pin.id }]);
+    networkChanged();
+}
+
+function movePins(moves, { label = null, merge = false } = {}) {
+    const pins = moves.map((move) => pinById(move.id)).filter(Boolean);
+    if (!pins.length) return;
+    checkpoint(label ?? `moving ${pins.length === 1 ? pins[0].name : `${pins.length} sites`}`, { merge });
+    for (const move of moves) Object.assign(pinById(move.id) ?? {}, { lat: move.lat, lon: move.lon });
+    networkChanged();
+}
+
+// The selected pins moved a few pixels with the arrow keys (Shift: further).
+function nudge(dx, dy, far) {
+    const pins = selectedPins();
+    if (!pins.length) return;
+    const kilometres = map.unit() * (far ? 50 : 8);
+    const moves = pins.map((pin) => ({ id: pin.id, lat: pin.lat - dy * kilometres / 111.32, lon: pin.lon + dx * kilometres / (111.32 * Math.cos(pin.lat * Math.PI / 180)) }));
+    movePins(moves, { label: `moving ${pins.length === 1 ? pins[0].name : `${pins.length} sites`}`, merge: true });
+}
+
+// Copies of the selected pins beside them, with their figures, as the user's own sites; selected, to be moved.
+function duplicateSelected() {
+    const pins = selectedPins();
+    if (!pins.length) return;
+    checkpoint(`duplicating ${pins.length === 1 ? pins[0].name : `${pins.length} sites`}`);
+    const offset = map.unit() * 24;
+    const copies = pins.map((pin) => {
+        const copy = createPin(pin.role, { lat: pin.lat - offset / 111.32, lon: pin.lon + offset / (111.32 * Math.cos(pin.lat * Math.PI / 180)) }, {
+            pins: state.pins, name: copyName(pin.name),
+            fields: Object.fromEntries(Object.entries(pin.fields).filter(([, field]) => field.basis === 'user').map(([key, field]) => [key, field.value]))
+        });
+        state.pins.push(copy);
+        return copy;
+    });
+    setSelection(copies.map((pin) => ({ kind: 'pin', id: pin.id })));
+    networkChanged();
+}
+function copyName(name) {
+    for (let index = 2; ; index += 1) {
+        const candidate = `${name.replace(/ \(\d+\)$/, '')} (${index})`;
+        if (!pinNamed(candidate)) return candidate;
+    }
+}
+
+function rename(id) {
+    stopLinking();
+    setAddRole(null);
+    setSelection([{ kind: 'pin', id }]);
+    renderNetwork();
+    $('#popoverName').focus();
+    $('#popoverName').select();
+}
+
+// Link to...: the next pin clicked is where the link goes.
+function startLinking(id) {
+    state.linkFrom = id;
+    $('#mapHint').hidden = false;
+    $('#mapHint').textContent = `Click the site to link ${pinById(id)?.name} to. Escape to cancel.`;
+}
+function stopLinking() {
+    if (!state.linkFrom) return;
+    state.linkFrom = null;
+    $('#mapHint').hidden = !map.addKind;
+}
+
+// What a pin keeps of the candidate it was adopted from: what the window shows and the scenarios use (the importer reads
+// the rest again from the map data when it builds).
+function slimCandidate(candidate) {
+    const keep = ['id', 'name', 'lat', 'lon', 'areaSquareKilometres', 'commercial', 'anchorages', 'portwatch', 'chokepoints', 'floorAreaSquareMetres', 'floorAreaBasis', 'buildings', 'population', 'populationBasis', 'city'];
+    const slim = Object.fromEntries(keep.filter((key) => candidate[key] !== undefined).map((key) => [key, candidate[key]]));
+    if (candidate.activity) {
+        const { importTonnesPerDay, containerCallsPerDay, from, to, shift } = candidate.activity;
+        slim.activity = { importTonnesPerDay, containerCallsPerDay, from, to, ...(shift ? { shift } : {}) };
+    }
+    return slim;
+}
+
+function adoptCandidate(candidate, group) {
+    if (state.pins.some((pin) => pin.candidate?.id === candidate.id)) return null;
+    const pin = pinFromCandidate(slimCandidate(candidate), group, state.pins);
+    // A town and a port of one name (Port Alder the port, Port Alder the town) are two sites.
+    if (pinNamed(pin.name)) pin.name = `${pin.name} (${roles[pin.role].label.toLowerCase()})`;
+    state.pins.push(pin);
+    return pin;
+}
+
+// A suggestion clicked on the map, or adopted from the list: a pin with what was found there.
+function adopt(candidateId) {
+    for (const [source, found] of Object.entries(state.suggestions)) {
+        const group = sources[source].group;
+        const candidate = found.candidates?.[group]?.find((item) => item.id === candidateId);
+        if (!candidate) continue;
+        checkpoint(`adopting ${candidate.name}`);
+        const pin = adoptCandidate(candidate, group);
+        if (pin) setSelection([{ kind: 'pin', id: pin.id }]);
+        networkChanged();
+        renderSuggestions();
+        return;
+    }
+}
+
+// A link drawn by the user. Drawing into a site makes the links already suggested into it the user's too: the user is
+// now choosing what supplies it, and the others are not taken away.
+// A link that cannot be is refused where the user is looking (the map) and in the Network step.
+function refuse(problem) {
+    toast(problem);
+    $('#networkStatus').insertAdjacentHTML('afterbegin', notice('error', problem));
+}
+
+function drawLink(fromId, toId, { record = true } = {}) {
+    const problem = linkProblem(pinById(fromId), pinById(toId));
+    if (problem) {
+        refuse(problem);
+        return;
+    }
+    if (record) checkpoint(`linking ${pinById(fromId).name} to ${pinById(toId).name}`);
+    const id = linkId(fromId, toId);
+    state.dismissed.delete(id);
+    for (const link of state.links) if (link.to === toId) link.basis = 'user';
+    const existing = state.links.find((link) => link.id === id);
+    if (existing) existing.basis = 'user';
+    else state.links.push({ id, from: fromId, to: toId, basis: 'user' });
+    setSelection([{ kind: 'link', id }]);
+    networkChanged();
+}
+
+// One end of a link dragged to another site.
+function relink(id, end, pinId) {
+    const link = state.links.find((item) => item.id === id);
+    if (!link) return;
+    const from = end === 'from' ? pinId : link.from;
+    const to = end === 'to' ? pinId : link.to;
+    if (from === link.from && to === link.to) return;
+    const problem = linkProblem(pinById(from), pinById(to));
+    if (problem) {
+        refuse(problem);
+        return;
+    }
+    checkpoint(`moving the link from ${pinById(link.from)?.name} to ${pinById(link.to)?.name}`);
+    removeLink(link);
+    drawLink(from, to, { record: false });
+}
+
+function removeLink(link) {
+    state.links = state.links.filter((item) => item !== link);
+    // A suggested link the user took away is not suggested again; and the other links into its site are the user's now.
+    state.dismissed.add(link.id);
+    for (const other of state.links) if (other.to === link.to) other.basis = 'user';
+}
+
+function removePin(pin) {
+    state.pins = state.pins.filter((item) => item !== pin);
+    state.links = state.links.filter((link) => link.from !== pin.id && link.to !== pin.id);
+    setSelection(state.selection.filter((item) => item.id !== pin.id));
+}
+
+// Everything selected deleted at once (a pin with its links), as one step to undo.
+function deleteSelected() {
+    const pins = selectedPins();
+    const links = selectedLinks().filter((link) => !pins.some((pin) => pin.id === link.from || pin.id === link.to));
+    if (!pins.length && !links.length) return;
+    const what = pins.length + links.length > 1
+        ? [pins.length ? `${pins.length} site${pins.length === 1 ? '' : 's'}` : '', links.length ? `${links.length} link${links.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ')
+        : pins.length ? pins[0].name : `the link from ${pinById(links[0].from)?.name} to ${pinById(links[0].to)?.name}`;
+    checkpoint(`deleting ${what}`);
+    for (const link of links) removeLink(link);
+    for (const pin of pins) removePin(pin);
+    setSelection([]);
+    networkChanged();
+    renderSuggestions();
+    toast(`Deleted ${what}.`, { undoable: true });
+}
+
+// ---- the keyboard ------------------------------------------------------------------------------------------
+// Every action has a button or a menu item; these are the quicker ways, listed under ? (and in each menu and tooltip).
+const shortcuts = [
+    ['1 to 6', 'Place a supplier, port, warehouse, store, dark store or customer area (again to stop)'],
+    ['Escape', 'Stop placing, cancel a link, close a menu, or clear the selection'],
+    [keys.deleteKeys, 'Delete what is selected'],
+    [keys.undo, 'Undo'], [keys.redo, 'Redo'],
+    [keys.selectAll, 'Select every site'], [keys.duplicate, 'Duplicate the selected sites'],
+    [keys.addClick, 'Add to the selection, or take out of it'],
+    ['Shift-drag on the map', `Select the sites in a box (with ${keys.modifier} too: add them)`],
+    ['Shift-drag from a site', 'Link it to another site'],
+    ['Arrow keys (Shift: further)', 'Move the selected sites'],
+    ['Enter or F2, or click twice', 'Rename the selected site'],
+    ['L', 'Link the selected site to the next one clicked'],
+    ['F', 'Fit the map to the selection, or to the network'], ['0', 'Fit the map to the region'], ['+ and -', 'Zoom'],
+    [keys.menu, 'The menu of a site, a link or the map'], ['?', 'Show or hide these shortcuts']
+];
+$('#shortcutList').innerHTML = shortcuts.map(([keys, what]) => `<tr><td><kbd>${escape(keys)}</kbd></td><td>${escape(what)}</td></tr>`).join('');
+const toggleShortcuts = (show = $('#shortcuts').hidden) => { $('#shortcuts').hidden = !show; };
+$('#shortcutsButton').addEventListener('click', () => toggleShortcuts());
+$('#shortcutsClose').addEventListener('click', () => toggleShortcuts(false));
+
+document.addEventListener('keydown', (event) => {
+    const typing = event.target.closest?.('input, select, textarea');
+    // The platform's command key only: ⌘ on a Mac (where Control is for menus), Ctrl elsewhere (where the Windows key
+    // belongs to the system).
+    const mod = commandHeld(event, keys);
+    if (event.key === 'Escape') {
+        if (!$('#contextMenu').hidden) closeMenu();
+        else if (!$('#shortcuts').hidden) toggleShortcuts(false);
+        else if (state.linkFrom) stopLinking();
+        else if (map.addKind) setAddRole(null);
+        else if (!typing) select(null);
+        return;
+    }
+    if (typing || !state.roads) return;
+    const key = event.key.toLowerCase();
+    let handled = true;
+    if (mod && key === 'z' && !event.shiftKey) undo();
+    else if ((mod && key === 'z' && event.shiftKey) || (mod && key === 'y')) redo();
+    else if (mod && key === 'a') selectAll();
+    else if (mod && key === 'd') duplicateSelected();
+    else if (mod) handled = false;
+    else if (event.key === 'Delete' || event.key === 'Backspace') deleteSelected();
+    else if (/^[1-6]$/.test(event.key)) { const role = roleIds[Number(event.key) - 1]; setAddRole(map.addKind === role ? null : role); }
+    else if ((event.key === 'Enter' || event.key === 'F2') && state.selected?.kind === 'pin') rename(state.selected.id);
+    else if (key === 'l' && state.selected?.kind === 'pin') startLinking(state.selected.id);
+    else if (event.key.startsWith('Arrow')) nudge({ ArrowLeft: -1, ArrowRight: 1 }[event.key] ?? 0, { ArrowUp: -1, ArrowDown: 1 }[event.key] ?? 0, event.shiftKey);
+    else if (key === 'f') fitNetwork();
+    else if (event.key === '0') map.fit();
+    else if (event.key === '+' || event.key === '=') map.zoom(0.75);
+    else if (event.key === '-' || event.key === '_') map.zoom(1.33);
+    else if (event.key === '?') toggleShortcuts();
+    else handled = false;
+    if (handled) event.preventDefault();
+});
+
+// The map fitted to the selected sites, or to the whole network.
+function fitNetwork() {
+    const pins = selectedPins().length ? selectedPins() : state.pins;
+    if (!pins.length) { map.fit(); return; }
+    map.fitTo(pins);
+}
+
+// ---- the menu of a pin, a link, a suggestion or the map (a right click) ---------------------------------------
+function openMenu({ target, point, clientX, clientY }) {
+    if (!state.roads) return;
+    // A right click on something outside the selection selects it, as file browsers do.
+    if (target && (target.kind === 'pin' || target.kind === 'link') && !state.selection.some((item) => item.kind === target.kind && item.id === target.id)) {
+        setSelection([target]);
+        renderNetwork();
+    }
+    const items = [];
+    const item = (label, keys, action, { danger = false } = {}) => items.push({ label, keys, action, danger });
+    const pins = selectedPins();
+    const links = selectedLinks();
+    if (target?.kind === 'suggestion') {
+        item('Adopt it into the network', 'click', () => adopt(target.id));
+    } else if (target?.kind === 'pin' && pins.length > 1) {
+        item(`Duplicate ${pins.length} sites`, keys.duplicate, duplicateSelected);
+        item(`Fit the map to them`, 'F', fitNetwork);
+        item(`Delete ${pins.length} sites${links.length ? ` and ${links.length} links` : ''}`, keys.delete, deleteSelected, { danger: true });
+    } else if (target?.kind === 'pin') {
+        const pin = pinById(target.id);
+        item('Rename', 'Enter', () => rename(pin.id));
+        item('Link it to another site…', 'L', () => startLinking(pin.id));
+        for (const role of roleIds.filter((role) => role !== pin.role)) item(`Make it a ${roles[role].label.toLowerCase()}`, '', () => changeRole(pin, role));
+        item('Duplicate', keys.duplicate, duplicateSelected);
+        item('Delete', keys.delete, deleteSelected, { danger: true });
+    } else if (target?.kind === 'link') {
+        const link = state.links.find((each) => each.id === target.id);
+        if (link?.basis !== 'user') item('Make it mine (keep it as it is)', '', () => { checkpoint('keeping a suggested link'); link.basis = 'user'; networkChanged(); });
+        item(links.length > 1 ? `Delete ${links.length} links` : 'Delete', keys.delete, deleteSelected, { danger: true });
+    } else {
+        roleIds.forEach((role, index) => item(`Place a ${roles[role].label.toLowerCase()} here`, String(index + 1), () => addPin(role, point)));
+        if (state.pins.length) item('Select every site', keys.selectAll, selectAll);
+        item('Fit the map to the network', 'F', fitNetwork);
+        item('Fit the map to the region', '0', () => map.fit());
+    }
+    const menu = $('#contextMenu');
+    menu.innerHTML = items.map((entry, index) => `<button type="button" role="menuitem" data-index="${index}" class="${entry.danger ? 'danger' : ''}"><span>${escape(entry.label)}</span>${entry.keys ? `<kbd>${escape(entry.keys)}</kbd>` : ''}</button>`).join('');
+    menu.querySelectorAll('button').forEach((button) => button.addEventListener('click', () => { closeMenu(); items[Number(button.dataset.index)].action(); }));
+    menu.hidden = false;
+    $('#pinPopover').hidden = true;
+    const area = $('.mapArea').getBoundingClientRect();
+    menu.style.left = `${Math.min(clientX - area.left, area.width - menu.offsetWidth - 6)}px`;
+    menu.style.top = `${Math.min(clientY - area.top, area.height - menu.offsetHeight - 6)}px`;
+    menu.querySelector('button')?.focus();
+}
+function closeMenu() {
+    if ($('#contextMenu').hidden) return;
+    $('#contextMenu').hidden = true;
+    renderPopover();
+}
+document.addEventListener('pointerdown', (event) => { if (!event.target.closest('#contextMenu')) closeMenu(); });
+// Up and down move through the menu, as in any menu.
+$('#contextMenu').addEventListener('keydown', (event) => {
+    const buttons = [...$('#contextMenu').querySelectorAll('button')];
+    const at = buttons.indexOf(document.activeElement);
+    if (event.key === 'ArrowDown') { buttons[(at + 1) % buttons.length].focus(); event.preventDefault(); }
+    if (event.key === 'ArrowUp') { buttons[(at - 1 + buttons.length) % buttons.length].focus(); event.preventDefault(); }
+});
+
+function changeRole(pin, role) {
+    checkpoint(`making ${pin.name} a ${roles[role].label.toLowerCase()}`);
+    Object.assign(pin, createPin(role, pin, { id: pin.id, name: pin.name, source: pin.source, basis: pin.basis, candidate: pin.candidate ?? null }));
+    $('#selectionCard').dataset.for = '';
+    networkChanged();
+}
+
+// The card of what is selected: a pin's name, role, figures (each labelled where it comes from), its road and its links;
+// or a link's ends, how it was routed and whose it is.
+function renderCard() {
+    const card = $('#selectionCard');
+    const selected = state.selected;
+    const pin = selected?.kind === 'pin' ? pinById(selected.id) : null;
+    const link = selected?.kind === 'link' ? state.links.find((item) => item.id === selected.id) : null;
+    card.hidden = !pin && !link;
+    if (state.selection.length > 1) {
+        // Several selected: what they are, and what can be done to all of them.
+        const pins = selectedPins();
+        const links = selectedLinks();
+        card.dataset.for = state.selection.map((item) => item.id).join('|');
+        card.innerHTML = `
+            <h3>${[pins.length ? `${pins.length} site${pins.length === 1 ? '' : 's'}` : '', links.length ? `${links.length} link${links.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ')} selected</h3>
+            <div class="detail">${escape(pins.map((item) => item.name).join(', '))}</div>
+            <div class="row">${pins.length ? `<button class="button small" type="button" id="duplicateSelection" title="${keys.duplicate}">Duplicate</button><button class="button small" type="button" id="fitSelection" title="F">Fit the map to them</button>` : ''}<button class="button small danger" type="button" id="deleteSelection" title="${keys.delete}">Delete</button></div>
+            <div class="detail">Drag any of them on the map to move them together; the arrow keys move them too. Shift-click to add or take out one.</div>`;
+        $('#duplicateSelection')?.addEventListener('click', duplicateSelected);
+        $('#fitSelection')?.addEventListener('click', fitNetwork);
+        $('#deleteSelection').addEventListener('click', deleteSelected);
+        return;
+    }
+    if (pin) {
+        // Being typed in: keep the fields as they are.
+        if (card.dataset.for === pin.id && card.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
+        card.dataset.for = pin.id;
+        const found = pin.candidate;
+        // Its links, as lists to add to and take from: what supplies it, and what it supplies.
+        const linkList = (direction) => {
+            const own = state.links.filter((item) => (direction === 'in' ? item.to : item.from) === pin.id);
+            const others = state.pins.filter((other) => other.id !== pin.id && !own.some((item) => (direction === 'in' ? item.from : item.to) === other.id)
+                && !linkProblem(direction === 'in' ? other : pin, direction === 'in' ? pin : other));
+            if (!own.length && !others.length) return '';
+            const title = direction === 'in' ? 'Supplied from' : 'Supplies';
+            return `<div class="links"><b>${title}</b><ul>${own.map((item) => {
+                const other = pinById(direction === 'in' ? item.from : item.to);
+                return `<li><button class="link" type="button" data-select-link="${escape(item.id)}">${escape(other?.name ?? '')}</button> <span class="basis ${item.basis === 'user' ? 'user' : ''}">${item.basis === 'user' ? 'yours' : 'suggested'}</span><button class="link remove" type="button" data-remove-link="${escape(item.id)}" title="Remove this link" aria-label="Remove the link with ${escape(other?.name ?? '')}">✕</button></li>`;
+            }).join('')}</ul>${others.length ? `<select data-add-link="${direction}" aria-label="${title}: add a site"><option value="">+ add a site</option>${others.map((other) => `<option value="${escape(other.id)}">${escape(other.name)} (${escape(roles[other.role].label.toLowerCase())})</option>`).join('')}</select>` : ''}</div>`;
+        };
+        card.innerHTML = `
+            <h3><i class="swatch ${pin.role}"></i><select id="pinRole" aria-label="Role">${roleIds.map((role) => `<option value="${role}" ${role === pin.role ? 'selected' : ''}>${roles[role].label}</option>`).join('')}</select></h3>
+            <input type="text" id="pinName" value="${escape(pin.name)}" aria-label="Name">
+            ${roles[pin.role].fields.map((field) => {
+                const value = pin.fields[field.key] ?? {};
+                const placeholder = field.key === 'teuPerDay' ? (found?.activity ? 'from PortWatch' : `${number(state.portVolume ?? 100)} assumed`) : '';
+                return `<div class="field"><label for="field-${field.key}">${escape(field.label)}</label><span><input type="number" min="0" step="any" id="field-${field.key}" data-field="${field.key}" value="${value.value ?? ''}" placeholder="${escape(placeholder)}"> <span class="muted">${escape(field.unit)}</span></span><span class="basis ${value.basis ?? ''}">${escape(basisLabel[value.basis] ?? '')}</span></div><div class="detail">${escape(field.detail)}</div>`;
+            }).join('')}
+            <div class="detail road">${escape(roadText(pin))}</div>
+            ${found ? `<div class="detail">Adopted from OpenStreetMap${found.activity ? `; IMF PortWatch: about ${number(found.activity.importTonnesPerDay)} t of container imports a day, ${found.activity.from} to ${found.activity.to}` : ''}${found.population ? `; population ${number(found.population)}` : ''}${found.floorAreaSquareMetres ? `; ${number(found.floorAreaSquareMetres)} m² of floor area` : ''}.</div>` : ''}
+            ${linkList('in')}${linkList('out')}
+            <div class="row"><button class="button small" type="button" id="duplicatePin" title="${keys.duplicate}">Duplicate</button><button class="button small danger" type="button" id="deletePin" title="${keys.delete}">Delete</button></div>`;
+        $('#pinName').addEventListener('change', () => renamePin(pin, $('#pinName').value));
+        $('#pinRole').addEventListener('change', () => changeRole(pin, $('#pinRole').value));
+        card.querySelectorAll('[data-field]').forEach((input) => input.addEventListener('change', () => {
+            checkpoint(`changing ${pin.name}'s ${input.dataset.field}`, { merge: true });
+            setField(pin, input.dataset.field, input.value);
+            card.dataset.for = '';
+            networkChanged();
+        }));
+        card.querySelectorAll('[data-select-link]').forEach((button) => button.addEventListener('click', () => select({ kind: 'link', id: button.dataset.selectLink })));
+        card.querySelectorAll('[data-remove-link]').forEach((button) => button.addEventListener('click', () => {
+            const item = state.links.find((each) => each.id === button.dataset.removeLink);
+            if (!item) return;
+            checkpoint(`removing the link from ${pinById(item.from)?.name} to ${pinById(item.to)?.name}`);
+            removeLink(item);
+            card.dataset.for = '';
+            networkChanged();
+        }));
+        card.querySelectorAll('[data-add-link]').forEach((choice) => choice.addEventListener('change', () => {
+            if (!choice.value) return;
+            const [from, to] = choice.dataset.addLink === 'in' ? [choice.value, pin.id] : [pin.id, choice.value];
+            drawLink(from, to);
+            // Stay on the site, to add more.
+            setSelection([{ kind: 'pin', id: pin.id }]);
+            card.dataset.for = '';
+            renderNetwork();
+        }));
+        $('#duplicatePin').addEventListener('click', duplicateSelected);
+        $('#deletePin').addEventListener('click', deleteSelected);
+    } else if (link) {
+        card.dataset.for = link.id;
+        const from = pinById(link.from);
+        const to = pinById(link.to);
+        const leg = link.leg;
+        const unused = (state.built?.unusedLinks ?? []).find((item) => item.from === from?.name && item.to === to?.name);
+        card.innerHTML = `
+            <h3>${escape(from?.name)} → ${escape(to?.name)}</h3>
+            <div class="detail">${leg ? `${number(leg.kilometres, 1)} km, ${number(leg.hours, 1)} h ${legHow(leg)}.` : 'Not routed yet.'} ${link.basis === 'user' ? 'Your link.' : 'Suggested.'}</div>
+            ${unused ? `<div class="detail">Left out of the model: it ${escape(unused.why)}.</div>` : ''}
+            <div class="row">${link.basis === 'user' ? '' : '<button class="button small" type="button" id="keepLink">Make it mine</button>'}<button class="button small danger" type="button" id="deleteLink" title="${keys.delete}">Delete</button></div>
+            <div class="detail">Drag either end on the map to another site to move it.</div>`;
+        $('#keepLink')?.addEventListener('click', () => { checkpoint('keeping a suggested link'); link.basis = 'user'; networkChanged(); });
+        $('#deleteLink').addEventListener('click', deleteSelected);
+    } else {
+        card.dataset.for = '';
+    }
+}
+
+function renamePin(pin, text) {
+    const name = String(text ?? '').trim();
+    if (!name || name === pin.name) return;
+    checkpoint(`renaming ${pin.name}`);
+    pin.name = name;
+    $('#selectionCard').dataset.for = '';
+    networkChanged();
+}
+
+function roadText(pin) {
+    if (!state.router) return '';
+    const metres = snapOf(pin);
+    if (metres === null) return 'Too far from any road loaded: its legs are straight-line estimates.';
+    return metres > farMetres ? `${number(metres / 1000, 1)} km from the nearest road loaded: its legs start with a long access leg.` : `On the roads (${number(metres)} m from the nearest).`;
+}
+
+// The palette: a role chosen, then clicks on the map place pins of it, until Escape or the same role again.
+function setAddRole(role) {
+    map.setAddKind(role);
+    document.querySelectorAll('[data-add]').forEach((each) => each.classList.toggle('active', each.dataset.add === role));
+    $('#mapHint').hidden = !role;
+    if (role) $('#mapHint').textContent = `Click the map to place a ${roles[role].label.toLowerCase()}, as many as you like. Escape (or ${roleIds.indexOf(role) + 1} again) to stop.`;
+    renderPopover();
+}
+document.querySelectorAll('[data-add]').forEach((button) => button.addEventListener('click', () => {
+    if (!state.roads) { $('#regionStatus').innerHTML = notice('warning', 'Load the roads of a place, or use the sample region, first.'); return; }
+    setAddRole(map.addKind === button.dataset.add ? null : button.dataset.add);
+}));
+
+// ---- the network: a file of sites -------------------------------------------------------------------------
+
+$('#sitesButton').addEventListener('click', async () => {
+    try {
+        const chosen = await call(api.chooseFile(importerId, 'sites'));
+        if (!chosen.chosen) return;
+        setBusy(true);
+        const answer = await call(api.runImport(importerId, { step: 'sites' }));
+        if (answer.report?.errors?.length) throw new Error(answer.report.errors.join(' '));
+        checkpoint('loading your sites');
+        const loaded = networkFromSites(answer.data.sites, state.pins);
+        state.pins.push(...loaded.pins);
+        state.links.push(...loaded.links);
+        const warnings = [...(answer.report?.warnings ?? []), ...loaded.problems];
+        $('#regionStatus').innerHTML = notice('ok', `${loaded.pins.length} site${loaded.pins.length === 1 ? '' : 's'} and ${loaded.links.length} link${loaded.links.length === 1 ? '' : 's'} from your file.${state.roads ? '' : ' Load the roads of their region, or use the sample region, to route them.'}`) + warnings.map((text) => notice('warning', text)).join('');
+        for (const section of ['#stepNetwork', '#stepBuild']) $(section).hidden = false;
+        networkChanged();
+        $('#saveSitesButton').disabled = false;
+    } catch (error) {
+        $('#regionStatus').innerHTML = notice('error', error.message);
+    } finally {
+        setBusy(false);
+    }
+});
+
+// The network as a CSV the user keeps: Load your sites reads it back.
+$('#saveSitesButton').addEventListener('click', () => {
+    const text = writeSites(state.pins, state.links);
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob([text], { type: 'text/csv' }));
+    link.download = 'network.csv';
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+    state.savedCsv = text;
+});
+
+// ---- suggestions from public data, only when asked for ------------------------------------------------------
+
+document.querySelectorAll('[data-fetch-source]').forEach((button) => button.addEventListener('click', () => fetchSuggestions(button.dataset.fetchSource)));
+
+async function fetchSuggestions(source) {
+    if (state.busy || !state.roads) return;
+    const row = $(`[data-source-state="${source}"]`);
+    setBusy(true);
+    row.className = 'state small';
+    $('#suggestionNotices').innerHTML = '';
+    let portwatchProblem = null;
+    try {
+        const missing = sources[source].kinds.filter((kind) => !state.available.has(kind));
+        if (missing.length) {
+            if (!state.bbox) throw new Error('The sample region holds no more data to suggest from.');
+            const progress = $('#fetchProgress');
+            progress.hidden = false;
+            progress.innerHTML = missing.map((kind) => `<li data-kind="${kind}"><span>${labels[kind]}</span><span class="state">waiting</span></li>`).join('')
+                + (sources[source].portwatch ? '<li data-kind="portwatch"><span>Port activity (IMF PortWatch)</span><span class="state">waiting</span></li>' : '');
+            row.textContent = 'fetching…';
+            await fetchKinds(missing, progress);
+            if (sources[source].portwatch) portwatchProblem = await fetchPortActivity(progress.querySelector('[data-kind="portwatch"]'));
+        }
+        await discoverSuggestions([...new Set([...Object.keys(state.suggestions), source])]);
+        state.sourceTab = source;
+        $('#suggestions').open = true;
+        renderSuggestions();
+        renderNetwork();
+        if (portwatchProblem) $('#suggestionNotices').insertAdjacentHTML('afterbegin', notice('warning', `Port activity could not be fetched from IMF PortWatch (${portwatchProblem}), so every port starts with an assumed volume. Load the roads and ask for ports again later to match it.`));
+    } catch (error) {
+        row.className = 'state small failed';
+        row.textContent = 'failed';
+        $('#suggestionNotices').innerHTML = notice('error', error.message);
+        $('#suggestions').open = true;
+        $('#suggestionView').hidden = false;
+    } finally {
+        setBusy(false);
+    }
+}
+
+// The suggestions of the sources asked for, from the data the host holds.
+async function discoverSuggestions(asked) {
+    const answer = await call(api.runImport(importerId, { step: 'discover', sources: asked, ...(state.bbox ? { bbox: state.bbox } : {}) }));
+    if (answer.report?.errors?.length) throw new Error(answer.report.errors.join(' '));
+    const data = answer.data;
+    state.suggestions = Object.fromEntries(asked.map((source) => [source, {
+        candidates: { [sources[source].group]: data.candidates[sources[source].group] ?? [] },
+        coverage: data.coverage[source], notices: data.notices.filter((item) => noticeKinds[source].includes(item.kind))
+    }]));
+    map.setOverlay(data.overlay);
+    if (data.attribution && !$('#attribution').textContent.includes(data.attribution)) $('#attribution').textContent = `${$('#attribution').textContent} · ${data.attribution}`;
+    renderHistoryHint();
+}
+
 // IMF PortWatch: the ports around the region, then a year of history for each that matches a port found.
-// Optional: if it fails, the region still loads with assumed port volumes, and the problem is returned.
+// Optional: if it fails, the ports are still suggested with assumed volumes, and the problem is returned.
 async function fetchPortActivity(row) {
     const show = (text) => { row.querySelector('.state').textContent = text; };
     const fetchWithRetry = async (role, url, name) => {
@@ -293,7 +1199,7 @@ async function fetchPortActivity(row) {
         show('ports…');
         let bytes = (await fetchWithRetry('portwatchPorts', portwatchPortsUrl(state.bbox), 'portwatch-ports.json')).bytes;
         // Which listed ports match a port found: discovery decides, so ask it before fetching histories.
-        const first = await call(api.runImport(importerId, { bbox: state.bbox }));
+        const first = await call(api.runImport(importerId, { step: 'discover', sources: ['ports'], bbox: state.bbox }));
         const portids = [...new Set((first.data?.candidates.ports ?? []).map((port) => port.portwatch?.portid).filter(Boolean))];
         for (const [index, portid] of portids.entries()) {
             show(`history ${index + 1} of ${portids.length}…`);
@@ -301,6 +1207,8 @@ async function fetchPortActivity(row) {
         }
         row.classList.add('done');
         show(`${portids.length} port${portids.length === 1 ? '' : 's'} matched, ${number(bytes / 1024)} KB`);
+        state.available.add('portwatchPorts');
+        state.available.add('portwatchActivity');
         return null;
     } catch (error) {
         row.classList.add('failed');
@@ -311,180 +1219,68 @@ async function fetchPortActivity(row) {
     }
 }
 
-$('#sampleButton').addEventListener('click', async () => {
-    setBusy(true);
-    try {
-        await call(api.useSample(importerId));
-        state.place = null;
-        state.bbox = null;
-        $('#chosenRegion').hidden = true;
-        $('#fetchProgress').hidden = true;
-        $('#regionStatus').innerHTML = notice('ok', 'The sample region: a made-up stretch of coast, for trying the toolbox without a network.');
-        resetCuration();
-        await discover();
-    } catch (error) {
-        $('#regionStatus').innerHTML = notice('error', error.message);
-    } finally {
-        setBusy(false);
-    }
-});
-
-$('#sitesButton').addEventListener('click', async () => {
-    try {
-        const chosen = await call(api.chooseFile(importerId, 'sites'));
-        if (!chosen.chosen) return;
-        setBusy(true);
-        await discover({ keepSites: true });
-    } catch (error) {
-        $('#regionStatus').innerHTML = notice('error', error.message);
-    } finally {
-        setBusy(false);
-    }
-});
-
-// ---- discovery ----------------------------------------------------------------------------------------
-
-function resetCuration() {
-    for (const group of groups) state.kept[group].clear();
-    state.changes.clear();
-    state.added = [];
-    state.built = null;
-    map.setFlows(null);
-}
-
-async function discover({ keepSites = false, keepCuration = false } = {}) {
-    const answer = await call(api.runImport(importerId, state.bbox ? { bbox: state.bbox } : {}));
-    if (answer.report?.errors?.length) throw new Error(answer.report.errors.join(' '));
-    const previous = state.discovered;
-    state.discovered = answer.data;
-    const { candidates, sites } = state.discovered;
-    // A new region starts with the most significant of each kind kept; the user's own sites are always kept.
-    const sameRegion = (keepSites && previous) || keepCuration;
-    for (const group of groups) {
-        // A restored session keeps exactly what was kept.
-        if (keepCuration) continue;
-        if (!sameRegion) {
-            state.kept[group].clear();
-            candidates[group].slice(0, defaultKeep[group]).forEach((site) => state.kept[group].add(site.id));
-        }
-        sites[group].forEach((site) => state.kept[group].add(site.id));
-    }
-    if (!sameRegion) { state.changes.clear(); state.added = []; }
-    state.portVolume ??= state.discovered.defaults.portTeuPerDay;
-    $('#portVolume').value = state.portVolume;
-    $('#mapEmpty').hidden = true;
-    $('#attribution').textContent = state.discovered.map.attribution;
-    map.setMap(state.discovered.map);
-    const borders = state.discovered.map.geography?.borders ?? [];
-    $('#legendBorder').hidden = !borders.some((border) => border.settled);
-    $('#legendUnsettled').hidden = !borders.some((border) => !border.settled);
-    for (const section of ['#stepCoverage', '#stepCurate', '#stepBuild']) $(section).hidden = false;
-    renderCoverage();
-    renderHistoryHint();
-    renderCandidates();
-    changed({ rebuild: Boolean(state.built) });
-    $('#stepRegion').classList.add('completed');
-    $('#stepCoverage').classList.add('completed');
-    updateStepSummaries();
-    const warnings = answer.report?.warnings ?? [];
-    if (warnings.length) $('#regionStatus').insertAdjacentHTML('beforeend', warnings.map((text) => notice('warning', text)).join(''));
-}
-
-function renderCoverage() {
-    const { coverage, notices } = state.discovered;
-    const level = (value) => (value ? `<span class="level ${value}">${value}</span>` : '');
-    $('#coverageSummary').innerHTML = [
-        ['Ports', `${coverage.ports.found} found${coverage.ports.marinasExcluded ? `, ${coverage.ports.marinasExcluded} marinas left out` : ''}; ${coverage.ports.anchorages} anchorages`, null],
-        ['Warehouses', `${number(coverage.warehouses.buildings)} buildings on ${number(coverage.warehouses.industrialLandSquareKilometres, 1)} km² of industrial land`, coverage.warehouses.level],
-        ['Major roads', `${number(coverage.roads.kilometres)} km`, coverage.roads.level],
-        ['Towns', `${coverage.towns.found} found, ${coverage.towns.withPopulation} with population`, coverage.towns.level],
-        ['Rail', `${number(coverage.rail.lineKilometres)} km of line, ${coverage.rail.yards} yards (not yet modelled)`, null]
-    ].map(([title, text, value]) => `<div class="item"><b>${title}${level(value)}</b><span>${escape(text)}</span></div>`).join('');
-    $('#notices').innerHTML = notices.map((item) => notice(item.level, item.text)).join('');
-}
-
-// Every site the map and lists show: candidates, the user's CSV sites and sites added on the map, with changes applied.
-function allSites(group) {
-    const { candidates, sites } = state.discovered;
-    const listed = [...sites[group], ...candidates[group]].map((site) => ({ ...site, ...state.changes.get(site.id), kept: state.kept[group].has(site.id), moved: state.changes.has(site.id) && 'lat' in state.changes.get(site.id) }));
-    const added = state.added.filter((site) => groupOfKind[site.kind] === group).map((site) => ({ ...site, kept: true, user: true, source: 'added on the map' }));
-    return [...added, ...listed];
-}
-
-function describe(site, group) {
+function describeCandidate(site, group) {
     if (group === 'ports') {
-        if (site.user) return `Your site (${site.source})`;
         const land = `${number(site.areaSquareKilometres, 2)} km² of port land${site.commercial ? ', commercial' : ''}${site.anchorages ? `, ${site.anchorages} anchorage${site.anchorages === 1 ? '' : 's'}` : ''}`;
         if (site.activity) return `${land} · IMF PortWatch (${site.portwatch.name}): about ${number(site.activity.importTonnesPerDay / conversion().tonnesPerTeu * conversion().inlandShare)} TEU/day inland, ${number(site.activity.containerCallsPerDay, 1)} container ships a day, ${site.activity.from} to ${site.activity.to}`;
         return site.portwatch ? `${land} · IMF PortWatch (${site.portwatch.name}): no recent activity` : land;
     }
     if (group === 'zones') {
-        if (site.user) return `Your site (${site.source})${site.floorAreaSquareMetres ? `, ${number(site.floorAreaSquareMetres)} m²` : ''}`;
         const basis = { mapped: 'mapped', approximate: 'from building outlines', estimated: 'estimated from industrial land' }[site.floorAreaBasis] ?? site.floorAreaBasis;
         return `${number(site.floorAreaSquareMetres / 1000)}k m² floor area (${basis})${site.buildings ? `, ${site.buildings} buildings` : ''}${site.roadKilometres !== null && site.roadKilometres !== undefined ? `, ${number(site.roadKilometres, 1)} km to a major road` : ''}`;
     }
-    if (site.user) return `Your site (${site.source})${site.teuPerDay ? `, ${site.teuPerDay} TEU/day` : ''}`;
     const basis = { assumed: ' (assumed)', shared: ` (an even share of ${site.city}'s population)` }[site.populationBasis] ?? '';
     return `Population ${number(site.population)}${basis}${site.suburbs?.length ? ` · ${site.suburbs.length} suburb${site.suburbs.length === 1 ? '' : 's'}: ${site.suburbs.slice(0, 4).join(', ')}${site.suburbs.length > 4 ? '…' : ''}` : ''}`;
 }
 
-function renderCandidates() {
-    const group = state.group;
-    document.querySelectorAll('#kindTabs button').forEach((button) => button.classList.toggle('active', button.dataset.group === group));
-    for (const each of groups) document.querySelector(`[data-count="${each}"]`).textContent = `${allSites(each).filter((site) => site.kept).length}/${allSites(each).length}`;
-    $('#topN').value = allSites(group).filter((site) => site.kept).length;
-    $('#portVolumeRow').hidden = group !== 'ports';
-    $('#candidateList').innerHTML = allSites(group).map((site) => `
-        <li data-id="${escape(site.id)}">
-            <input type="checkbox" ${site.kept ? 'checked' : ''} aria-label="Keep ${escape(site.name)}">
-            <span class="name" title="${escape(site.name)}">${escape(site.name)}${site.moved ? '<span class="tag">moved</span>' : ''}</span>
-            ${group === 'ports' && site.kept ? `<span><input type="number" min="0" step="10" placeholder="${site.activity ? Math.round(site.activity.importTonnesPerDay / conversion().tonnesPerTeu * conversion().inlandShare) : state.portVolume}" value="${site.teuPerDay ?? ''}" aria-label="TEU a day handed inland at ${escape(site.name)}"> <span class="muted small">TEU/day</span></span>` : '<span></span>'}
-            <span class="detail">${escape(describe(site, group))}</span>
-        </li>`).join('');
-    $('#candidateList').querySelectorAll('li').forEach((row) => {
-        const id = row.dataset.id;
-        row.querySelector('input[type="checkbox"]').addEventListener('change', () => toggle(id));
-        const volume = row.querySelector('input[type="number"]');
-        // Recorded as it is typed, so a Build clicked straight after uses it; the list redraws once the field is left.
-        const record = () => {
-            const value = Number(volume.value);
-            const added = state.added.find((site) => site.id === id);
-            if (added) added.teuPerDay = value > 0 ? value : undefined;
-            else state.changes.set(id, { ...state.changes.get(id), teuPerDay: value > 0 ? value : undefined });
-        };
-        volume?.addEventListener('input', record);
-        volume?.addEventListener('change', () => { record(); changed(); });
-        row.addEventListener('mouseenter', () => map.setHighlight(id));
-        row.addEventListener('mouseleave', () => map.setHighlight(null));
-    });
-    map.setSites(groups.flatMap((each) => allSites(each).map((site) => ({ ...site, kind: kindOfGroup[each] }))));
-}
-
-function toggle(id) {
-    const addedIndex = state.added.findIndex((site) => site.id === id);
-    if (addedIndex >= 0) {
-        state.added.splice(addedIndex, 1);
-    } else {
-        for (const group of groups) {
-            if (!allSites(group).some((site) => site.id === id)) continue;
-            if (state.kept[group].has(id)) state.kept[group].delete(id); else state.kept[group].add(id);
-            state.group = group;
+function renderSuggestions() {
+    const asked = Object.keys(state.suggestions);
+    for (const source of Object.keys(sources)) {
+        const row = $(`[data-source-state="${source}"]`);
+        const found = state.suggestions[source];
+        if (found) {
+            row.className = 'state small done';
+            row.textContent = `${found.candidates[sources[source].group]?.length ?? 0} found`;
+        } else if (!row.classList.contains('failed')) {
+            row.className = 'state small';
+            row.textContent = '';
         }
     }
-    changed();
+    $('#suggestionView').hidden = !asked.length;
+    if (!asked.length) return;
+    if (!asked.includes(state.sourceTab)) state.sourceTab = asked[0];
+    $('#sourceTabs').innerHTML = asked.map((source) => `<button type="button" role="tab" data-tab="${source}" class="${source === state.sourceTab ? 'active' : ''}">${sources[source].label}</button>`).join('');
+    $('#sourceTabs').querySelectorAll('button').forEach((button) => button.addEventListener('click', () => { state.sourceTab = button.dataset.tab; renderSuggestions(); }));
+    const group = sources[state.sourceTab].group;
+    const candidates = state.suggestions[state.sourceTab].candidates[group] ?? [];
+    const adopted = new Set(state.pins.map((pin) => pin.candidate?.id).filter(Boolean));
+    $('#suggestionNotices').innerHTML = (state.suggestions[state.sourceTab].notices ?? []).map((item) => notice(item.level, item.text)).join('');
+    $('#candidateList').innerHTML = candidates.map((site) => `
+        <li data-id="${escape(site.id)}" class="${adopted.has(site.id) ? 'adopted' : ''}">
+            <span></span>
+            <span class="name" title="${escape(site.name)}">${escape(site.name)}</span>
+            ${adopted.has(site.id) ? '<span class="muted small">in your network</span>' : `<button class="link" type="button" data-adopt="${escape(site.id)}">Adopt</button>`}
+            <span class="detail">${escape(describeCandidate(site, group))}</span>
+        </li>`).join('');
+    $('#candidateList').querySelectorAll('[data-adopt]').forEach((button) => button.addEventListener('click', () => adopt(button.dataset.adopt)));
+    $('#candidateList').querySelectorAll('li').forEach((row) => {
+        row.addEventListener('mouseenter', () => map.setHighlight(row.dataset.id));
+        row.addEventListener('mouseleave', () => map.setHighlight(null));
+    });
 }
 
-document.querySelectorAll('#kindTabs button').forEach((button) => button.addEventListener('click', () => {
-    state.group = button.dataset.group;
-    renderCandidates();
-}));
 $('#applyTop').addEventListener('click', () => {
     const count = Math.max(0, Math.round(Number($('#topN').value) || 0));
-    const group = state.group;
-    const { candidates, sites } = state.discovered;
-    state.kept[group] = new Set([...sites[group].map((site) => site.id), ...candidates[group].slice(0, count).map((site) => site.id)]);
-    changed();
+    const group = sources[state.sourceTab]?.group;
+    if (!group) return;
+    checkpoint(`adopting the top ${count}`);
+    for (const candidate of (state.suggestions[state.sourceTab].candidates[group] ?? []).slice(0, count)) adoptCandidate(candidate, group);
+    networkChanged();
+    renderSuggestions();
 });
+
+// ---- the model ----------------------------------------------------------------------------------------------
+
 $('#portVolume').addEventListener('input', () => {
     const value = Number($('#portVolume').value);
     if (value > 0) state.portVolume = value;
@@ -492,10 +1288,10 @@ $('#portVolume').addEventListener('input', () => {
 $('#portVolume').addEventListener('change', () => {
     const value = Number($('#portVolume').value);
     if (value > 0) state.portVolume = value;
-    changed();
+    networkChanged();
 });
-$('#arrivalsSelect').addEventListener('change', () => changed());
-$('#historyFromInput').addEventListener('change', () => changed());
+$('#arrivalsSelect').addEventListener('change', () => networkChanged());
+$('#historyFromInput').addEventListener('change', () => networkChanged());
 // How PortWatch's tonnes become TEU handed inland: the weight of a TEU, and the share not transhipped.
 function conversion() {
     const tonnes = Number($('#tonnesPerTeuInput').value);
@@ -505,7 +1301,7 @@ function conversion() {
         inlandShare: share > 0 && share <= 100 ? share / 100 : 1
     };
 }
-for (const selector of ['#tonnesPerTeuInput', '#inlandShareInput']) $(selector).addEventListener('change', () => { renderCandidates(); changed(); });
+for (const selector of ['#tonnesPerTeuInput', '#inlandShareInput']) $(selector).addEventListener('change', () => { renderSuggestions(); networkChanged(); });
 
 // A fleet operator: none, an invented one made for the model's lanes, or the user's own from a JSON file.
 function showOperatorChoice() {
@@ -514,7 +1310,7 @@ function showOperatorChoice() {
 $('#operatorSelect').addEventListener('change', () => {
     showOperatorChoice();
     // Your own needs its file first; the build asks for it if it is missing.
-    if ($('#operatorSelect').value !== 'file' || state.operatorFile) changed();
+    if ($('#operatorSelect').value !== 'file' || state.operatorFile) networkChanged();
     else $('#operatorFileButton').click();
 });
 $('#operatorFileButton').addEventListener('click', async () => {
@@ -523,62 +1319,14 @@ $('#operatorFileButton').addEventListener('click', async () => {
         if (!chosen.chosen) return;
         state.operatorFile = true;
         $('#operatorFileButton').textContent = 'Choose another file';
-        changed();
+        networkChanged();
     } catch (error) {
         $('#buildStatus').innerHTML = notice('error', error.message);
     }
 });
 
-document.querySelectorAll('[data-add]').forEach((button) => button.addEventListener('click', () => {
-    const kind = map.addKind === button.dataset.add ? null : button.dataset.add;
-    map.setAddKind(kind);
-    document.querySelectorAll('[data-add]').forEach((each) => each.classList.toggle('active', each.dataset.add === kind));
-}));
-$('#addSiteForm').addEventListener('submit', (event) => {
-    event.preventDefault();
-    const name = $('#addSiteName').value.trim();
-    if (!name || !state.pendingAdd) return;
-    const { kind, lat, lon } = state.pendingAdd;
-    state.added.push({ id: `added:${Date.now()}:${state.added.length}`, kind, name, lat, lon });
-    state.pendingAdd = null;
-    $('#addSiteForm').hidden = true;
-    state.group = groupOfKind[kind];
-    changed();
-});
-$('#addSiteCancel').addEventListener('click', () => { state.pendingAdd = null; $('#addSiteForm').hidden = true; });
-$('#fitButton').addEventListener('click', () => map.fit());
-
-// ---- model --------------------------------------------------------------------------------------------
-
-function selection() {
-    const result = {};
-    for (const group of groups) {
-        result[group] = allSites(group).filter((site) => site.kept).map((site) => {
-            const change = state.changes.get(site.id) ?? {};
-            if (state.added.some((added) => added.id === site.id)) return { id: site.id, name: site.name, lat: site.lat, lon: site.lon, ...(site.teuPerDay ? { teuPerDay: site.teuPerDay } : {}) };
-            return { id: site.id, ...change };
-        });
-    }
-    return result;
-}
-
-function changed({ rebuild = true } = {}) {
-    renderCandidates();
-    updateStepSummaries();
-    const kept = groups.map((group) => allSites(group).filter((site) => site.kept).length);
-    const missing = groups.filter((_group, index) => !kept[index]).map((group) => ({ ports: 'a port', zones: 'a logistics zone', towns: 'a town or customer' })[group]);
-    $('#buildButton').disabled = state.busy || missing.length > 0;
-    $('#buildStatus').innerHTML = missing.length ? notice('warning', `Keep at least ${missing.join(', ')} to build a model.`) : '';
-    if (state.built) {
-        $('#buildStatus').innerHTML += notice('warning', 'The model no longer matches the sites above.');
-        // Counted, so a rebuild queued behind other work runs only if something changed after the last build began.
-        state.edits = (state.edits ?? 0) + 1;
-        if (rebuild && $('#keepInStep').checked && !missing.length) {
-            clearTimeout(state.rebuildTimer);
-            state.rebuildTimer = setTimeout(() => build({ focus: false }), 600);
-        }
-    }
-}
+// The port settings show once the network has a port.
+const showPortSettings = () => { $('#portSettings').hidden = !state.pins.some((pin) => pin.role === 'port'); };
 
 async function build({ focus = false } = {}) {
     // Asked while something else runs (another build, a fetch, a scenario): build once that ends, if anything changed
@@ -586,9 +1334,17 @@ async function build({ focus = false } = {}) {
     if (state.busy) { state.buildAgain = true; return; }
     const editsAtStart = state.edits ?? 0;
     setBusy(true);
-    $('#buildStatus').innerHTML = notice('', 'Building the model: routing every lane…');
+    $('#buildStatus').innerHTML = notice('', 'Building the model…');
     try {
-        const answer = await call(api.runImport(importerId, { step: 'build', bbox: state.bbox, selection: selection(), settings: { portTeuPerDay: state.portVolume, arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(), operator: $('#operatorSelect').value || null, standbyPorts: [...state.standby] } }));
+        if (state.router) routeLinks(state.pins, state.links, state.router);
+        // The host accepts 2 MB of options: a large network's roads are left out, and its lanes drawn straight.
+        let network = networkSelection(state.pins, state.links);
+        const straight = JSON.stringify(network).length > maximumNetworkBytes;
+        if (straight) network = networkSelection(state.pins, state.links, { paths: false });
+        const answer = await call(api.runImport(importerId, {
+            step: 'buildNetwork', ...(state.bbox ? { bbox: state.bbox } : {}), network,
+            settings: { portTeuPerDay: state.portVolume, arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(), operator: $('#operatorSelect').value || null, standbyPorts: [...state.standby] }
+        }));
         if (!answer.imported) throw new Error((answer.report?.errors ?? ['The model could not be built.']).join(' '));
         state.built = answer.data;
         // The host now holds this model, so a scenario can run on it.
@@ -599,9 +1355,12 @@ async function build({ focus = false } = {}) {
         const histories = state.built.histories ?? [];
         $('#buildStatus').innerHTML = notice('ok', `${answer.report.summary}: ${state.built.nodes} nodes and ${state.built.edges} relationships, now in the canvas.`)
             + (histories.length ? notice('', `Arrivals follow IMF PortWatch history: ${histories.map((item) => `${item.port} from ${item.from} (model day 0) to ${item.to}`).join('; ')}.`) : '')
-            + state.built.warnings.map((text) => notice('warning', text)).join('');
+            + state.built.warnings.map((text) => notice('warning', text)).join('')
+            + (straight ? notice('', 'The lanes are drawn straight on the map: the roads of this many links are more than the window may send in one go. Their times and distances are routed over the roads as usual.') : '')
+            + (state.built.unusedLinks?.length ? notice('', `Suggested links left out of the model: ${state.built.unusedLinks.map((item) => `${item.from} → ${item.to} (it ${item.why})`).join(', ')}. Make one yours to build it anyway.`) : '');
         renderBuilt();
-        $('#stepCurate').classList.add('completed');
+        renderNetwork();
+        $('#stepNetwork').classList.add('completed');
         $('#stepBuild').classList.add('completed');
         updateStepSummaries();
         state.scenario = null;
@@ -629,7 +1388,7 @@ function renderFlows() {
     $('#legendFell').hidden = !during;
     $('#legendRose').hidden = !during;
     if (!built) { map.setFlows(null); return; }
-    const positions = new Map(groups.flatMap((group) => allSites(group).map((site) => [site.name, site])));
+    const positions = new Map(state.pins.map((pin) => [pin.name, pin]));
     const sum = (names, index) => names.reduce((total, name) => total + (during[name]?.[index] ?? 0), 0);
     map.setFlows({
         // The roads the lanes run on (a build saved before corridors falls back to straight lanes).
@@ -647,7 +1406,8 @@ function renderFlows() {
             from: positions.get(lane.from), to: positions.get(lane.to), rate: lane.rate,
             title: `${lane.name}: ${number(lane.rate, 1)} TEU/day, ${number(lane.kilometres, 1)} km, ${number(lane.leadTime * 24, 1)} h, ${trucksOf(lane)} trucks${lane.operator ? ` (${built.operator.name})` : ''}`
         })),
-        serves: built.served.filter((item) => positions.has(item.town) && positions.has(item.zone)).map((item) => ({ from: positions.get(item.zone), to: positions.get(item.town) }))
+        // Who serves whom is drawn by the links themselves.
+        serves: []
     });
 }
 
@@ -664,7 +1424,7 @@ function renderBuilt() {
         </table>
         ${renderOperator(built.operator)}
         <table>
-            <thead><tr><th>Town</th><th>Served from</th><th class="number">TEU/day</th></tr></thead>
+            <thead><tr><th>Store or customer area</th><th>Served from</th><th class="number">TEU/day</th></tr></thead>
             <tbody>${built.served.map((item) => `<tr><td>${escape(item.town)}</td><td>${escape(item.zone)}</td><td class="number">${number(item.demand, 1)}</td></tr>`).join('')}</tbody>
         </table>
         <details><summary>Where every value comes from (${built.provenance.length}${bases.length ? `; ${bases.join(', ')}` : ''})</summary>
@@ -698,19 +1458,44 @@ $('#showButton').addEventListener('click', async () => {
 });
 
 // ---- the session kept with the project ------------------------------------------------------------------
-// Everything the window needs to carry on where it was: the place, the curation and the last build's tables. The
-// host keeps the fetched map data beside it, so a saved project reopens its region offline.
+// Everything the window needs to carry on where it was: the place, the network and the last build's tables. The host
+// keeps the fetched map data beside it, so a saved project reopens its region offline.
 function sessionState() {
     return {
-        version: 1, place: state.place ? { display_name: state.place.display_name, boundingbox: state.place.boundingbox } : null,
-        margin: $('#marginSelect').value, bbox: state.bbox, group: state.group, portVolume: state.portVolume,
-        kept: Object.fromEntries(groups.map((group) => [group, [...state.kept[group]]])),
-        changes: [...state.changes], added: state.added, built: state.built, keepInStep: $('#keepInStep').checked,
+        version: 2, place: state.place ? { display_name: state.place.display_name, boundingbox: state.place.boundingbox } : null,
+        margin: $('#marginSelect').value, bbox: state.bbox, roadLevel: state.roadLevel, sample: Boolean(state.sample), portVolume: state.portVolume,
+        // Links without their legs, which are routed again when the session is restored (from the same roads, the same legs).
+        pins: state.pins, links: state.links.map(({ id, from, to, basis }) => ({ id, from, to, basis })),
+        dismissed: [...state.dismissed], suggestions: Object.keys(state.suggestions), available: [...state.available], listRole: state.listRole,
+        built: state.built, keepInStep: $('#keepInStep').checked,
         arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(),
         operator: $('#operatorSelect').value || null, operatorFile: Boolean(state.operatorFile), standby: [...state.standby],
         disruption: { ...disruptionSettings(), dependence: [...state.dependence], transits: [...state.transits].filter(([, value]) => value && !value.error) },
         scenarioTab: state.scenarioTab, scenarioSettings: scenarioSettings(), scenario: state.scenario
     };
+}
+
+// A session kept by the earlier curation workflow: its kept and added sites become pins, linked as suggested.
+async function migrateSession(saved) {
+    const asked = Object.keys(sources).filter((source) => sources[source].kinds.every((kind) => state.available.has(kind)));
+    if (asked.length) await discoverSuggestions(asked);
+    const sourceOf = { ports: 'ports', zones: 'warehouses', towns: 'towns' };
+    const changes = new Map(saved.changes ?? []);
+    for (const group of ['ports', 'zones', 'towns']) {
+        const candidates = state.suggestions[sourceOf[group]]?.candidates[group] ?? [];
+        for (const id of saved.kept?.[group] ?? []) {
+            const candidate = candidates.find((item) => item.id === id);
+            if (!candidate) continue;
+            const change = changes.get(id) ?? {};
+            const pin = adoptCandidate({ ...candidate, ...(change.lat !== undefined ? { lat: change.lat, lon: change.lon } : {}), ...(change.name ? { name: change.name } : {}) }, group);
+            if (pin && change.teuPerDay > 0 && pin.role === 'port') setField(pin, 'teuPerDay', change.teuPerDay);
+        }
+    }
+    for (const site of saved.added ?? []) {
+        const role = { port: 'port', zone: 'warehouse', town: 'customerArea' }[site.kind];
+        const fields = site.teuPerDay > 0 ? { [role === 'port' ? 'teuPerDay' : 'demand']: site.teuPerDay } : {};
+        state.pins.push(createPin(role, site, { name: site.name, pins: state.pins, fields }));
+    }
 }
 
 async function restoreSession() {
@@ -722,21 +1507,23 @@ async function restoreSession() {
         return;
     }
     const saved = answer.session;
-    if (!saved || saved.version !== 1) return;
+    if (!saved || ![1, 2].includes(saved.version)) return;
     setBusy(true);
+    state.restoring = true;
     try {
         state.place = saved.place;
         state.bbox = saved.bbox;
+        state.roadLevel = saved.roadLevel ?? 'major';
+        state.sample = Boolean(saved.sample);
         if (saved.margin) $('#marginSelect').value = saved.margin;
+        $('#roadLevelSelect').value = state.roadLevel;
         if (state.place) {
             $('#chosenRegion').hidden = false;
             $('#chosenName').textContent = state.place.display_name;
         }
-        for (const group of groups) state.kept[group] = new Set(saved.kept?.[group] ?? []);
-        state.changes = new Map(saved.changes ?? []);
-        state.added = saved.added ?? [];
+        // The roles the host holds: what the session says, else what its inputs list.
+        state.available = new Set(saved.available ?? (answer.inputs ?? []).map((input) => input.role));
         state.portVolume = saved.portVolume ?? null;
-        state.group = saved.group ?? 'ports';
         $('#keepInStep').checked = saved.keepInStep !== false;
         if (saved.arrivals) $('#arrivalsSelect').value = saved.arrivals;
         $('#historyFromInput').value = saved.historyFrom ?? '';
@@ -768,21 +1555,32 @@ async function restoreSession() {
             state.savedChokepoint = saved.disruption.chokepoint ?? null;
         }
         state.built = null;
-        await discover({ keepCuration: true });
+        state.pins = saved.version === 2 ? saved.pins ?? [] : [];
+        state.links = saved.version === 2 ? saved.links ?? [] : [];
+        state.dismissed = new Set(saved.dismissed ?? []);
+        state.listRole = saved.listRole ?? 'all';
+        await loadRoads({ keepNetwork: true });
+        if (saved.version === 2 && saved.suggestions?.length) await discoverSuggestions(saved.suggestions);
+        if (saved.version === 1) await migrateSession(saved);
+        if (saved.built) state.built = saved.built;
+        state.restoring = false;
+        renderSuggestions();
+        networkChanged({ rebuild: false });
         if (saved.built) {
-            state.built = saved.built;
             renderBuilt();
             $('#showButton').disabled = false;
             state.scenario = saved.scenario ?? null;
             renderScenario();
+            $('#buildStatus').innerHTML = notice('ok', `The model in the canvas is the one this session built: ${saved.built.nodes} nodes and ${saved.built.edges} relationships.`);
         }
         const when = answer.savedAt ? new Date(answer.savedAt).toLocaleString() : 'earlier';
-        const fetched = answer.inputs.filter((input) => input.retrievedAt).map((input) => input.retrievedAt).sort()[0];
-        $('#regionStatus').innerHTML = notice('ok', `Restored the session kept with this project (saved ${when}).${fetched ? ` Its map data was fetched on ${new Date(fetched).toLocaleDateString()}; fetch again for newer data.` : ''}`);
-        $('#buildStatus').innerHTML = saved.built ? notice('ok', `The model in the canvas is the one this session built: ${saved.built.nodes} nodes and ${saved.built.edges} relationships.`) : '';
+        const fetched = (answer.inputs ?? []).filter((input) => input.retrievedAt).map((input) => input.retrievedAt).sort()[0];
+        $('#regionStatus').innerHTML = notice('ok', `Restored the session kept with this project (saved ${when}).${fetched ? ` Its map data was fetched on ${new Date(fetched).toLocaleDateString()}; load the roads again for newer data.` : ''}`)
+            + (saved.version === 1 ? notice('warning', 'This session was kept by the earlier workflow, which kept sites from lists: they are now pins on the map, linked as suggested. The model in the canvas was built the earlier way; build again to build it from the links shown.') : '');
     } catch (error) {
         $('#regionStatus').innerHTML = notice('error', `The session kept with this project could not be restored: ${error.message}`);
     } finally {
+        state.restoring = false;
         setBusy(false);
     }
 }
@@ -794,13 +1592,14 @@ function setBusy(busy) {
         if ((state.edits ?? 0) !== state.builtEdits) setTimeout(() => build({ focus: false }), 0);
     }
     // Run waits too: a scenario asked for while the model is being built would otherwise be silently ignored.
-    for (const selector of ['#fetchButton', '#sampleButton', '#sitesButton', '#searchButton', '#runScenarioButton']) $(selector).disabled = busy;
+    for (const selector of ['#fetchButton', '#sampleButton', '#sitesButton', '#searchButton', '#runScenarioButton', ...Object.keys(sources).map((source) => `[data-fetch-source="${source}"]`)]) $(selector).disabled = busy;
     if (!busy) showArea();
-    if (state.discovered) {
-        const missing = groups.some((group) => !allSites(group).some((site) => site.kept));
-        $('#buildButton').disabled = busy || missing;
-    }
+    const errors = networkProblems(state.pins, state.links).filter((problem) => problem.level === 'error');
+    $('#buildButton').disabled = busy || errors.length > 0 || !state.pins.length;
 }
+
+// For the window tests: the state, to read how long routing took (only when the page is opened with ?inspect).
+if (new URLSearchParams(location.search).has('inspect')) window.logisticsToolboxState = state;
 
 if (!api) $('#regionStatus').innerHTML = notice('error', 'This window must be opened from Konjugate.');
 else restoreSession();
@@ -811,16 +1610,24 @@ else restoreSession();
 // the user's to change. The scenario forks the model on the day the disruption starts.
 const day = 86400;
 
+// The port pin of a built port: what was found there when adopted, else the pin itself. A supplier has no sea.
+const portSite = (port) => {
+    const pin = state.pins.find((item) => item.name === port.name && item.role === 'port');
+    return pin ? { ...pin, ...(pin.candidate ?? {}), lat: pin.lat, lon: pin.lon } : null;
+};
 // A port's shares through each chokepoint: the user's own, else the sea it lies in.
 function sharesOf(port) {
+    if (port.supplier) return {};
     if (state.dependence.has(port.name)) return state.dependence.get(port.name);
-    const site = allSites('ports').find((candidate) => candidate.name === port.name);
+    const site = portSite(port);
     return (site?.chokepoints ?? (site ? chokepointDependence(site) : { shares: {} })).shares;
 }
 const seaOf = (port) => {
-    const site = allSites('ports').find((candidate) => candidate.name === port.name);
+    const site = portSite(port);
     return (site?.chokepoints ?? (site ? chokepointDependence(site) : { sea: null })).sea;
 };
+// The ports of the model, without its suppliers: what ships reach.
+const builtPorts = () => (state.built?.ports ?? []).filter((port) => !port.supplier);
 
 function disruptionSettings() {
     return {
@@ -848,9 +1655,13 @@ function renderScenario({ fetchTransits = false } = {}) {
     $('#chokepointSelect').innerHTML = (used.size ? `<optgroup label="Your ports depend on">${chokepoints.filter((item) => used.has(item.id)).map(option).join('')}</optgroup>` : '')
         + `<optgroup label="${used.size ? 'Other chokepoints' : 'Chokepoints'}">${chokepoints.filter((item) => !used.has(item.id)).map(option).join('')}</optgroup>`;
     if (previous && chokepointById.has(previous)) $('#chokepointSelect').value = previous;
+    // A network with no port has no chokepoint to disrupt: its tab is hidden, and nothing is fetched for it.
+    const hasPorts = builtPorts().length > 0;
+    $('#scenarioTabs [data-scenario="chokepointDisruption"]').hidden = !hasPorts;
+    if (!hasPorts && state.scenarioTab === 'chokepointDisruption') state.scenarioTab = 'roadClosure';
     renderDependence();
     // After a fresh build, fetch the chokepoint's transits; when restoring a session (perhaps offline), show only what was kept.
-    renderTransits({ fetch: fetchTransits });
+    if (hasPorts) renderTransits({ fetch: fetchTransits });
     renderScenarioChoices();
     renderScenarioResult();
 }
@@ -860,7 +1671,7 @@ function renderDiversion() {
     const chokepoint = $('#chokepointSelect').value;
     const previous = $('#divertToSelect').value || state.savedDivertTo;
     state.savedDivertTo = null;
-    const outside = state.built.ports.filter((port) => !((sharesOf(port)[chokepoint] ?? 0) > 0));
+    const outside = builtPorts().filter((port) => !((sharesOf(port)[chokepoint] ?? 0) > 0));
     $('#divertToSelect').innerHTML = outside.length
         ? outside.map((port) => `<option value="${escape(port.name)}">${escape(port.name)} (berths for ${number(port.berths ?? port.arrivals * 1.5)} TEU/day)</option>`).join('')
         : '<option value="">no kept port outside it</option>';
@@ -886,7 +1697,7 @@ function renderDependence() {
     renderDiversion();
     const chokepoint = $('#chokepointSelect').value;
     $('#dependenceTable').innerHTML = `<thead><tr><th>Port</th><th>Sea</th><th class="number" title="The share of the port's ships that pass this chokepoint: from the sea it lies in, an assumption you can change">Through it</th></tr></thead><tbody>${
-        state.built.ports.map((port) => `<tr data-port="${escape(port.name)}"><td>${escape(port.name)}</td><td class="sea">${escape(seaOf(port) ?? 'open sea')}</td>`
+        builtPorts().map((port) => `<tr data-port="${escape(port.name)}"><td>${escape(port.name)}</td><td class="sea">${escape(seaOf(port) ?? 'open sea')}</td>`
             + `<td class="number"><input type="number" min="0" max="100" step="5" value="${Math.round((sharesOf(port)[chokepoint] ?? 0) * 100)}" aria-label="Share of ${escape(port.name)}'s ships through the chokepoint"> %</td></tr>`).join('')
     }</tbody>`;
     $('#dependenceTable').querySelectorAll('input').forEach((input) => input.addEventListener('change', () => {
@@ -1380,7 +2191,8 @@ function renderScenarioResult() {
 // of normal traffic to start from) or across it (a month before it, to replay the break itself).
 const modelDays = 90;
 function renderHistoryHint() {
-    const ports = state.discovered?.candidates.ports.filter((port) => port.activity) ?? [];
+    const ports = [...state.pins.filter((pin) => pin.role === 'port' && pin.candidate?.activity).map((pin) => ({ name: pin.name, activity: pin.candidate.activity })),
+        ...(state.suggestions.ports?.candidates.ports ?? []).filter((port) => port.activity)];
     const input = $('#historyFromInput');
     const hint = $('#historyFromHint');
     if (ports.length) {
@@ -1400,6 +2212,6 @@ function renderHistoryHint() {
         + `<button class="link" type="button" data-history-from="${usable}">before it</button> · <button class="link" type="button" data-history-from="${across}">across it</button> · <button class="link" type="button" data-history-from="">the latest days</button>`;
     hint.querySelectorAll('[data-history-from]').forEach((button) => button.addEventListener('click', () => {
         input.value = button.dataset.historyFrom;
-        changed();
+        networkChanged();
     }));
 }

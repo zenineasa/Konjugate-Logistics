@@ -1,0 +1,244 @@
+/* Copyright © 2026 Zenin Easa Panthakkalakath */
+
+// The importer's steps for the map-first workflow, as the host runs them: the roads alone, suggestions only
+// when asked for, a file of sites and a model built from the pins and links placed on the map.
+
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import test from 'node:test';
+import importRegion from '../../packages/toolbox/importers/region.mjs';
+import { createPin, linkId, networkSelection, pinFromCandidate, routeLinks, suggestLinks } from '../../packages/toolbox/lib/network.mjs';
+import { defaultSelection, discoverRegion } from '../../packages/toolbox/lib/discovery.mjs';
+import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
+import { createRouter } from '../../packages/toolbox/lib/roadGraph.mjs';
+import { createNetworkRouter } from '../../packages/toolbox/lib/routing.mjs';
+import { logisticsRoot } from '../../scripts/konjugatePaths.mjs';
+import { equationHelpers, loadTemplates, ModelBuilder } from '../../scripts/templatePlacement.mjs';
+import { syntheticBbox, syntheticPortwatch, syntheticRegion } from '../fixtures/syntheticRegion.mjs';
+
+const plugin = JSON.parse(await readFile(join(logisticsRoot, 'packages', 'engine', 'plugin.json'), 'utf8'));
+const helpers = {
+    reconcileEquationBindings: equationHelpers.reconcileEquationBindings,
+    validateEquationLatex: equationHelpers.validateEquationLatex,
+    async readPackageJson(relativePath) {
+        if (/^geography\/[\w.]+\.json$/.test(relativePath)) return JSON.parse(await readFile(join(logisticsRoot, 'packages', 'toolbox', relativePath), 'utf8'));
+        const id = relativePath.match(/^templates\/(\w+)\.json$/)?.[1];
+        const contribution = plugin.contributes.find((entry) => entry.kind === 'component' && entry.componentId === id);
+        if (!contribution) throw new Error(`No ${relativePath} in the package.`);
+        return JSON.parse(await readFile(join(logisticsRoot, 'packages', 'engine', contribution.entry), 'utf8'));
+    }
+};
+const templates = await loadTemplates();
+const files = (answers) => Object.entries(answers).map(([role, answer]) => ({ role, name: `${role}.json`, text: JSON.stringify(answer), encoding: 'utf-8' }));
+const allFiles = () => files({ ...syntheticRegion(), ...syntheticPortwatch() });
+const roadsOnly = () => { const { roads, places } = syntheticRegion(); return files({ roads, places }); };
+const close = (actual, expected, tolerance, message) => assert.ok(Math.abs(actual - expected) <= tolerance, `${message}: ${actual} is not within ${tolerance} of ${expected}`);
+
+// The roads step's graph, as the window routes with it.
+async function windowRouter(fileList = roadsOnly()) {
+    const roads = await importRegion({ files: fileList, helpers, options: { step: 'roads' } });
+    assert.equal(roads.ok, true, JSON.stringify(roads.report));
+    return createNetworkRouter(roads.data.graph);
+}
+
+// A small network on the synthetic coast: a supplier inland, two warehouses, four stores and a customer area.
+function placed() {
+    const pins = [];
+    const add = (role, point, options = {}) => { const pin = createPin(role, point, { pins, ...options }); pins.push(pin); return pin; };
+    add('supplier', { lat: -29.72, lon: -19.88 }, { name: 'Inland mill', fields: { supply: 60 } });
+    add('supplier', { lat: -29.72, lon: -19.52 }, { name: 'East mill' });
+    add('warehouse', { lat: -29.9, lon: -19.7 }, { name: 'Central depot' });
+    add('warehouse', { lat: -29.76, lon: -19.5 }, { name: 'Hill depot' });
+    add('store', { lat: -29.95, lon: -19.72 }, { name: 'Harbour shop', fields: { demand: 20 } });
+    add('store', { lat: -29.85, lon: -19.69 }, { name: 'High street' });
+    add('darkStore', { lat: -29.8, lon: -19.55 }, { name: 'Night hub', fields: { demand: 10 } });
+    add('customerArea', { lat: -29.75, lon: -19.6 }, { name: 'Hill suburbs', fields: { population: 30000 } });
+    return pins;
+}
+
+test('loading roads returns the map, place names and the compacted graph, and discovers nothing else', async () => {
+    const result = await importRegion({ files: roadsOnly(), helpers, options: { step: 'roads', bbox: syntheticBbox } });
+    assert.equal(result.ok, true, JSON.stringify(result.report));
+    const { data } = result;
+    assert.equal(data.step, 'roads');
+    assert.equal(data.candidates, undefined, 'no suggestions unless asked for');
+    assert.ok(data.map.roads.length >= 7);
+    assert.deepEqual([data.map.ports, data.map.industrial, data.map.anchorages], [[], [], []]);
+    assert.deepEqual(data.map.places.map((place) => place.name).sort(), ['Cedarton', 'Dunmore', 'Elmwick']);
+    assert.ok(data.map.geography, 'land, coast and borders around a fetched region');
+    assert.ok(data.graph.vertices.length > 5 && data.graph.edges.length > 5);
+    assert.ok(data.notices.every((notice) => notice.kind === 'roads'));
+    assert.ok(data.coverage.roads.kilometres > 50);
+    // Even with every kind fetched (the sample region), the roads step reads only the roads and place names.
+    const sample = await importRegion({ files: allFiles(), helpers, options: { step: 'roads' } });
+    assert.equal(sample.data.candidates, undefined);
+    assert.deepEqual(sample.data.map.ports, []);
+    assert.ok(sample.data.map.bbox.south < -29.98 && sample.data.map.bbox.north > -29.7, 'with no box given, the map covers the roads');
+    assert.match((await importRegion({ files: [], helpers, options: { step: 'roads' } })).report.errors[0], /Load the roads/);
+});
+
+test('suggestions come only from the sources asked for', async () => {
+    const ask = async (sources) => (await importRegion({ files: allFiles(), helpers, options: { step: 'discover', sources, bbox: syntheticBbox } })).data;
+    const ports = await ask(['ports']);
+    assert.deepEqual(Object.keys(ports.candidates), ['ports']);
+    assert.deepEqual(ports.candidates.ports.map((port) => port.name), ['Port Alder', 'Birch Harbour']);
+    assert.ok(ports.candidates.ports[0].activity, 'matched to IMF PortWatch');
+    assert.match(ports.attribution, /IMF PortWatch/);
+    assert.ok(ports.overlay.ports.length > 0 && ports.overlay.industrial.length === 0);
+    assert.ok(ports.notices.every((notice) => notice.kind === 'ports'));
+    const warehouses = await ask(['warehouses']);
+    assert.deepEqual(Object.keys(warehouses.candidates), ['zones']);
+    assert.ok(warehouses.candidates.zones.length >= 2 && warehouses.overlay.industrial.length > 0 && warehouses.overlay.ports.length === 0);
+    assert.equal(warehouses.coverage.warehouses.level, 'good');
+    const towns = await ask(['towns']);
+    assert.deepEqual(towns.candidates.towns.map((town) => town.name).sort(), ['Cedarton', 'Dunmore', 'Elmwick']);
+    // With the ports' answers not fetched, asking for ports finds none (and fetches nothing: the importer never does).
+    const none = await importRegion({ files: roadsOnly(), helpers, options: { step: 'discover', sources: ['ports'] } });
+    assert.deepEqual(none.data.candidates.ports, []);
+});
+
+test('a file of sites is read for the window to place', async () => {
+    const csv = 'name,kind,latitude,longitude,teuPerDay,from\nMill,supplier,-29.72,-19.88,40,\nDepot,warehouse,-29.9,-19.7,,Mill\n';
+    const result = await importRegion({ files: [...roadsOnly(), { role: 'sites', name: 'sites.csv', text: csv }], helpers, options: { step: 'sites' } });
+    assert.equal(result.ok, true);
+    assert.deepEqual([...result.data.sites.ports, ...result.data.sites.zones].map((site) => [site.name, site.role, site.from ?? null]), [['Mill', 'supplier', null], ['Depot', 'warehouse', ['Mill']]]);
+    assert.match((await importRegion({ files: roadsOnly(), helpers, options: { step: 'sites' } })).report.errors[0], /Choose a file/);
+});
+
+test('a network placed on the map builds a model whose lanes are its links, routed as the window routed them', async () => {
+    const router = await windowRouter();
+    const pins = placed();
+    const links = suggestLinks(pins, [], router);
+    routeLinks(pins, links, router);
+    const result = await importRegion({ files: roadsOnly(), helpers, options: { step: 'buildNetwork', network: networkSelection(pins, links) } });
+    assert.equal(result.ok, true, JSON.stringify(result.report));
+    const { data } = result;
+    assert.equal(data.step, 'buildNetwork');
+    const name = (id) => pins.find((pin) => pin.id === id).name;
+    const supplyLinks = links.filter((link) => pins.find((pin) => pin.id === link.from).role === 'supplier');
+    assert.deepEqual(data.lanes.map((lane) => `${lane.from} > ${lane.to}`).sort(), supplyLinks.map((link) => `${name(link.from)} > ${name(link.to)}`).sort(), 'one lane per supply link, none dropped or added');
+    for (const lane of data.lanes) {
+        const link = supplyLinks.find((item) => name(item.from) === lane.from && name(item.to) === lane.to);
+        close(lane.kilometres, Number(link.leg.kilometres.toFixed(1)), 1e-9, `${lane.name} as the window routed it`);
+    }
+    const serveLinks = links.filter((link) => pins.find((pin) => pin.id === link.from).role === 'warehouse');
+    assert.deepEqual(data.served.map((item) => `${item.zone} > ${item.town}`).sort(), serveLinks.map((link) => `${name(link.from)} > ${name(link.to)}`).sort());
+    // Every source ships what it supplies: 60 from the inland mill (the user's), 50 assumed from the other.
+    const supplied = (entity) => data.provenance.find((entry) => entry.entity === entity && entry.parameter === 'Supplied');
+    assert.deepEqual([supplied('Inland mill').value, supplied('Inland mill').basis], [60, 'user']);
+    assert.deepEqual([supplied('East mill').value, supplied('East mill').basis], [50, 'assumed']);
+    assert.match(supplied('East mill').detail, /default for a supplier/);
+    assert.ok(data.ports.every((port) => port.supplier));
+    const total = data.lanes.reduce((sum, lane) => sum + lane.rate, 0);
+    close(total, 110, 1e-6, 'every unit supplied is carried');
+    // Demand: the stores' own figures and the assumed one, scaled together to what is supplied; the customer area takes
+    // the rest by its population.
+    const demand = (entity) => data.provenance.find((entry) => entry.entity === entity && entry.parameter === 'Demand');
+    assert.equal(demand('High street').basis, 'assumed');
+    assert.match(demand('High street').detail, /default for a store/);
+    assert.equal(demand('Harbour shop').basis, 'user');
+    close(data.towns.reduce((sum, town) => sum + town.demand, 0), 110, 1e-6, 'demand matches supply');
+    assert.match(result.report.summary, /^2 suppliers, \d road lanes?, 4 stores and customer areas served$/);
+    // The lanes are drawn along the roads the window routed them over, a road several lanes share once.
+    assert.ok(data.corridors.length && data.corridors.every((corridor) => corridor.basis === 'routed'), JSON.stringify(data.corridors.map((corridor) => corridor.basis)));
+    assert.ok(data.corridors.some((corridor) => corridor.lanes.length > 1), 'a stretch of road shared by two lanes');
+    // Without the roads (a network too large to send them), the lanes are straight.
+    const straight = await importRegion({ files: roadsOnly(), helpers, options: { step: 'buildNetwork', network: networkSelection(pins, links, { paths: false }) } });
+    assert.ok(straight.data.corridors.every((corridor) => corridor.points.length === 2));
+});
+
+test('a port adopted from a suggestion keeps its IMF PortWatch volume; one of the user\'s own takes theirs', async () => {
+    const router = await windowRouter(allFiles());
+    const discovered = (await importRegion({ files: allFiles(), helpers, options: { step: 'discover', sources: ['ports', 'warehouses'], bbox: syntheticBbox } })).data.candidates;
+    const pins = [];
+    const port = pinFromCandidate(discovered.ports[0], 'ports', pins);
+    pins.push(port);
+    pins.push(pinFromCandidate(discovered.zones[0], 'zones', pins));
+    pins.push(createPin('port', { lat: -29.99, lon: -19.5 }, { pins, name: 'Our quay', fields: { teuPerDay: 30 } }));
+    pins.push(createPin('store', { lat: -29.85, lon: -19.69 }, { pins, name: 'High street' }));
+    pins.push(createPin('customerArea', { lat: -29.75, lon: -19.6 }, { pins, name: 'Hill suburbs' }));
+    const links = suggestLinks(pins, [], router);
+    routeLinks(pins, links, router);
+    // Moved a little from where it was found: still Port Alder, with its history.
+    port.lat += 0.002;
+    routeLinks(pins, links, router);
+    const result = await importRegion({ files: allFiles(), helpers, options: { step: 'buildNetwork', bbox: syntheticBbox, network: networkSelection(pins, links) } });
+    assert.equal(result.ok, true, JSON.stringify(result.report));
+    const inland = (entity) => result.data.provenance.find((entry) => entry.entity === entity && entry.parameter === 'Containers handed inland');
+    assert.equal(inland('Port Alder').basis, 'sourced');
+    assert.deepEqual([inland('Our quay').value, inland('Our quay').basis], [30, 'user']);
+    // Built again without the ports' answers (the suggestions no longer loaded): built as the user's own site, and said so.
+    const bare = await importRegion({ files: roadsOnly(), helpers, options: { step: 'buildNetwork', network: networkSelection(pins, links) } });
+    assert.equal(bare.ok, true, JSON.stringify(bare.report));
+    assert.ok(bare.data.warnings.some((text) => /Port Alder, Alder Industrial Park were adopted from map data that is no longer loaded/.test(text)), bare.data.warnings.join('\n'));
+});
+
+test('links the user drew are kept as drawn, however small their flow', async () => {
+    const router = await windowRouter();
+    const pins = placed();
+    const [inland, east] = pins.filter((pin) => pin.role === 'supplier');
+    const [central, hill] = pins.filter((pin) => pin.role === 'warehouse');
+    // A tiny mill supplying a unit a day.
+    pins.push(createPin('supplier', { lat: -29.74, lon: -19.7 }, { pins, name: 'Tiny mill', fields: { supply: 1 } }));
+    const tiny = pins.at(-1);
+    const suggested = suggestLinks(pins, [], router);
+    routeLinks(pins, suggested, router);
+    const asSuggested = await importRegion({ files: roadsOnly(), helpers, options: { step: 'buildNetwork', network: networkSelection(pins, suggested) } });
+    assert.equal(asSuggested.ok, true, JSON.stringify(asSuggested.report));
+    // Suggested to both depots, it carries half a unit to one of them: that suggestion is left out, and said so.
+    assert.equal(asSuggested.data.lanes.filter((lane) => lane.from === 'Tiny mill').length, 1);
+    assert.deepEqual(asSuggested.data.unusedLinks.map((link) => [link.from, link.why]), [['Tiny mill', 'carries too little']]);
+    // Drawn by the user, every link is a lane, however little it carries.
+    const drawn = [[inland, central], [inland, hill], [east, central], [east, hill], [tiny, central], [tiny, hill]].map(([from, to]) => ({ id: linkId(from.id, to.id), from: from.id, to: to.id, basis: 'user' }));
+    const links = suggestLinks(pins, drawn, router);
+    routeLinks(pins, links, router);
+    const result = await importRegion({ files: roadsOnly(), helpers, options: { step: 'buildNetwork', network: networkSelection(pins, links) } });
+    assert.equal(result.ok, true, JSON.stringify(result.report));
+    assert.equal(result.data.lanes.length, 6, 'six lanes, the small ones too');
+    assert.deepEqual(result.data.unusedLinks, []);
+});
+
+test('a network that cannot be built says why, naming the site', async () => {
+    const router = await windowRouter();
+    const build = async (pins, links) => {
+        routeLinks(pins, links, router);
+        return importRegion({ files: roadsOnly(), helpers, options: { step: 'buildNetwork', network: networkSelection(pins, links) } });
+    };
+    const pins = placed();
+    const links = suggestLinks(pins, [], router);
+    const shop = pins.find((pin) => pin.name === 'Harbour shop');
+    const unserved = await build(pins, links.filter((link) => link.to !== shop.id));
+    assert.match(unserved.report.errors[0], /^Harbour shop has no warehouse linked to it/);
+    // Two sites of one name.
+    const twins = placed();
+    twins.find((pin) => pin.name === 'High street').name = 'Harbour shop';
+    assert.match((await build(twins, suggestLinks(twins, [], router))).report.errors[0], /^Two sites are named Harbour shop/);
+    // A depot left with nothing to serve: its only mill then supplies no one.
+    const strict = placed();
+    const byName = (name) => strict.find((pin) => pin.name === name);
+    const user = (from, to) => ({ id: linkId(byName(from).id, byName(to).id), from: byName(from).id, to: byName(to).id, basis: 'user' });
+    const idle = await build(strict, [user('Inland mill', 'Central depot'), user('East mill', 'Hill depot'), ...['Harbour shop', 'High street', 'Night hub', 'Hill suburbs'].map((name) => user('Central depot', name))]);
+    assert.match(idle.report.errors[0], /^East mill supplies 50 TEU a day, but no warehouse that serves anyone is linked to it/);
+    // The inland mill ships 60 a day to the central depot alone, which passes on only the harbour shop's 20: no balance.
+    const lopsided = await build(strict, [user('Inland mill', 'Central depot'), user('East mill', 'Hill depot'), user('Central depot', 'Harbour shop'), ...['High street', 'Night hub', 'Hill suburbs'].map((name) => user('Hill depot', name))]);
+    assert.match(lopsided.report.errors[0], /^The links cannot carry what every source supplies to the warehouses that need it/);
+});
+
+test('a network linked as gravity would link it builds the same model as the curated region', () => {
+    const { candidates, roadGraph } = discoverRegion(syntheticRegion());
+    const route = createRouter(roadGraph).route;
+    const selection = defaultSelection(candidates);
+    const gravity = buildRegionModel({ builder: new ModelBuilder(templates), selection, route });
+    const id = (group, name) => selection[group].find((site) => site.name === name).id;
+    const links = {
+        supply: gravity.lanes.map((lane) => ({ port: id('ports', lane.from), zone: id('zones', lane.to), leg: null })),
+        serve: gravity.served.map((item) => ({ zone: id('zones', item.zone), town: id('towns', item.town), leg: null }))
+    };
+    const linked = buildRegionModel({ builder: new ModelBuilder(templates), selection, route, links });
+    assert.deepEqual(linked.lanes.map((lane) => [lane.name, lane.fleet]), gravity.lanes.map((lane) => [lane.name, lane.fleet]));
+    for (const [index, lane] of linked.lanes.entries()) close(lane.rate, gravity.lanes[index].rate, 1e-6, lane.name);
+    for (const [index, item] of linked.served.entries()) close(item.share, gravity.served[index].share, 1e-9, `${item.town} from ${item.zone}`);
+    assert.equal(linked.document.nodes.length, gravity.document.nodes.length);
+    assert.equal(linked.document.edges.length, gravity.document.edges.length);
+});

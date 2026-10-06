@@ -6,24 +6,33 @@
 // corridor, marked with its basis, so the map does not draw a road the model did not use.
 //
 // `lanes`: [{ name, rate, standby, basis, origin: { lat, lon }, destination: { lat, lon }, path: { ids, points } | null }],
-// path being the road nodes the router followed. Returns [{ points: [[lat, lon]], rate, lanes: [names], basis, standby }].
+// path being the road nodes the router followed. A path with no ids (the window's router, whose points are the road
+// graph's own geometry) is matched by position instead: two legs over the same road pass through the same points.
+// Returns [{ points: [[lat, lon]], rate, lanes: [names], basis, standby }].
 
 import { simplify } from './mapData.mjs';
 
 const round = (value) => Math.round(value * 1e5) / 1e5;
 const pack = (points) => points.map((point) => [round(point.lat), round(point.lon)]);
 
+// A path's points (as { lat, lon } or [lat, lon]) named by their position, to about a metre.
+function byPosition(given) {
+    const points = given.map((point) => (Array.isArray(point) ? { lat: point[0], lon: point[1] } : point));
+    return { points, ids: points.map((point) => `${point.lat.toFixed(5)},${point.lon.toFixed(5)}`) };
+}
+
 export function laneCorridors(lanes, { tolerance = 30 } = {}) {
     const points = new Map();
     const sequences = lanes.map((lane) => {
-        if (lane.basis !== 'routed' || !lane.path?.ids?.length) return null;
+        if (lane.basis !== 'routed' || !lane.path?.points?.length) return null;
+        const path = lane.path.ids?.length ? lane.path : byPosition(lane.path.points);
         // From the site, along its access leg, over the roads, to the other site.
         const origin = `site:${lane.origin.lat},${lane.origin.lon}`;
         const destination = `site:${lane.destination.lat},${lane.destination.lon}`;
         points.set(origin, lane.origin);
         points.set(destination, lane.destination);
-        lane.path.ids.forEach((id, index) => points.set(id, lane.path.points[index]));
-        return [origin, ...lane.path.ids, destination];
+        path.ids.forEach((id, index) => points.set(id, path.points[index]));
+        return [origin, ...path.ids, destination];
     });
     // Which lanes use each stretch of road (in either direction).
     const edge = (a, b) => (String(a) < String(b) ? `${a}|${b}` : `${b}|${a}`);

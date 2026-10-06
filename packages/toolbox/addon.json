@@ -38,12 +38,12 @@
                 "files": [
                     { "role": "ports", "label": "Ports and anchorages", "accept": ["json"], "description": "OpenStreetMap ports, harbours, marinas and anchorages, as Overpass returns them.", "sample": "samples/ports.json" },
                     { "role": "logistics", "multiple": true, "label": "Warehouses and industrial land", "accept": ["json"], "description": "OpenStreetMap warehouses and industrial land, as Overpass returns them.", "sample": "samples/logistics.json" },
-                    { "role": "roads", "multiple": true, "label": "Major roads", "accept": ["json"], "description": "OpenStreetMap motorways, trunk and primary roads, as Overpass returns them.", "sample": "samples/roads.json" },
+                    { "role": "roads", "multiple": true, "label": "Roads", "accept": ["json"], "description": "OpenStreetMap motorways, trunk and primary roads (and for a city its secondary and tertiary roads), as Overpass returns them.", "sample": "samples/roads.json" },
                     { "role": "rail", "label": "Rail", "accept": ["json"], "description": "OpenStreetMap rail lines and yards, as Overpass returns them.", "sample": "samples/rail.json" },
                     { "role": "places", "label": "Towns and cities", "accept": ["json"], "description": "OpenStreetMap towns and cities, as Overpass returns them.", "sample": "samples/places.json" },
                     { "role": "portwatchPorts", "label": "IMF PortWatch ports", "accept": ["json"], "description": "The IMF PortWatch ports around the region, as its ArcGIS service returns them." },
                     { "role": "portwatchActivity", "multiple": true, "label": "IMF PortWatch port activity", "accept": ["json"], "description": "A port's daily calls and trade estimates from IMF PortWatch, one file per port." },
-                    { "role": "sites", "label": "Your own sites", "accept": ["csv", "txt"], "description": "One row per site: name, kind (port, warehouse or customer), latitude, longitude, and optionally teuPerDay, floorArea and population." },
+                    { "role": "sites", "label": "Your own sites", "accept": ["csv", "txt"], "description": "One row per site: name, kind (supplier, port, warehouse, store, dark store or customer area), latitude, longitude, and optionally teuPerDay, floorArea, population and from (the sites it is supplied from, separated by |)." },
                     { "role": "operator", "label": "Your fleet operator", "accept": ["json"], "description": "A haulier's trucks: one or two truck sizes with their costs, depots with their trucks, and the lanes it carries by origin and destination." }
                 ]
             }

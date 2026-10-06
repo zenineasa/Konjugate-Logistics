@@ -1,10 +1,14 @@
 /* Copyright © 2026 Zenin Easa Panthakkalakath */
 
-// Builds a runnable model from a curated region: each kept port, logistics zone and town becomes a
-// node from the component templates, each town draws on the nearby zones, each zone is supplied
-// by nearby ports over road lanes whose travel times and distances come from routing, and every
-// initial value is the steady state, so the baseline holds still. Every value records where it came
-// from: sourced, routed, assumed or the user's own.
+// Builds a runnable model from a curated region or a network placed on the map: each port or supplier,
+// logistics zone (warehouse) and town (store, dark store or customer area) becomes a node from the
+// component templates, each town draws on zones, each zone is supplied by ports over road lanes whose
+// travel times and distances come from routing, and every initial value is the steady state, so the
+// baseline holds still. Every value records where it came from: sourced, routed, assumed or the user's own.
+//
+// Who serves whom comes from `links` when the user's network gives them ({ supply: [{ port, zone, leg }],
+// serve: [{ zone, town, leg }] }, by site id, a leg the window already routed or null to route it here), and
+// otherwise from gravity: each town from its nearest few zones, each zone from its nearest few ports.
 
 import { laneCorridors } from './corridors.mjs';
 import { toLocal } from './geo.mjs';
@@ -113,7 +117,7 @@ export function roadLaneState(rate, leadTime, fleet, { truckCapacity, loadDays, 
     };
 }
 
-export function buildRegionModel({ builder, selection, route, options = {} }) {
+export function buildRegionModel({ builder, selection, route, links = null, options = {} }) {
     const settings = { ...regionModelDefaults, ...options };
     const templates = builder.templates;
     // A fleet operator, the user's own or a synthetic one: its truck sizes and costs become the region's, and its
@@ -133,9 +137,13 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
     const ports = selection.ports ?? [];
     const zones = selection.zones ?? [];
     const towns = selection.towns ?? [];
-    if (!ports.length) throw new Error('Keep at least one port: it is where containers enter the region.');
-    if (!zones.length) throw new Error('Keep at least one logistics zone: towns are served from zones.');
-    if (!towns.length) throw new Error('Keep at least one town or customer: it is where the demand is.');
+    if (!ports.length) throw new Error(links ? 'Place a supplier or a port: it is where goods enter the network.' : 'Keep at least one port: it is where containers enter the region.');
+    if (!zones.length) throw new Error(links ? 'Place a warehouse: stores and customers are served from warehouses.' : 'Keep at least one logistics zone: towns are served from zones.');
+    if (!towns.length) throw new Error(links ? 'Place a store, a dark store or a customer area: it is where the demand is.' : 'Keep at least one town or customer: it is where the demand is.');
+    const names = new Map();
+    for (const site of [...ports, ...zones, ...towns]) names.set(site.name, (names.get(site.name) ?? 0) + 1);
+    const twice = [...names].filter(([, count]) => count > 1).map(([name]) => name);
+    if (twice.length) throw new Error(`Two sites are named ${twice.join(', ')}: give each its own name, as the model and its scenarios find sites by name.`);
 
     // ---- supply: the user's figures; then IMF PortWatch activity; otherwise an assumed volume shared by port land
     const supply = new Map();
@@ -145,8 +153,8 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
     const normals = new Map();
     const normalOf = (activity) => (activity.shift ? Math.max(activity.shift.before, activity.shift.after) / settings.tonnesPerTeu * settings.inlandShare : null);
     const secondsPerDay = templateValue(templates, 'port', 'secondsPerDay');
-    const sourced = (port) => !(Number(port.teuPerDay) > 0) && port.activity?.importTonnesPerDay > 0;
-    const assumedPorts = ports.filter((port) => !(Number(port.teuPerDay) > 0) && !sourced(port));
+    const sourced = (port) => !port.supplier && !(Number(port.teuPerDay) > 0) && port.activity?.importTonnesPerDay > 0;
+    const assumedPorts = ports.filter((port) => !port.supplier && !(Number(port.teuPerDay) > 0) && !sourced(port));
     const landOf = (port) => Number(port.areaSquareKilometres) || 0;
     const largestLand = Math.max(0, ...assumedPorts.map(landOf));
     // A harbour mapped as a point, or one of the user's own, still takes a tenth of the largest port's share.
@@ -193,6 +201,14 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
             continue;
         }
         const user = Number(port.teuPerDay) > 0;
+        if (port.supplier) {
+            // A supplier ships what it is set to, whatever is ordered: the user's figure, or the role's default.
+            const value = user ? Number(port.teuPerDay) : 0;
+            supply.set(port.id, value);
+            note(port.name, 'Supplied', value, 'TEU/day', user ? (port.teuPerDayBasis ?? 'user') : 'user',
+                port.teuPerDaySource ?? (user ? 'Your figure.' : 'Set to nothing: it supplies nothing until you give it a figure.'));
+            continue;
+        }
         const value = user ? Number(port.teuPerDay) : settings.portTeuPerDay * assumedPorts.length * portWeight(port) / assumedWeight;
         supply.set(port.id, value);
         const assumption = largestLand > 0 && assumedPorts.length > 1
@@ -208,17 +224,20 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
     const weighted = towns.filter((town) => !(Number(town.teuPerDay) > 0));
     let remainder = totalSupply - fixedTotal;
     let fixedScale = 1;
+    const supplied = ports.some((port) => port.supplier) ? 'the suppliers and ports supply' : 'the ports hand inland';
     if (remainder < 0 || (remainder > 0 && !weighted.length)) {
         fixedScale = totalSupply / fixedTotal;
         remainder = 0;
-        warnings.push(`The customers' own demand (${fixedTotal.toFixed(0)} TEU/day) differs from what the ports hand inland (${totalSupply.toFixed(0)} TEU/day); it was scaled to match so the baseline holds still.`);
+        warnings.push(`The customers' own demand (${fixedTotal.toFixed(0)} TEU/day) differs from what ${supplied} (${totalSupply.toFixed(0)} TEU/day); it was scaled to match so the baseline holds still.`);
     }
     const weightOf = (town) => Number(town.population) || settings.assumedPopulation;
     const weightTotal = weighted.reduce((total, town) => total + weightOf(town), 0);
     const demand = new Map();
     for (const town of fixed) {
         demand.set(town.id, Number(town.teuPerDay) * fixedScale);
-        note(town.name, 'Demand', demand.get(town.id), 'TEU/day', fixedScale === 1 ? 'user' : 'assumed', fixedScale === 1 ? 'Your figure.' : 'Your figure, scaled to match port volumes.');
+        const assumed = town.teuPerDayBasis === 'assumed';
+        const figure = assumed ? `Assumed: the default for a ${town.role === 'darkStore' ? 'dark store' : town.role === 'customerArea' ? 'customer area' : 'store'}, until you set it` : 'Your figure';
+        note(town.name, 'Demand', demand.get(town.id), 'TEU/day', fixedScale === 1 && !assumed ? 'user' : 'assumed', fixedScale === 1 ? `${figure}.` : `${figure}, scaled by ${fixedScale.toFixed(2)} to match what ${supplied}.`);
     }
     for (const town of weighted) {
         demand.set(town.id, remainder * weightOf(town) / weightTotal);
@@ -237,7 +256,28 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
     // A zone of the user's own, with no floor area given, counts as a typical one of the region.
     const typicalWeight = knownWeights.length ? knownWeights[Math.floor(knownWeights.length / 2)] : 1;
     const allocations = []; // { town, zone, share, leg }
-    for (const town of towns) {
+    const zoneById = new Map(zones.map((zone) => [zone.id, zone]));
+    const portById = new Map(ports.map((port) => [port.id, port]));
+    if (links) {
+        // The user's network: each town from the zones linked to it, shared by their size and road access.
+        for (const link of [...links.serve, ...links.supply]) {
+            if (!zoneById.has(link.zone) || !(link.town === undefined ? portById.has(link.port) : towns.some((town) => town.id === link.town))) {
+                throw new Error('A link joins a site that is no longer in the network. Place the sites again, or reload the map.');
+            }
+        }
+        for (const town of towns) {
+            const linked = links.serve.filter((link) => link.town === town.id);
+            if (!linked.length) throw new Error(`${town.name} has no warehouse linked to it. Drag a link from a warehouse to it.`);
+            const options = linked.map((link) => {
+                const zone = zoneById.get(link.zone);
+                const leg = link.leg ?? route(zone, town);
+                return { zone, leg, weight: (zoneWeight(zone) ?? typicalWeight) * Math.exp(-leg.hours / settings.townGravityHours) };
+            });
+            const total = options.reduce((sum, option) => sum + option.weight, 0);
+            for (const option of options) allocations.push({ town, zone: option.zone, share: option.weight / total, leg: option.leg });
+        }
+    }
+    for (const town of links ? [] : towns) {
         const options = zones.map((zone) => {
             const leg = route(zone, town);
             return { zone, leg, weight: (zoneWeight(zone) ?? typicalWeight) * Math.exp(-leg.hours / settings.townGravityHours) };
@@ -253,43 +293,71 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
     for (const allocation of allocations) zoneDemand.set(allocation.zone.id, (zoneDemand.get(allocation.zone.id) ?? 0) + allocation.share * demand.get(allocation.town.id));
     const usedZones = zones.filter((zone) => zoneDemand.get(zone.id) > 0);
     const unusedZones = zones.filter((zone) => !(zoneDemand.get(zone.id) > 0));
-    if (unusedZones.length) warnings.push(`${unusedZones.map((zone) => zone.name).join(', ')} ${unusedZones.length === 1 ? 'serves' : 'serve'} none of the kept towns (${unusedZones.length === 1 ? 'it is' : 'they are'} not among the nearest few to any), so ${unusedZones.length === 1 ? 'it was' : 'they were'} left out of the model. Keep a town nearby, or add a customer of your own, to use ${unusedZones.length === 1 ? 'it' : 'them'}.`);
+    if (unusedZones.length && links) warnings.push(`${unusedZones.map((zone) => zone.name).join(', ')} ${unusedZones.length === 1 ? 'serves' : 'serve'} no store or customer area, so ${unusedZones.length === 1 ? 'it was' : 'they were'} left out of the model.`);
+    else if (unusedZones.length) warnings.push(`${unusedZones.map((zone) => zone.name).join(', ')} ${unusedZones.length === 1 ? 'serves' : 'serve'} none of the kept towns (${unusedZones.length === 1 ? 'it is' : 'they are'} not among the nearest few to any), so ${unusedZones.length === 1 ? 'it was' : 'they were'} left out of the model. Keep a town nearby, or add a customer of your own, to use ${unusedZones.length === 1 ? 'it' : 'them'}.`);
 
     // ---- zones to ports: nearest ports, balanced so every port ships what arrives and every zone gets what it needs
+    // Each zone's leg from each port: the window's for a link it routed, else routed here when first needed.
     const legs = new Map();
-    for (const zone of usedZones) for (const port of ports) legs.set(`${zone.id}|${port.id}`, route(port, zone));
+    for (const link of links?.supply ?? []) if (link.leg) legs.set(`${link.zone}|${link.port}`, link.leg);
+    const legOf = (key) => {
+        if (!legs.has(key)) {
+            const [zoneId, portId] = key.split('|');
+            legs.set(key, route(portById.get(portId), zoneById.get(zoneId)));
+        }
+        return legs.get(key);
+    };
+    if (!links) for (const zone of usedZones) for (const port of ports) legOf(`${zone.id}|${port.id}`);
     // A port that hands nothing inland over the period (no container imports in it) has no lanes in the baseline; it
     // stays in the model, where a scenario can divert cargo to it over standby lanes.
     const supplying = ports.filter((port) => supply.get(port.id) > 0);
-    if (!supplying.length) throw new Error('None of the kept ports hands anything inland over the period chosen. Choose another period, or give a port a volume of your own.');
+    if (!supplying.length) throw new Error(links ? 'None of the suppliers and ports supplies anything. Give a supplier what it supplies, or a port a volume of your own.' : 'None of the kept ports hands anything inland over the period chosen. Choose another period, or give a port a volume of your own.');
     const idle = ports.filter((port) => !(supply.get(port.id) > 0));
     if (idle.length) warnings.push(`${idle.map((port) => port.name).join(', ')} ${idle.length === 1 ? 'hands' : 'hand'} nothing inland over the period chosen, so ${idle.length === 1 ? 'it has' : 'they have'} no lanes; cargo can still be diverted to ${idle.length === 1 ? 'it' : 'them'} in a scenario.`);
     const supplyOf = new Map(supplying.map((port) => [port.id, supply.get(port.id)]));
     const pairFor = (zone, port) => {
         const key = `${zone.id}|${port.id}`;
-        return { key, zone: zone.id, port: port.id, weight: supply.get(port.id) * Math.exp(-legs.get(key).hours / settings.gravityHours) };
+        return { key, zone: zone.id, port: port.id, weight: supply.get(port.id) * Math.exp(-legOf(key).hours / settings.gravityHours) };
     };
-    const nearestPorts = (zone) => [...supplying].sort((a, b) => legs.get(`${zone.id}|${a.id}`).hours - legs.get(`${zone.id}|${b.id}`).hours);
+    const nearestPorts = (zone) => [...supplying].sort((a, b) => legOf(`${zone.id}|${a.id}`).hours - legOf(`${zone.id}|${b.id}`).hours);
     const pairsOf = (keys) => usedZones.flatMap((zone) => supplying.filter((port) => keys.has(`${zone.id}|${port.id}`)).map((port) => pairFor(zone, port)));
     // Each zone draws on its nearest few ports, one more at a time until every port ships what arrives and every zone gets what it needs.
     let support = null;
     let flows = null;
     let portsPerZone = Math.min(settings.portsPerZone, supplying.length);
-    for (; portsPerZone <= supplying.length && !flows; portsPerZone += 1) {
+    if (links) {
+        // The user's network: the lanes are the links, balanced so every source ships what it supplies.
+        const used = new Set(usedZones.map((zone) => zone.id));
+        support = new Set(links.supply.filter((link) => used.has(link.zone) && supply.get(link.port) > 0).map((link) => `${link.zone}|${link.port}`));
+        for (const zone of usedZones) {
+            if (![...support].some((key) => key.startsWith(`${zone.id}|`))) throw new Error(`${zone.name} has no supplier or port linked to it that supplies anything. Drag a link from one to it.`);
+        }
+        for (const port of supplying) {
+            if (![...support].some((key) => key.endsWith(`|${port.id}`))) throw new Error(`${port.name} supplies ${supply.get(port.id).toFixed(0)} TEU a day, but no warehouse that serves anyone is linked to it. Link it to one, or set it to supply nothing.`);
+        }
+        flows = balanceFlows(pairsOf(support), zoneDemand, supplyOf);
+        if (!flows) {
+            throw new Error('The links cannot carry what every source supplies to the warehouses that need it: a source supplies more than its warehouses pass on, or a warehouse needs more than its sources supply. Link more sources to warehouses, or change what they supply or what the stores sell.');
+        }
+        portsPerZone = settings.portsPerZone + 1;
+    }
+    for (; !links && portsPerZone <= supplying.length && !flows; portsPerZone += 1) {
         support = new Set();
         for (const zone of usedZones) nearestPorts(zone).slice(0, portsPerZone).forEach((port) => support.add(`${zone.id}|${port.id}`));
         for (const port of supplying) {
             if ([...support].some((key) => key.endsWith(`|${port.id}`))) continue;
-            const nearest = [...usedZones].sort((a, b) => legs.get(`${a.id}|${port.id}`).hours - legs.get(`${b.id}|${port.id}`).hours)[0];
+            const nearest = [...usedZones].sort((a, b) => legOf(`${a.id}|${port.id}`).hours - legOf(`${b.id}|${port.id}`).hours)[0];
             support.add(`${nearest.id}|${port.id}`);
         }
         flows = balanceFlows(pairsOf(support), zoneDemand, supplyOf);
     }
     if (!flows) throw new Error('The flows between ports and zones could not be balanced.');
-    if (portsPerZone - 1 > settings.portsPerZone) warnings.push(`The nearest ${settings.portsPerZone} ports could not supply every zone in balance, so zones draw on up to ${portsPerZone - 1}.`);
-    // Then drop the smallest lanes, one at a time, while the rest still balances.
+    if (!links && portsPerZone - 1 > settings.portsPerZone) warnings.push(`The nearest ${settings.portsPerZone} ports could not supply every zone in balance, so zones draw on up to ${portsPerZone - 1}.`);
+    // Then drop the smallest lanes, one at a time, while the rest still balances (a user's links are kept as drawn).
+    const drawn = new Set((links?.supply ?? []).filter((link) => link.user).map((link) => `${link.zone}|${link.port}`));
     for (;;) {
         const small = [...support].filter((key) => {
+            if (drawn.has(key)) return false;
             const [zoneId, portId] = key.split('|');
             const onlyForPort = [...support].filter((other) => other.endsWith(`|${portId}`)).length === 1;
             const onlyForZone = [...support].filter((other) => other.startsWith(`${zoneId}|`)).length === 1;
@@ -304,6 +372,10 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
         }
         if (!dropped) break;
     }
+
+    // Suggested supply links left out: they would carry next to nothing (or lead to a warehouse that serves no one).
+    const unusedLinks = (links?.supply ?? []).filter((link) => !support.has(`${link.zone}|${link.port}`) && portById.has(link.port) && zoneById.has(link.zone))
+        .map((link) => ({ from: portById.get(link.port).name, to: zoneById.get(link.zone).name, why: !(zoneDemand.get(link.zone) > 0) ? 'serves no one' : !(supply.get(link.port) > 0) ? 'supplies nothing' : 'carries too little' }));
 
     // ---- layout: north up, the region spread over about 80 units so names on the canvas stay apart
     const everything = [...ports, ...usedZones, ...towns];
@@ -360,7 +432,7 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
     for (const port of ports) {
         const arrivals = supply.get(port.id);
         const berthCapacity = arrivals * settings.berthHeadroom;
-        note(port.name, 'Berth capacity', berthCapacity, 'TEU/day', 'assumed', `${settings.berthHeadroom} times its arrivals.`);
+        note(port.name, port.supplier ? 'Dispatch capacity' : 'Berth capacity', berthCapacity, 'TEU/day', 'assumed', `${settings.berthHeadroom} times its ${port.supplier ? 'supply' : 'arrivals'}${port.supplier ? ': a supplier is modelled as a port whose berths are its loading bays' : ''}.`);
         portNodes.set(port.id, place('port', port.name, {
             name: port.name, position: position(port),
             // The wait counts at least a TEU a day of berths, as the template does, so a port with none is not 0/0.
@@ -393,7 +465,7 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
     for (const key of support) {
         const [zoneId, portId] = key.split('|');
         if (!flowsByZone.has(zoneId)) flowsByZone.set(zoneId, []);
-        flowsByZone.get(zoneId).push({ port: ports.find((port) => port.id === portId), rate: flows.get(key), leg: legs.get(key) });
+        flowsByZone.get(zoneId).push({ port: ports.find((port) => port.id === portId), rate: flows.get(key), leg: legOf(key) });
     }
     const lanes = [];
     // Each lane's ends and the roads it was routed over, for the map's corridors.
@@ -414,7 +486,7 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
         const zoneFlows = flowsByZone.get(zone.id).filter((flow) => flow.rate > 1e-9);
         const total = zoneDemand.get(zone.id);
         const standby = standbyPorts.filter((port) => !zoneFlows.some((flow) => flow.port === port))
-            .map((port) => ({ port, rate: 0, leg: legs.get(`${zone.id}|${port.id}`), standby: true }));
+            .map((port) => ({ port, rate: 0, leg: legOf(`${zone.id}|${port.id}`), standby: true }));
         const laneSpecs = [...zoneFlows, ...standby].map((flow) => ({ ...flow, leadTime: laneTime(flow) }));
         const onOrder = laneSpecs.reduce((sum, lane) => sum + lane.rate * (responseDays + lane.leadTime), 0);
         const planningLeadTime = onOrder / total;
@@ -545,7 +617,7 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
         // Each port's arrivals as built: its average, and the held schedule it follows when it has one -- what a
         // scenario that changes them starts from. And the run's length in days.
         ports: ports.map((port) => ({
-            name: port.name, arrivals: supply.get(port.id), berths: supply.get(port.id) * settings.berthHeadroom, schedule: histories.get(port.id)?.samples ?? null,
+            name: port.name, supplier: Boolean(port.supplier), arrivals: supply.get(port.id), berths: supply.get(port.id) * settings.berthHeadroom, schedule: histories.get(port.id)?.samples ?? null,
             usual: normals.get(port.id) ?? null, shift: port.activity?.shift ?? null
         })),
         days: settings.days,
@@ -556,6 +628,8 @@ export function buildRegionModel({ builder, selection, route, options = {} }) {
         // The ports whose arrivals follow their history, and the dates model day 0 and the last day stand for.
         histories: [...histories].map(([id, history]) => ({ port: ports.find((port) => port.id === id).name, from: history.from, to: history.to, days: history.samples.length })),
         unusedZones: unusedZones.map((zone) => zone.name),
+        // The supply links the network gave that are not lanes in the model, and why.
+        unusedLinks,
         // The roads the lanes run on, for the map: [{ points, rate, lanes, basis, standby }].
         corridors,
         // Each town's demand as built, what a scenario that steps it up starts from.

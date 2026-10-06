@@ -6,6 +6,7 @@
     --text: #d4e5f0; --bright: #f2f8fc; --muted: #8caec4;
     --accent: #38bdf8; --accent-ink: #041f2d; --ok: #34d399; --warn: #fbbf24; --danger: #f87171;
     --port: #38bdf8; --zone: #f59e0b; --town: #a78bfa; --lane: #5eead4; --road: #527c99; --rail: #8d7ea3;
+    --supplier: #4ade80; --warehouse: #f59e0b; --store: #f472b6; --darkStore: #c084fc; --customerArea: #a78bfa; --link: #fde68a;
     --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
     --panel-width: 420px;
 }
@@ -126,10 +127,28 @@ details summary:hover { text-decoration: underline; }
 #map .anchorage { fill: none; stroke: var(--port); stroke-dasharray: 2 2; }
 #map .site { cursor: pointer; }
 #map .site.port { fill: var(--port); stroke: var(--port); }
-#map .site.zone { fill: var(--zone); stroke: var(--zone); }
-#map .site.town { fill: var(--town); stroke: var(--town); }
-#map .site.dropped { fill: transparent; opacity: 0.55; }
-#map .site.highlight { stroke: #fff; }
+#map .site.supplier { fill: var(--supplier); stroke: var(--supplier); }
+#map .site.warehouse { fill: var(--warehouse); stroke: var(--warehouse); }
+#map .site.store { fill: var(--store); stroke: var(--store); }
+#map .site.darkStore { fill: var(--darkStore); stroke: var(--darkStore); }
+#map .site.customerArea { fill: rgba(167, 139, 250, 0.35); stroke: var(--customerArea); }
+#map .siteDot { fill: #08121a; }
+#map .site.dropped { fill: transparent; opacity: 0.6; }
+#map .site.highlight, #map .site.selected { stroke: #fff; }
+#map .site.problem { stroke: var(--danger); }
+#map .farRing { fill: none; stroke: var(--warn); pointer-events: none; }
+#map .linkHandle { fill: var(--accent); stroke: #08121a; cursor: crosshair; }
+#map .endHandle { fill: rgba(56, 189, 248, 0.25); stroke: var(--accent); cursor: crosshair; }
+#map .rubber { stroke: var(--accent); fill: none; pointer-events: none; }
+#map .link { fill: none; stroke: var(--link); stroke-opacity: 0.55; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+#map .link.drawn { stroke-opacity: 0.85; }
+#map .link.selected { stroke: var(--accent); stroke-opacity: 1; }
+#map .link.unused { stroke-opacity: 0.2; }
+#map .linkArrow { fill: var(--link); fill-opacity: 0.6; cursor: pointer; }
+#map .linkArrow.unused { fill-opacity: 0.2; }
+#map .linkHit { fill: none; stroke: transparent; cursor: pointer; }
+#map .place { fill: rgba(212, 229, 240, 0.45); font-family: var(--font); paint-order: stroke; stroke: #08121a; pointer-events: none; }
+#map .place.city { fill: rgba(242, 248, 252, 0.6); font-weight: 600; }
 #map .label { fill: var(--bright); font-family: var(--font); paint-order: stroke; stroke: #08121a; pointer-events: none; font-weight: 500; }
 #map .lane { stroke: var(--lane); stroke-opacity: 0.85; stroke-linecap: round; fill: none; }
 #map path.lane { stroke-linejoin: round; stroke-opacity: 0.95; }
@@ -147,6 +166,14 @@ details summary:hover { text-decoration: underline; }
 .swatch.port { background: var(--port); }
 .swatch.zone { background: var(--zone); transform: rotate(45deg); }
 .swatch.town { background: var(--town); border-radius: 50%; }
+.swatch.supplier { width: 0; height: 0; background: none; border-left: 5px solid transparent; border-right: 5px solid transparent; border-bottom: 9px solid var(--supplier); }
+.swatch.warehouse { background: var(--warehouse); transform: rotate(45deg); }
+.swatch.store { background: var(--store); border-radius: 50%; }
+.swatch.darkStore { background: var(--darkStore); border-radius: 50%; box-shadow: inset 0 0 0 3px var(--darkStore), inset 0 0 0 5px #08121a; }
+.swatch.customerArea { background: rgba(167, 139, 250, 0.4); border: 1px solid var(--customerArea); border-radius: 50%; }
+.swatch.hollow { background: none; border: 1.5px solid var(--muted); border-radius: 50%; }
+.swatch.link { background: none; height: 0; width: 14px; border-top: 1.5px solid var(--link); vertical-align: 3px; }
+.swatch.link.suggested { border-top-style: dashed; opacity: 0.7; }
 .swatch.lane { background: var(--lane); height: 3px; vertical-align: 2px; }
 .swatch.lane.fell { background: var(--danger); }
 .swatch.lane.rose { background: var(--warn); }
@@ -169,3 +196,46 @@ td.better { color: var(--ok); font-weight: 600; }
 
 .nameWithSpark { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .sparkline { vertical-align: middle; flex-shrink: 0; }
+
+.palette { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.palette .tool .swatch { margin-right: 4px; }
+.mapHint { position: absolute; top: 50px; left: 50%; transform: translateX(-50%); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px; padding: 6px 10px; font-size: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); pointer-events: none; }
+.card { background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; padding: 10px; margin: 8px 0; }
+.card h3 { margin: 0 0 6px; font-size: 13px; color: var(--bright); display: flex; align-items: center; gap: 6px; }
+.card .field { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; margin: 4px 0; font-size: 12px; }
+.card .field input[type="number"] { width: 90px; }
+.card .field .basis { min-width: 54px; text-align: right; }
+.card .detail { color: var(--muted); font-size: 11px; margin: 2px 0 6px; }
+.card input[type="text"] { width: 100%; }
+.card ul { list-style: none; padding: 0; margin: 4px 0; font-size: 12px; }
+.card li { display: flex; justify-content: space-between; gap: 6px; padding: 2px 0; }
+.pins li { grid-template-columns: 14px 1fr auto; cursor: pointer; }
+.pins li.selected { background: var(--surface-hover); }
+.pins li.problem .name { color: #ffd9d9; }
+.sources .source { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+.sources .state { margin-left: auto; color: var(--muted); }
+.sources .state.done { color: var(--ok); }
+.sources .state.failed { color: var(--danger); }
+.candidates li.adopted .name { color: var(--muted); }
+.pinPopover { position: absolute; display: flex; align-items: center; gap: 6px; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px; padding: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.45); z-index: 5; }
+.pinPopover input { width: 170px; padding: 3px 8px; }
+.toast { position: absolute; bottom: 44px; left: 50%; transform: translateX(-50%); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px 12px; font-size: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.45); z-index: 6; }
+.tool kbd, .contextMenu kbd { font: 10px var(--font); color: var(--muted); border: 1px solid var(--border-strong); border-radius: 3px; padding: 0 4px; margin-left: 6px; }
+.tool:disabled { opacity: 0.4; cursor: default; }
+.contextMenu { position: absolute; min-width: 230px; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px; padding: 4px; box-shadow: 0 6px 18px rgba(0,0,0,0.5); z-index: 8; display: flex; flex-direction: column; }
+.contextMenu button { display: flex; justify-content: space-between; align-items: center; gap: 12px; background: none; border: 0; color: var(--text); font: inherit; font-size: 12px; text-align: left; padding: 6px 8px; border-radius: 5px; cursor: pointer; }
+.contextMenu button:hover, .contextMenu button:focus { background: var(--surface-hover); outline: none; }
+.contextMenu button.danger, .button.danger { color: #ffb4b4; }
+.shortcuts { position: absolute; top: 56px; right: 12px; width: 420px; max-height: 75%; overflow-y: auto; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px; padding: 10px 12px; box-shadow: 0 6px 18px rgba(0,0,0,0.5); z-index: 7; }
+.shortcuts .spacer { flex: 1; }
+.shortcuts kbd { font: 11px var(--font); color: var(--bright); white-space: nowrap; }
+.checklist { margin: 6px 0; padding-left: 20px; font-size: 12px; }
+.checklist li { margin: 3px 0; }
+.checklist li.done { color: var(--muted); text-decoration: line-through; }
+.checklist li.done::marker { color: var(--ok); }
+.card .links { margin: 6px 0; font-size: 12px; }
+.card .links ul { margin: 2px 0 4px; }
+.card .links li { justify-content: flex-start; gap: 6px; align-items: center; }
+.card .links .remove { margin-left: auto; color: var(--muted); }
+.card .links select { width: 100%; padding: 3px 6px; font-size: 12px; }
+#map .selectBox { fill: rgba(56, 189, 248, 0.08); stroke: var(--accent); stroke-dasharray: 4 3; pointer-events: none; }
