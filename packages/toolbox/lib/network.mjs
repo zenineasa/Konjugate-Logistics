@@ -270,8 +270,9 @@ export function networkSelection(pins, links, { paths = true, catalogue = null }
     const usable = links.filter((link) => byId.has(link.from) && byId.has(link.to) && !linkProblem(byId.get(link.from), byId.get(link.to)));
     // A supply link's road is drawn on the map as its lane's corridor (as [lat, lon] pairs, which are smaller to send);
     // a link to a store needs only its time and distance.
+    // A link's own time, door to door, when the user gave one (see travelTimes.mjs).
     const leg = (link, withPath) => (link.leg ? {
-        kilometres: link.leg.kilometres, hours: link.leg.hours, basis: link.leg.basis,
+        kilometres: link.leg.kilometres, hours: link.leg.hours, basis: link.leg.basis, ...(link.time?.hours > 0 ? { own: link.time } : {}),
         path: withPath && paths && link.leg.path?.points?.length ? { points: link.leg.path.points.map((point) => [point.lat, point.lon]) } : null
     } : null);
     const vehicles = (link) => {

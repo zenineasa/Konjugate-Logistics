@@ -9,6 +9,9 @@
 //   - a link drawn from a selected pin's handle, a link refused with its reason, a link deleted and not suggested again
 //   - a warehouse given its storage capacity; the vehicle catalogue edited; a link's vehicles chosen on its card, from
 //     its menu and with V, and a type kept off stores refused on a link to one
+//   - travel times of the user's own: typed in the list and on a link's card (T), when they hold, read off Google Maps
+//     and OpenStreetMap opened through the host, a column pasted, a wrong time refused or flagged, a calibration from
+//     them, a CSV saved and loaded; the model built with them
 //   - the model is built from the pins and links, its stores holding stock; with an engine, a store whose road closes
 //     runs out
 //   - suggestions appear only when asked for, as hollow pins, and are adopted by a click or from the list
@@ -396,6 +399,96 @@ try {
     await page.keyboard.press('Escape');
     noErrors();
 
+    // 6c. Travel times of the user's own: typed in the list (Enter to the next row), when it holds, read off Google Maps
+    // (opened in the browser through the host), on the link's card with T, from its menu, a column pasted from a
+    // spreadsheet, a time that looks wrong flagged, a calibration from them, and a file saved and loaded.
+    await page.click('#travelTimes summary');
+    const timeOf = (id) => page.evaluate((linkId) => window.logisticsToolboxState.links.find((link) => link.id === linkId).time ?? null, id);
+    const rowIds = () => page.$$eval('#travelTable [data-time-input]', (inputs) => inputs.map((input) => input.dataset.timeInput));
+    const timedIds = await rowIds();
+    const vehicleLinks = await stateOf(() => window.logisticsToolboxState.links.filter((link) => {
+        const role = (id) => window.logisticsToolboxState.pins.find((pin) => pin.id === id).role;
+        return role(link.from) === 'warehouse' ? role(link.to) !== 'customerArea' : true;
+    }).length);
+    assert.equal(timedIds.length, vehicleLinks, 'a row for every link that runs on vehicles, none for a customer area');
+    const timeInput = (id) => `#travelTable [data-time-input="${id}"]`;
+    await page.fill(timeInput(harbourLink.id), '2:00');
+    await page.press(timeInput(harbourLink.id), 'Enter');
+    assert.deepEqual(await timeOf(harbourLink.id), { hours: 2, when: 'any', how: 'yours' });
+    const nextRow = timedIds[timedIds.indexOf(harbourLink.id) + 1];
+    if (nextRow) assert.equal(await page.evaluate(() => document.activeElement?.dataset.timeInput), nextRow, 'Enter goes to the next row');
+    await page.selectOption(`#travelTable [data-time-when="${harbourLink.id}"]`, 'peak');
+    assert.equal((await timeOf(harbourLink.id)).when, 'peak');
+    assert.match(await page.textContent('#travelSummary'), /^1 of \d+ yours$/);
+    // Read off Google Maps: the host opens its directions, checked against the hosts the add-on declares.
+    const supplyLink = (await links()).find((link) => link.from === placed[0].id);
+    await page.click(`#travelTable [data-directions="google"][data-for="${supplyLink.id}"]`);
+    const google = new URL(host.opened.at(-1));
+    assert.equal(google.hostname, 'www.google.com');
+    assert.equal(google.searchParams.get('origin'), `${placed[0].lat.toFixed(6)},${placed[0].lon.toFixed(6)}`);
+    assert.equal(google.searchParams.get('travelmode'), 'driving');
+    await page.fill(timeInput(supplyLink.id), '1 hr 40 min');
+    await page.dispatchEvent(timeInput(supplyLink.id), 'change');
+    const read = await timeOf(supplyLink.id);
+    assert.deepEqual([Number(read.hours.toFixed(4)), read.how, read.checkedOn], [1.6667, 'google', new Date().toISOString().slice(0, 10)], 'read off Google Maps today');
+    // A time that cannot be is refused; one that looks wrong is flagged, with why.
+    await page.fill(timeInput(supplyLink.id), 'soon');
+    await page.dispatchEvent(timeInput(supplyLink.id), 'change');
+    assert.match(await page.textContent('#undoText'), /"soon" is not a time/);
+    assert.equal(Number((await timeOf(supplyLink.id)).hours.toFixed(4)), 1.6667, 'kept as it was');
+    const other = timedIds.find((id) => id !== harbourLink.id && id !== supplyLink.id);
+    await page.fill(timeInput(other), '0:01');
+    await page.dispatchEvent(timeInput(other), 'change');
+    assert.match(await page.getAttribute(`#travelTable li[data-link="${other}"] .flag`, 'title'), /too fast for a road|under 40% of/);
+    await page.click('#undoButtonTool');
+    assert.equal(await timeOf(other), null);
+    // A column of times pasted from a spreadsheet fills the row and those below it, as one step.
+    const pasteAt = timedIds.indexOf(other);
+    await page.evaluate(({ id, text }) => {
+        const data = new DataTransfer();
+        data.setData('text/plain', text);
+        document.querySelector(`#travelTable [data-time-input="${id}"]`).dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    }, { id: other, text: '1:30\n45 min\n' });
+    assert.equal((await timeOf(other)).hours, 1.5);
+    const below = timedIds[pasteAt + 1];
+    if (below) assert.equal((await timeOf(below)).hours, 0.75);
+    assert.match(await page.textContent('#undoText'), /^2 travel times pasted\.$|^\d travel times? pasted/);
+    // From the card: T on a selected link puts the cursor in its time, and its menu offers the maps.
+    await page.click(`#travelTable [data-select-link="${harbourLink.id}"]`);
+    await page.keyboard.press('Escape');
+    await page.click(`#travelTable [data-select-link="${harbourLink.id}"]`);
+    await page.locator('#map').focus().catch(() => {});
+    await page.evaluate(() => document.activeElement?.blur());
+    await page.keyboard.press('t');
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'linkTime', 'T puts the cursor in the link\'s time');
+    assert.equal(await page.inputValue("#linkTime"), "2:00");
+    await page.evaluate(() => document.activeElement?.blur());
+    await page.keyboard.press('Escape');
+    const onHarbour = await linkPoint(harbourLink.id);
+    await page.mouse.click(onHarbour.x, onHarbour.y, { button: 'right' });
+    assert.match(await page.textContent('#contextMenu'), /Type its travel time…T.*Check its time in Google Maps.*Check its time on OpenStreetMap/s);
+    await page.click('#contextMenu button:has-text("Check its time on OpenStreetMap")');
+    assert.equal(new URL(host.opened.at(-1)).hostname, 'www.openstreetmap.org');
+    await page.keyboard.press('Escape');
+    // The calibration: from the times given, offered for the links without one, and sent with the build.
+    assert.match(await page.textContent('#calibrationRow'), /Your \d+ times take [\d.]+ × the route's estimate/);
+    await page.check('#useCalibration');
+    assert.equal(await stateOf(() => window.logisticsToolboxState.useCalibration), true);
+    // Saved as a CSV, cleared, and loaded back.
+    const timesDownload = page.waitForEvent('download');
+    await page.click('#saveTimesButton');
+    const timesCsv = await readFile(await (await timesDownload).path(), 'utf8');
+    assert.match(timesCsv, /^from,to,time,kilometres,when,note$/m);
+    assert.match(timesCsv, /^Warehouse 1,Harbour shop,2:00,,peak,$/m);
+    await page.fill(timeInput(harbourLink.id), '');
+    await page.dispatchEvent(timeInput(harbourLink.id), 'change');
+    assert.equal(await timeOf(harbourLink.id), null);
+    host.chosen.times = timesCsv;
+    await page.click('#loadTimesButton');
+    await page.waitForFunction(() => /times? from your file/.test(document.querySelector('#travelStatus').textContent), null, { timeout: 10000 }).catch(fail);
+    assert.deepEqual(await timeOf(harbourLink.id), { hours: 2, when: 'peak', how: 'yours' });
+    noErrors();
+
     // 7. The model, built from the pins and links.
     await page.click('#buildButton');
     await page.waitForSelector('#buildStatus .notice.ok, #buildStatus .notice.error', { timeout: 60000 }).catch(fail);
@@ -414,6 +507,14 @@ try {
     assert.ok(host.session?.version === 2 && host.session.pins.length === placements.length, 'the session went with the model');
     assert.match(await page.textContent('#buildResult'), /pallets\/day.*vehicles/s);
     assert.ok(storeLanes.some((lane) => lane.site === 'Harbour shop' && lane.vehicles[0].type === 'smallTruck'), 'Harbour shop restocked by small trucks');
+    // Its time is yours, door to door; a lane without one is the route's estimate scaled by your times.
+    const harbourBuilt = storeLanes.find((lane) => lane.site === 'Harbour shop');
+    assert.equal(harbourBuilt.timeBasis, 'user');
+    assert.ok(Math.abs(harbourBuilt.leadTime * 24 - 2) < 0.01, `2 h door to door (${harbourBuilt.leadTime * 24})`);
+    assert.ok(storeLanes.some((lane) => lane.timeBasis === 'estimated'), 'the others scaled by your times');
+    const provenanceOf = await stateOf(() => window.logisticsToolboxState.built.provenance.find((entry) => entry.entity === 'Road Warehouse 1 → Harbour shop' && entry.parameter === 'Travel time'));
+    assert.match(provenanceOf.detail, /^Your time at the morning or evening peak, door to door: 2 h\./);
+    assert.deepEqual(host.session.links.find((link) => link.id === harbourLink.id).time, { hours: 2, when: 'peak', how: 'yours' });
     assert.deepEqual(host.session.vehicles.find((type) => type.id === 'miniVan').fields.capacity, { value: 2.5, basis: 'user' });
     assert.deepEqual(host.session.links.find((link) => link.id === harbourLink.id).vehicles, [{ type: 'smallTruck', fleet: null }]);
     noErrors();
@@ -514,6 +615,8 @@ try {
     assert.deepEqual((await links()).map((link) => [link.from, link.to, link.basis]), kept.links);
     assert.ok((await links()).every((link) => link.routed), 'routed again');
     assert.deepEqual(await harbourVehicles(), [{ type: 'smallTruck', fleet: null }], 'a link keeps its vehicles');
+    assert.deepEqual(await timeOf(harbourLink.id), { hours: 2, when: 'peak', how: 'yours' }, 'and its travel time');
+    assert.equal(await stateOf(() => window.logisticsToolboxState.useCalibration), true, 'and the calibration chosen');
     assert.equal(await stateOf(() => window.logisticsToolboxState.vehicles.find((type) => type.id === 'miniVan').fields.capacity.value), 2.5, 'the catalogue is kept');
     assert.equal(await stateOf(() => window.logisticsToolboxState.pins[2].fields.capacity.value), 400, 'a warehouse keeps its room');
     assert.match(await page.textContent('#buildResult'), /Harbour shop/);

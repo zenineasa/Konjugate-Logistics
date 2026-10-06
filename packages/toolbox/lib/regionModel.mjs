@@ -68,6 +68,8 @@ export const regionModelDefaults = {
     // then count as this many pallets each (an assumption to adjust).
     unit: 'TEU',
     palletsPerTeu: 10,
+    // The user's times on some links scaling the estimates on the rest: { factor, count }, or null.
+    timeFactor: null,
     // The vehicle types a network placed on the map runs on ({ id, name, capacity, costPerKm, costPerDay, speed,
     // loadingHours, toStores, basis }), or null.
     vehicles: null,
@@ -574,14 +576,19 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
     const shortestLoadDays = 2 * stepDays;
     // A lane's timing over `leg` for its vehicle `types` (or null): at least its length at the slowest type's top speed,
     // plus the hours at its gates, in days.
+    // A time of the user's on the link (`leg.own`, door to door) is taken as it is, and its distance if given; otherwise,
+    // with `settings.timeFactor` ({ factor, count }, from the user's times on other links), the estimate is scaled by it.
+    const factor = settings.timeFactor?.factor > 0 ? settings.timeFactor.factor : null;
     const laneTiming = (leg, types, kind) => {
-        const kilometres = Number(leg.kilometres.toFixed(1));
+        const own = leg.own?.hours > 0 ? leg.own : null;
+        const kilometres = Number((own?.kilometres > 0 ? own.kilometres : leg.kilometres).toFixed(1));
         const slowest = types?.length ? Math.min(...types.map((type) => type.speed)) : Infinity;
         const roadHours = Math.max(leg.hours, kilometres / slowest);
         const gate = kind === 'store' ? settings.storeGateHours : settings.gateHours;
-        const exact = Number(((roadHours + gate) / 24).toFixed(4));
+        const estimated = !own && factor !== null;
+        const exact = Number(((own ? own.hours : (roadHours + gate) * (estimated ? factor : 1)) / 24).toFixed(4));
         const leadTime = Math.max(exact, Number(shortestLeadDays.toFixed(4)));
-        return { kilometres, slowest, roadHours, gate, leadTime, raised: leadTime > exact };
+        return { kilometres, slowest, roadHours, gate, leadTime, raised: leadTime > exact, own, estimated };
     };
 
     // A road lane and the shipment over it, from `origin` to `destination` (nodes), carrying `rate` a day at `share` of
@@ -592,7 +599,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         const types = catalogue ? typesOf(chosen, name.replace(/^Road /, '')) : null;
         if (types && !types.length) throw new Error(`${name.replace(/^Road /, '')} has no vehicles. Choose a vehicle for it.`);
         types?.forEach(noteType);
-        const { kilometres, slowest, roadHours, gate, leadTime, raised } = laneTiming(leg, types, kind);
+        const { kilometres, slowest, roadHours, gate, leadTime, raised, own, estimated } = laneTiming(leg, types, kind);
         const capacity1 = types ? types[0].capacity : truckCapacity;
         const capacity2 = types ? (types[1] ?? types[0]).capacity : truckCapacity2;
         const loading = types ? Math.max(...types.map((type) => type.loadingHours)) / 24 : loadDays;
@@ -648,9 +655,16 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         }[leg.basis];
         const slowed = roadHours > leg.hours + 1e-9 ? `; ${roadHours.toFixed(1)} h at the ${slowest} km/h a ${types.find((type) => type.speed === slowest).name.toLowerCase()} can go` : '';
         const floor = raised ? ` Raised to ${number(leadTime * 24, 1)} h, the shortest trip the model's ${settings.stepMinutes}-minute steps follow faithfully.` : '';
-        note(name, 'Travel time', leadTime, 'day', leg.basis === 'routed' ? 'routed' : 'assumed', `${how[0]}${slowed}, plus ${gate} h ${kind === 'store' ? 'at the dock and the store\'s door' : 'at the gates'}.${floor}`);
+        if (own) {
+            const said = { yours: 'Your time', google: 'Your time, read off Google Maps', osm: 'Your time, read off OpenStreetMap' }[own.how] ?? 'Your time';
+            const when = { peak: ' at the morning or evening peak', midday: ' in the middle of the day', night: ' at night' }[own.when] ?? '';
+            note(name, 'Travel time', leadTime, 'day', 'user', `${said}${when}${own.checkedOn ? ` on ${own.checkedOn}` : ''}, door to door: ${number(own.hours, 2)} h${own.note ? ` (${own.note})` : ''}. The route suggested ${number(leg.hours + gate, 1)} h.${floor}`);
+        } else {
+            const scaled = estimated ? ` Times ${number(factor, 2)}: estimated from your ${settings.timeFactor.count} times on other links, which take that many times the route's estimate.` : '';
+            note(name, 'Travel time', leadTime, 'day', estimated ? 'assumed' : leg.basis === 'routed' ? 'routed' : 'assumed', `${how[0]}${slowed}, plus ${gate} h ${kind === 'store' ? 'at the dock and the store\'s door' : 'at the gates'}.${scaled}${floor}`);
+        }
         if (laneLoadDays > loading + 1e-12) note(name, 'Loading time', laneLoadDays * 24, 'h', 'assumed', `Its vehicles load in ${number(loading * 24, 2)} h; raised to ${number(laneLoadDays * 24, 2)} h, the shortest the model's ${settings.stepMinutes}-minute steps follow faithfully.`);
-        note(name, 'Distance', kilometres, 'km', leg.basis === 'routed' ? 'routed' : 'assumed', how[1]);
+        note(name, 'Distance', kilometres, 'km', own?.kilometres > 0 ? 'user' : leg.basis === 'routed' ? 'routed' : 'assumed', own?.kilometres > 0 ? 'Your figure.' : how[1]);
         const vehicleWord = catalogue ? 'vehicles' : 'trucks';
         if (contract) {
             note(name, 'Fleet', fleet, 'trucks', operatorBasis, `${operator.name}'s ${operator.trucks[0].label} trucks from its ${contract.depot}, shared among its contracted lanes by what each needs${operator.synthetic ? ' (invented)' : ''}.`);
@@ -668,7 +682,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         }
         lanes.push({
             name, kind, from: originSite.name, to: destination.name, site: destinationSite.name, rate, leadTime, kilometres, fleet, fleet2,
-            operator: Boolean(contract), standby, basis: leg.basis, truckCapacity: capacity1, truckCapacity2: capacity2, loadDays: laneLoadDays,
+            operator: Boolean(contract), standby, basis: leg.basis, timeBasis: own ? 'user' : estimated ? 'estimated' : leg.basis, truckCapacity: capacity1, truckCapacity2: capacity2, loadDays: laneLoadDays,
             ...(types ? { vehicles: types.map((type, index) => ({ type: type.id, name: type.name, fleet: index ? fleet2 : fleet, user: chosen[index].fleet !== null })) } : {})
         });
         if (kind === 'supply') laneGeometry.push({ name, rate, standby, basis: leg.basis, origin: originSite, destination: destinationSite, path: leg.path ?? null });

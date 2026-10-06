@@ -14,6 +14,7 @@ import { portwatchActivityUrl, portwatchPortsUrl } from './lib/portwatch.mjs';
 import { closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan } from './lib/scenarios.mjs';
 import { createNetworkRouter } from './lib/routing.mjs';
 import { completeFields, createPin, kindOf, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
+import { calibration, calibrationAdvised, calibrationMinimum, formatDuration, googleMapsUrl, howLabels, modelHours, openStreetMapUrl, parseTravelTimes, suspectTime, timeFrom, whenLabels, writeTravelTimes } from './lib/travelTimes.mjs';
 import { carriesVehicles, completeCatalogue, createVehicle, defaultCatalogue, linkKind, setVehicleField, typesPerLink, vehicleFields, vehiclesOf } from './lib/vehicles.mjs';
 import { writeSites } from './lib/sites.mjs';
 import { addsToSelection, commandHeld, platformKeys } from './lib/platform.mjs';
@@ -99,7 +100,7 @@ const selectedLinks = () => state.selection.filter((item) => item.kind === 'link
 // kept. Changes of one kind in quick succession (a pin nudged with the arrow keys, a figure typed) are one step.
 const history = { past: [], future: [], lastLabel: null, lastTime: 0 };
 const copyLink = (link) => ({ ...link, ...(link.vehicles ? { vehicles: link.vehicles.map((item) => ({ ...item })) } : {}) });
-const snapshot = () => ({ pins: structuredClone(state.pins), links: state.links.map(copyLink), dismissed: [...state.dismissed], selection: [...state.selection], vehicles: structuredClone(state.vehicles) });
+const snapshot = () => ({ pins: structuredClone(state.pins), links: state.links.map(copyLink), dismissed: [...state.dismissed], selection: [...state.selection], vehicles: structuredClone(state.vehicles), useCalibration: Boolean(state.useCalibration) });
 function checkpoint(label, { merge = false } = {}) {
     const now = performance.now();
     if (merge && label === history.lastLabel && now - history.lastTime < 1500) { history.lastTime = now; return; }
@@ -115,6 +116,7 @@ function restore(network) {
     state.links = network.links.map(copyLink);
     state.dismissed = new Set(network.dismissed);
     state.vehicles = structuredClone(network.vehicles);
+    state.useCalibration = Boolean(network.useCalibration);
     renderVehicles();
     setSelection(network.selection.filter((item) => (item.kind === 'pin' ? pinById(item.id) : state.links.some((link) => link.id === item.id))));
     $('#selectionCard').dataset.for = '';
@@ -605,6 +607,7 @@ function renderNetwork() {
     renderCard();
     renderPopover();
     renderVehicles();
+    renderTravelTimes();
     renderMarks();
 }
 
@@ -880,6 +883,13 @@ function relink(id, end, pinId) {
     drawLink(from, to, { record: false });
 }
 
+// A link made the user's (by changing it, or Make it mine), with the other links into its site, as drawing a link into a
+// site does: else the site's other suggested links would be suggested away, a warehouse keeping only the link changed.
+function keepLink(link) {
+    for (const other of state.links) if (other.to === link.to) other.basis = 'user';
+    link.basis = 'user';
+}
+
 function removeLink(link) {
     state.links = state.links.filter((item) => item !== link);
     // A suggested link the user took away is not suggested again; and the other links into its site are the user's now.
@@ -939,7 +949,7 @@ function carryBy(links, typeId) {
     for (const link of able) {
         const second = linkVehicles(link)[1];
         link.vehicles = [{ type: typeId, fleet: null }, ...(second && second.type !== typeId ? [second] : [])];
-        link.basis = 'user';
+        keepLink(link);
     }
     $('#selectionCard').dataset.for = '';
     networkChanged();
@@ -952,7 +962,7 @@ function changeLinkVehicles(link, change, label) {
     const carried = linkVehicles(link).map((item) => ({ ...item }));
     change(carried);
     link.vehicles = carried.slice(0, typesPerLink);
-    link.basis = 'user';
+    keepLink(link);
     $('#selectionCard').dataset.for = '';
     networkChanged();
 }
@@ -1037,6 +1047,229 @@ function deleteVehicle(type) {
 $('#addVehicleButton').addEventListener('click', addVehicle);
 renderVehicles();
 
+// ---- travel times of the user's own ----------------------------------------------------------------------------------
+// A link's time door to door, as the user knows it or reads it off a map: typed on the link's card or in the Travel
+// times list, pasted from a spreadsheet, loaded from a CSV. From a few, a calibration the user may apply to the rest.
+
+// The links that run on vehicles, with what the table shows of each: its ends, kind and the model's own estimate.
+function timedLinks() {
+    return state.links.map((link) => {
+        const kind = kindOfLink(link);
+        if (!carriesVehicles(kind) || !link.leg) return null;
+        const from = pinById(link.from);
+        const to = pinById(link.to);
+        return { link, from, to, kind: kind === 'supply' ? 'supply' : 'store', leg: link.leg, time: link.time ?? null };
+    }).filter(Boolean).sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'supply' ? -1 : 1) || a.from.name.localeCompare(b.from.name) || a.to.name.localeCompare(b.to.name));
+}
+const currentCalibration = () => calibration(timedLinks());
+// The factor the model is built with: the calibration, when the user chose to use it.
+const timeFactor = () => {
+    const found = state.useCalibration ? currentCalibration() : null;
+    return found ? { factor: found.factor, count: found.count } : null;
+};
+const today = () => new Date().toISOString().slice(0, 10);
+// A time as it is typed: 1:40.
+const clock = (hours) => { const minutes = Math.round(hours * 60); return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}`; };
+
+// A link's time set (or cleared with null), as one step to undo; the link becomes the user's. `how` is where it was read:
+// the map last opened for this link, else the user's own figure.
+function setLinkTime(link, time, { label = null } = {}) {
+    const ends = `${pinById(link.from)?.name} → ${pinById(link.to)?.name}`;
+    checkpoint(label ?? `${time ? 'setting' : 'clearing'} the travel time of ${ends}`, { merge: true });
+    if (time) link.time = { ...time };
+    else delete link.time;
+    keepLink(link);
+    $('#selectionCard').dataset.for = '';
+    networkChanged();
+}
+
+// A time typed for a link: read, checked, and kept with where it was read and when.
+function typeLinkTime(link, text, when) {
+    if (!String(text).trim()) { if (link.time) setLinkTime(link, null); return true; }
+    const how = state.mapOpened?.[link.id] ?? 'yours';
+    const read = timeFrom(text, { when, how, kilometres: link.time?.kilometres ?? null, note: link.time?.note ?? '', checkedOn: how === 'yours' ? link.time?.checkedOn ?? null : today() });
+    if (read.error) { refuse(read.error); return false; }
+    setLinkTime(link, read.time);
+    return true;
+}
+
+// A map's directions between a link's ends, in the browser: the user reads the time there and types it back. Konjugate
+// opens only the hosts the add-on declares; one without that ability gets the address to paste.
+async function openDirections(link, which) {
+    const from = pinById(link.from);
+    const to = pinById(link.to);
+    if (!from || !to) return;
+    const url = which === 'osm' ? openStreetMapUrl(from, to) : googleMapsUrl(from, to);
+    state.mapOpened = { ...(state.mapOpened ?? {}), [link.id]: which === 'osm' ? 'osm' : 'google' };
+    const name = which === 'osm' ? 'OpenStreetMap' : 'Google Maps';
+    try {
+        if (!api?.openLink) throw new Error('unavailable');
+        await call(api.openLink(url));
+        toast(`${name} is open in your browser with ${from.name} → ${to.name}. Type the time it shows here, door to door.`);
+    } catch {
+        try { await navigator.clipboard.writeText(url); toast(`This Konjugate cannot open a browser: the address of ${name}'s directions is copied, to paste in yours.`); } catch { toast(`Open this in your browser: ${url}`); }
+    }
+}
+
+// The Travel times list: every link that runs on vehicles, its estimate by the route, your time, when it holds, the maps
+// to read it from and a flag on a time that looks wrong; and the calibration from your times.
+function renderTravelTimes() {
+    const panel = $('#travelTable');
+    if (!panel) return;
+    const rows = timedLinks();
+    const timed = rows.filter((row) => row.time?.hours > 0);
+    $('#travelSummary').textContent = rows.length ? `${timed.length} of ${rows.length} yours` : '';
+    $('#saveTimesButton').disabled = !timed.length;
+    // Being typed in (a value not yet kept): keep the fields as they are. Otherwise redraw, with the cursor where it was.
+    const active = document.activeElement;
+    if (panel.contains(active) && active.tagName === 'INPUT' && active.value !== active.defaultValue) return;
+    const focused = panel.contains(active) && active.dataset.timeInput ? active.dataset.timeInput : null;
+    // Out of the field before it is replaced: removing a focused field fires its blur in the middle of the redraw.
+    if (panel.contains(active)) active.blur();
+    const found = currentCalibration();
+    const untimed = rows.length - timed.length;
+    $('#calibrationRow').innerHTML = found
+        ? `<label title="The model's estimate is the routed time plus the hours at the gates. Your times are compared with it on the links you timed, and the middle ratio is used, so one odd time does not swing it."><input type="checkbox" id="useCalibration" ${state.useCalibration ? 'checked' : ''} ${untimed ? '' : 'disabled'}> Your ${found.count} times take ${number(found.factor, 2)} × the route's estimate (from ${number(found.low, 2)} to ${number(found.high, 2)}). Use it for the ${untimed} link${untimed === 1 ? '' : 's'} without a time of yours${found.count < calibrationAdvised ? `; ${calibrationAdvised} or more make it steadier` : ''}.</label>`
+        : `<span class="muted">Give ${calibrationMinimum} or more times of your own and the rest can be scaled by them.</span>`;
+    $('#useCalibration')?.addEventListener('change', (event) => {
+        checkpoint(`${event.target.checked ? 'using' : 'not using'} your times for the other links`);
+        state.useCalibration = event.target.checked;
+        networkChanged();
+    });
+    if (!rows.length) { panel.innerHTML = '<p class="muted small">Links to warehouses and stores show here once they are routed.</p>'; return; }
+    // A list rather than a table, to fit the side panel: each link's name and the route's estimate, then your time, when it
+    // holds and the maps to read it off.
+    panel.innerHTML = `<ul class="travelTimes">${rows.map((row) => {
+            const suspect = suspectTime(row.time, row.leg, row.kind);
+            const selected = state.selection.some((item) => item.kind === 'link' && item.id === row.link.id);
+            const how = row.time ? `${howLabels[row.time.how] ?? 'your figure'}${row.time.checkedOn ? `, ${row.time.checkedOn}` : ''}` : '';
+            return `<li data-link="${escape(row.link.id)}" class="${selected ? 'selected' : ''}${suspect ? ' suspect' : ''}">
+                <div class="travelLink"><button class="link" type="button" data-select-link="${escape(row.link.id)}">${escape(row.from.name)} → ${escape(row.to.name)}</button>
+                    <span class="muted" title="Routed time plus the hours at the gates: what the model takes without a time of yours">route ${number(row.leg.kilometres, 1)} km, ${escape(clock(modelHours(row.leg, row.kind)))}</span></div>
+                <div class="travelEntry"><input type="text" data-time-input="${escape(row.link.id)}" value="${escape(row.time ? clock(row.time.hours) : '')}" placeholder="h:mm" aria-label="Your time from ${escape(row.from.name)} to ${escape(row.to.name)}, door to door" title="${escape(how || 'Door to door: loading, the drive and unloading. 1:25, 85 min or 1 h 25 min. Paste a column of times from a spreadsheet to fill this link and the ones below.')}">${suspect ? `<span class="flag" title="${escape(suspect)}">⚠</span>` : ''}
+                    <select data-time-when="${escape(row.link.id)}" aria-label="When it holds">${Object.entries(whenLabels).map(([key, label]) => `<option value="${key}" ${(row.time?.when ?? 'any') === key ? 'selected' : ''}>${escape(label)}</option>`).join('')}</select>
+                    <button class="link" type="button" data-directions="google" data-for="${escape(row.link.id)}" title="Directions in Google Maps, in your browser">Google ↗</button>
+                    <button class="link" type="button" data-directions="osm" data-for="${escape(row.link.id)}" title="Directions on OpenStreetMap, in your browser">OSM ↗</button></div>
+            </li>`;
+        }).join('')}</ul>`;
+    wireTimeInputs(panel);
+    if (focused) panel.querySelector(`[data-time-input="${CSS.escape(focused)}"]`)?.focus();
+}
+
+// Time inputs, in the list or on a link's card: Enter keeps the time and moves to the next row, as in a spreadsheet; a
+// column of times pasted fills this row and those below; rows with sites' names pasted fill those links.
+function wireTimeInputs(root) {
+    const linkOf = (id) => state.links.find((link) => link.id === id);
+    const whenFor = (id) => root.querySelector(`[data-time-when="${CSS.escape(id)}"]`)?.value ?? linkOf(id)?.time?.when ?? 'any';
+    root.querySelectorAll('[data-time-input]').forEach((input) => {
+        input.addEventListener('change', () => {
+            // Kept now: a redraw may replace it.
+            input.defaultValue = input.value;
+            const link = linkOf(input.dataset.timeInput);
+            if (link && !typeLinkTime(link, input.value, whenFor(link.id))) input.value = link.time ? clock(link.time.hours) : '';
+        });
+        input.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            const inputs = [...root.querySelectorAll('[data-time-input]')];
+            const next = inputs[inputs.indexOf(input) + 1];
+            input.blur();
+            const target = next && root.querySelector(`[data-time-input="${CSS.escape(next.dataset.timeInput)}"]`);
+            (target ?? next)?.focus();
+        });
+        input.addEventListener('paste', (event) => {
+            const text = event.clipboardData?.getData('text/plain') ?? '';
+            if (!/[\n\t]/.test(text.trim())) return;
+            event.preventDefault();
+            pasteTimes(text, input.dataset.timeInput);
+        });
+    });
+    root.querySelectorAll('[data-time-when]').forEach((choice) => choice.addEventListener('change', () => {
+        const link = linkOf(choice.dataset.timeWhen);
+        if (link?.time) setLinkTime(link, { ...link.time, when: choice.value }, { label: `changing when the travel time of ${pinById(link.from)?.name} → ${pinById(link.to)?.name} holds` });
+    }));
+    root.querySelectorAll('[data-directions]').forEach((button) => button.addEventListener('click', () => {
+        const link = linkOf(button.dataset.for);
+        if (link) openDirections(link, button.dataset.directions);
+    }));
+    root.querySelectorAll('[data-select-link]').forEach((button) => button.addEventListener('click', () => select({ kind: 'link', id: button.dataset.selectLink })));
+}
+
+// Cells pasted from a spreadsheet: rows that name their sites (from, to, time, ...) fill those links; a column of times
+// alone fills the row pasted into and those below it, in the list's order. One step to undo.
+function pasteTimes(text, startId) {
+    const rows = timedLinks();
+    const named = parseTravelTimes(text);
+    const byNames = new Map(rows.map((row) => [`${row.from.name}|${row.to.name}`, row]));
+    const changes = [];
+    const problems = [];
+    if (named.rows.length && named.rows.every((row) => byNames.has(`${row.from}|${row.to}`))) {
+        for (const row of named.rows) changes.push([byNames.get(`${row.from}|${row.to}`).link, row.time]);
+    } else {
+        const start = Math.max(0, rows.findIndex((row) => row.link.id === startId));
+        String(text).split(/\r?\n/).map((line) => line.split('\t')[0].trim()).filter(Boolean).forEach((cell, offset) => {
+            const row = rows[start + offset];
+            if (!row) { problems.push(`${cell}: no link left to put it on`); return; }
+            const read = timeFrom(cell, { when: row.time?.when ?? 'any' });
+            if (read.error) problems.push(read.error);
+            else changes.push([row.link, read.time]);
+        });
+    }
+    if (!changes.length) { refuse(problems[0] ?? 'Nothing in it could be read as a time.'); return; }
+    checkpoint(`pasting ${changes.length} travel time${changes.length === 1 ? '' : 's'}`);
+    for (const [link, time] of changes) { link.time = { ...time }; keepLink(link); }
+    networkChanged();
+    toast(`${changes.length} travel time${changes.length === 1 ? '' : 's'} pasted${problems.length ? `; ${problems.length} not: ${problems[0]}` : ''}.`, { undoable: true });
+}
+
+// A file of times: matched to the links by their sites' names.
+$('#loadTimesButton').addEventListener('click', async () => {
+    try {
+        const chosen = await call(api.chooseFile(importerId, 'times'));
+        if (!chosen.chosen) return;
+        const answer = await call(api.runImport(importerId, { step: 'times' }));
+        if (answer.report?.errors?.length) throw new Error(answer.report.errors.join(' '));
+        const rows = timedLinks();
+        const byNames = new Map(rows.map((row) => [`${row.from.name}|${row.to.name}`, row]));
+        const matched = answer.data.rows.filter((row) => byNames.has(`${row.from}|${row.to}`));
+        const unmatched = answer.data.rows.filter((row) => !byNames.has(`${row.from}|${row.to}`));
+        if (!matched.length) throw new Error(`None of the ${answer.data.rows.length} times in the file is for a link on the map: match the sites' names, as in ${rows[0] ? `${rows[0].from.name} → ${rows[0].to.name}` : 'the network'}.`);
+        checkpoint(`loading ${matched.length} travel time${matched.length === 1 ? '' : 's'}`);
+        for (const row of matched) { const link = byNames.get(`${row.from}|${row.to}`).link; link.time = { ...row.time }; keepLink(link); }
+        networkChanged();
+        $('#travelStatus').innerHTML = notice('ok', `${matched.length} time${matched.length === 1 ? '' : 's'} from your file.`)
+            + (unmatched.length ? notice('warning', `Not on the map, so left out: ${unmatched.slice(0, 5).map((row) => `${row.from} → ${row.to}`).join(', ')}${unmatched.length > 5 ? ` and ${unmatched.length - 5} more` : ''}.`) : '')
+            + (answer.report?.warnings ?? []).map((text) => notice('warning', text)).join('');
+    } catch (error) {
+        $('#travelStatus').innerHTML = notice('error', error.message);
+    }
+});
+$('#saveTimesButton').addEventListener('click', () => {
+    const text = writeTravelTimes(timedLinks().map((row) => ({ from: row.from.name, to: row.to.name, time: row.time })));
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob([text], { type: 'text/csv' }));
+    link.download = 'travelTimes.csv';
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+    state.savedTimesCsv = text;
+});
+
+// T: the selected link's time on its card, ready to type; with no link selected, the list, at its first empty row.
+function focusTravelTime() {
+    const link = selectedLinks().find((item) => carriesVehicles(kindOfLink(item)));
+    if (link) {
+        setSelection([{ kind: 'link', id: link.id }]);
+        renderNetwork();
+        $('#selectionCard [data-time-input]')?.focus();
+        return;
+    }
+    $('#travelTimes').open = true;
+    renderTravelTimes();
+    ([...$('#travelTable').querySelectorAll('[data-time-input]')].find((input) => !input.value) ?? $('#travelTable [data-time-input]'))?.focus();
+}
+
 // ---- the keyboard ------------------------------------------------------------------------------------------
 // Every action has a button or a menu item; these are the quicker ways, listed under ? (and in each menu and tooltip).
 const shortcuts = [
@@ -1052,6 +1285,8 @@ const shortcuts = [
     ['Enter or F2, or click twice', 'Rename the selected site'],
     ['L', 'Link the selected site to the next one clicked'],
     ['V', 'Carry the selected links by the next vehicle type'],
+    ['T', 'Type the selected link\'s travel time (with no link selected: the Travel times list)'],
+    ['Enter, in the Travel times list', 'Keep the time and go to the next link'],
     ['F', 'Fit the map to the selection, or to the network'], ['0', 'Fit the map to the region'], ['+ and -', 'Zoom'],
     [keys.menu, 'The menu of a site, a link or the map'], ['?', 'Show or hide these shortcuts']
 ];
@@ -1086,6 +1321,7 @@ document.addEventListener('keydown', (event) => {
     else if ((event.key === 'Enter' || event.key === 'F2') && state.selected?.kind === 'pin') rename(state.selected.id);
     else if (key === 'l' && state.selected?.kind === 'pin') startLinking(state.selected.id);
     else if (key === 'v') cycleVehicles();
+    else if (key === 't') focusTravelTime();
     else if (event.key.startsWith('Arrow')) nudge({ ArrowLeft: -1, ArrowRight: 1 }[event.key] ?? 0, { ArrowUp: -1, ArrowDown: 1 }[event.key] ?? 0, event.shiftKey);
     else if (key === 'f') fitNetwork();
     else if (event.key === '0') map.fit();
@@ -1130,12 +1366,17 @@ function openMenu({ target, point, clientX, clientY }) {
         item('Delete', keys.delete, deleteSelected, { danger: true });
     } else if (target?.kind === 'link') {
         const link = state.links.find((each) => each.id === target.id);
-        if (link?.basis !== 'user') item('Make it mine (keep it as it is)', '', () => { checkpoint('keeping a suggested link'); link.basis = 'user'; networkChanged(); });
+        if (link?.basis !== 'user') item('Make it mine (keep it as it is)', '', () => { checkpoint('keeping a suggested link'); keepLink(link); networkChanged(); });
         // The vehicles it runs on: every type that may take all the links selected.
         const carrying = links.filter((each) => carriesVehicles(kindOfLink(each)));
         const current = carrying.length === 1 ? linkVehicles(carrying[0])[0]?.type : null;
         for (const type of state.vehicles.filter((each) => carrying.length && each.id !== current && carrying.every((each2) => typeAllowed(each, each2)))) {
             item(`Carry ${carrying.length > 1 ? `${carrying.length} links` : 'it'} by ${type.name.toLowerCase()}`, 'V', () => carryBy(carrying, type.id));
+        }
+        if (links.length === 1 && carriesVehicles(kindOfLink(link))) {
+            item('Type its travel time…', 'T', focusTravelTime);
+            item('Check its time in Google Maps', '', () => openDirections(link, 'google'));
+            item('Check its time on OpenStreetMap', '', () => openDirections(link, 'osm'));
         }
         item(links.length > 1 ? `Delete ${links.length} links` : 'Delete', keys.delete, deleteSelected, { danger: true });
     } else {
@@ -1179,6 +1420,9 @@ function changeRole(pin, role) {
 // or a link's ends, how it was routed and whose it is.
 function renderCard() {
     const card = $('#selectionCard');
+    // A field about to be replaced loses the focus first (removing a focused field fires its blur mid-redraw); one
+    // being typed in is kept, below.
+    const blurInCard = () => { if (card.contains(document.activeElement)) document.activeElement.blur(); };
     const selected = state.selected;
     const pin = selected?.kind === 'pin' ? pinById(selected.id) : null;
     const link = selected?.kind === 'link' ? state.links.find((item) => item.id === selected.id) : null;
@@ -1190,6 +1434,7 @@ function renderCard() {
         card.dataset.for = state.selection.map((item) => item.id).join('|');
         const carrying = links.filter((link) => carriesVehicles(kindOfLink(link)));
         const offered = state.vehicles.filter((type) => carrying.every((link) => typeAllowed(type, link)));
+        blurInCard();
         card.innerHTML = `
             <h3>${[pins.length ? `${pins.length} site${pins.length === 1 ? '' : 's'}` : '', links.length ? `${links.length} link${links.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ')} selected</h3>
             <div class="detail">${escape(pins.map((item) => item.name).join(', '))}</div>
@@ -1219,6 +1464,7 @@ function renderCard() {
                 return `<li><button class="link" type="button" data-select-link="${escape(item.id)}">${escape(other?.name ?? '')}</button> <span class="basis ${item.basis === 'user' ? 'user' : ''}">${item.basis === 'user' ? 'yours' : 'suggested'}</span><button class="link remove" type="button" data-remove-link="${escape(item.id)}" title="Remove this link" aria-label="Remove the link with ${escape(other?.name ?? '')}">✕</button></li>`;
             }).join('')}</ul>${others.length ? `<select data-add-link="${direction}" aria-label="${title}: add a site"><option value="">+ add a site</option>${others.map((other) => `<option value="${escape(other.id)}">${escape(other.name)} (${escape(roles[other.role].label.toLowerCase())})</option>`).join('')}</select>` : ''}</div>`;
         };
+        blurInCard();
         card.innerHTML = `
             <h3><i class="swatch ${pin.role}"></i><select id="pinRole" aria-label="Role">${roleIds.map((role) => `<option value="${role}" ${role === pin.role ? 'selected' : ''}>${roles[role].label}</option>`).join('')}</select></h3>
             <input type="text" id="pinName" value="${escape(pin.name)}" aria-label="Name">
@@ -1267,16 +1513,19 @@ function renderCard() {
         const to = pinById(link.to);
         const leg = link.leg;
         const unused = (state.built?.unusedLinks ?? []).find((item) => item.from === from?.name && item.to === to?.name);
+        blurInCard();
         card.innerHTML = `
             <h3>${escape(from?.name)} → ${escape(to?.name)}</h3>
             <div class="detail">${leg ? `${number(leg.kilometres, 1)} km, ${number(leg.hours, 1)} h ${legHow(leg)}.` : 'Not routed yet.'} ${link.basis === 'user' ? 'Your link.' : 'Suggested.'}</div>
             ${unused ? `<div class="detail">Left out of the model: it ${escape(unused.why)}.</div>` : ''}
             ${renderLinkVehicles(link)}
+            ${renderLinkTime(link)}
             <div class="row">${link.basis === 'user' ? '' : '<button class="button small" type="button" id="keepLink">Make it mine</button>'}<button class="button small danger" type="button" id="deleteLink" title="${keys.delete}">Delete</button></div>
             <div class="detail">Drag either end on the map to another site to move it.</div>`;
-        $('#keepLink')?.addEventListener('click', () => { checkpoint('keeping a suggested link'); link.basis = 'user'; networkChanged(); });
+        $('#keepLink')?.addEventListener('click', () => { checkpoint('keeping a suggested link'); keepLink(link); networkChanged(); });
         $('#deleteLink').addEventListener('click', deleteSelected);
         wireLinkVehicles(link);
+        wireTimeInputs(card);
     } else {
         card.dataset.for = '';
     }
@@ -1301,6 +1550,21 @@ function renderLinkVehicles(link) {
         ${carried.length < typesPerLink && state.vehicles.length > 1 ? '<button class="link" type="button" id="addLinkVehicle">+ a second type</button>' : ''}
         <div class="detail">Empty: as many as its flow needs, plus a reserve. Two types share its loads by their capacity.</div></div>`;
 }
+// A link's travel time on its card: the route's estimate, your time door to door and when it holds, the maps to read it
+// from, and a flag when it looks wrong.
+function renderLinkTime(link) {
+    const kind = kindOfLink(link);
+    if (!carriesVehicles(kind) || !link.leg) return '';
+    const estimate = modelHours(link.leg, kind === 'supply' ? 'supply' : 'store');
+    const suspect = suspectTime(link.time, link.leg, kind === 'supply' ? 'supply' : 'store');
+    const how = link.time ? `${howLabels[link.time.how] ?? 'your figure'}${link.time.checkedOn ? `, ${link.time.checkedOn}` : ''}` : '';
+    return `<div class="links travelTime"><b>Travel time, door to door</b>
+        <div class="field"><label for="linkTime">Yours</label><span><input type="text" id="linkTime" data-time-input="${escape(link.id)}" value="${escape(link.time ? clock(link.time.hours) : '')}" placeholder="${escape(clock(estimate))}" title="${escape(how || 'Loading, the drive and unloading: 1:25, 85 min or 1 h 25 min (T)')}"></span><span class="basis ${link.time ? 'user' : 'assumed'}">${link.time ? 'yours' : 'routed'}</span></div>
+        <div class="field"><label for="linkTimeWhen">When</label><select id="linkTimeWhen" data-time-when="${escape(link.id)}">${Object.entries(whenLabels).map(([key, label]) => `<option value="${key}" ${(link.time?.when ?? 'any') === key ? 'selected' : ''}>${escape(label)}</option>`).join('')}</select></div>
+        ${suspect ? `<div class="detail flag">⚠ ${escape(suspect)}</div>` : ''}
+        <div class="detail">${link.time ? `${escape(how.charAt(0).toUpperCase() + how.slice(1))}. ` : `Empty: the route's ${escape(formatDuration(estimate))}, gates included. `}Read it off <button class="link" type="button" data-directions="google" data-for="${escape(link.id)}">Google Maps ↗</button> or <button class="link" type="button" data-directions="osm" data-for="${escape(link.id)}">OpenStreetMap ↗</button>.</div></div>`;
+}
+
 function wireLinkVehicles(link) {
     const card = $('#selectionCard');
     const ends = `${pinById(link.from)?.name} → ${pinById(link.to)?.name}`;
@@ -1613,7 +1877,7 @@ async function build({ focus = false } = {}) {
         if (straight) network = networkSelection(state.pins, state.links, { paths: false, catalogue: state.vehicles });
         const answer = await call(api.runImport(importerId, {
             step: 'buildNetwork', ...(state.bbox ? { bbox: state.bbox } : {}), network,
-            settings: { portTeuPerDay: state.portVolume, arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(), operator: null, standbyPorts: [...state.standby] }
+            settings: { portTeuPerDay: state.portVolume, arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(), operator: null, standbyPorts: [...state.standby], timeFactor: timeFactor() }
         }));
         if (!answer.imported) throw new Error((answer.report?.errors ?? ['The model could not be built.']).join(' '));
         state.built = answer.data;
@@ -1800,7 +2064,8 @@ function sessionState() {
         version: 2, place: state.place ? { display_name: state.place.display_name, boundingbox: state.place.boundingbox } : null,
         margin: $('#marginSelect').value, bbox: state.bbox, roadLevel: state.roadLevel, sample: Boolean(state.sample), portVolume: state.portVolume,
         // Links without their legs, which are routed again when the session is restored (from the same roads, the same legs).
-        pins: state.pins, links: state.links.map(({ id, from, to, basis, vehicles }) => ({ id, from, to, basis, ...(vehicles ? { vehicles } : {}) })), vehicles: state.vehicles,
+        pins: state.pins, links: state.links.map(({ id, from, to, basis, vehicles, time }) => ({ id, from, to, basis, ...(vehicles ? { vehicles } : {}), ...(time ? { time } : {}) })), vehicles: state.vehicles,
+        useCalibration: Boolean(state.useCalibration),
         dismissed: [...state.dismissed], suggestions: Object.keys(state.suggestions), available: [...state.available], listRole: state.listRole,
         built: state.built, keepInStep: $('#keepInStep').checked,
         arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(),
@@ -1894,6 +2159,7 @@ async function restoreSession() {
         state.pins = (saved.version === 2 ? saved.pins ?? [] : []).map(completeFields);
         state.links = saved.version === 2 ? saved.links ?? [] : [];
         state.vehicles = completeCatalogue(saved.vehicles);
+        state.useCalibration = Boolean(saved.useCalibration);
         renderVehicles();
         state.dismissed = new Set(saved.dismissed ?? []);
         state.listRole = saved.listRole ?? 'all';

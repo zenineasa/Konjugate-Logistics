@@ -258,3 +258,18 @@ td.better { color: var(--ok); font-weight: 600; }
 #map .roadMark .markCross { stroke: #ff3b30; stroke-linecap: round; fill: none; }
 #map .roadMark.planned { opacity: 0.7; }
 .swatch.closedMark { background: none; color: #ff3b30; font-style: normal; font-weight: 700; width: auto; height: auto; }
+
+/* Travel times: a list of links, each with the route's estimate, your time, when it holds and the maps; a flag on a time
+   that looks wrong. */
+.travelTimes { list-style: none; padding: 0; margin: 4px 0; font-size: 12px; }
+.travelTimes li { padding: 5px 6px; border-bottom: 1px solid var(--border); }
+.travelTimes li.selected { background: var(--surface-hover); }
+.travelTimes .travelLink { display: flex; justify-content: space-between; gap: 6px; align-items: baseline; }
+.travelTimes .travelLink .muted { font-size: 11px; white-space: nowrap; }
+.travelTimes .travelEntry { display: flex; gap: 6px; align-items: center; margin-top: 3px; flex-wrap: wrap; }
+.travelTimes input[type="text"] { width: 62px; }
+.travelTimes select { max-width: 150px; font-size: 11px; }
+.travelTimes li.suspect input { border-color: var(--warn); }
+.flag { color: var(--warn); cursor: help; }
+.card .travelTime input[type="text"] { width: 70px; }
+#calibrationRow { margin: 4px 0 6px; }

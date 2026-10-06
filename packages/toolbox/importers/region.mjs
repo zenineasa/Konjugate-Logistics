@@ -24,6 +24,7 @@ import { geographyAttribution, geographyLayers, mapLayers } from '../lib/mapData
 import { ModelBuilder } from '../lib/modelBuilder.mjs';
 import { buildRegionModel, regionModelDefaults } from '../lib/regionModel.mjs';
 import { generateOperator, parseOperator } from '../lib/operator.mjs';
+import { parseTravelTimes } from '../lib/travelTimes.mjs';
 import { readOverpass } from '../lib/overpass.mjs';
 import { createRouter } from '../lib/roadGraph.mjs';
 import { compactRoadGraph, createNetworkRouter } from '../lib/routing.mjs';
@@ -118,6 +119,9 @@ function buildSettings(options) {
     const vehicles = checkedVehicles(options.network?.vehicles);
     if (vehicles) settings.vehicles = vehicles;
     if (options.network?.unit === 'pallets') settings.unit = 'pallets';
+    // The user's times on some links, scaling the estimates on the rest (travelTimes.mjs): a factor within reason.
+    const factor = Number(options.settings?.timeFactor?.factor);
+    if (factor >= 0.1 && factor <= 10) settings.timeFactor = { factor, count: Math.max(0, Math.round(Number(options.settings.timeFactor.count) || 0)) };
     return settings;
 }
 
@@ -160,11 +164,20 @@ export default async function importRegion({ files, helpers, options = {} }) {
     const answers = {};
     let sitesText = null;
     let operatorText = null;
+    let timesText = null;
     for (const file of files) {
         // A tiled kind arrives as several files, one per tile.
         if (osmRoles.includes(file.role) || portwatchRoles.includes(file.role)) (answers[file.role] ??= []).push(file.text);
         if (file.role === 'sites') sitesText = file.text;
         if (file.role === 'operator') operatorText = file.text;
+        if (file.role === 'times') timesText = file.text;
+    }
+    // A file of the user's own travel times, read for the window to match to its links by site name.
+    if (options.step === 'times') {
+        if (timesText === null) return failure('Choose a file of your travel times first.');
+        const parsed = parseTravelTimes(timesText);
+        if (!parsed.rows.length) return { ok: false, report: { errors: parsed.errors.map((message) => `Your travel times file: ${message}`), warnings: [] } };
+        return { ok: true, data: { step: 'times', rows: parsed.rows }, report: { errors: [], warnings: parsed.errors.map((message) => `Your travel times file: ${message}`) } };
     }
     if (options.step === 'sites') {
         if (sitesText === null) return failure('Choose a file of your own sites first.');

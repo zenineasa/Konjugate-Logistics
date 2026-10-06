@@ -59,6 +59,9 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 | Keep a suggested link | "Make it mine" on the link's card | Its menu | |
 | Choose a link's vehicles | The vehicle on the link's card (and "+ a second type", ✕ to take it off); with several links selected, "Carry them by" on the selection's card | Its menu, "Carry it by …" (every type that may take it) | `V`: the selected links take the next type that may |
 | Set how many vehicles a link has | The number beside each type on the link's card (empty: sized to its flow) | | |
+| Give a link's travel time | Its card's travel time; the Travel times list in the Network step; Load your times (CSV) | Its menu, "Type its travel time…"; paste a column from a spreadsheet into the list | `T` (the selected link's time; with none selected, the list), Enter for the next link |
+| Read a link's time off a map | Google ↗ or OSM ↗ on its card or in the list | Its menu, "Check its time in Google Maps" or "on OpenStreetMap" | |
+| Scale the other links by your times | The calibration's tick in the Travel times list | | |
 | Change a vehicle type | Vehicles in the Network step: its name, figures and "May deliver to stores"; Add a vehicle type; ✕ to delete one | | |
 | Undo, redo | ↶ ↷ above the map; Undo in the message after a change | | Command+Z; Command+Shift+Z (or Ctrl+Y) |
 | Fit the map | Fit above the map | Map menu | `F` (the selection, or the network), `0` (the region) |

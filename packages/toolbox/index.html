@@ -77,6 +77,17 @@
                         <ul class="vehicles" id="vehicleList"></ul>
                         <button class="button small" type="button" id="addVehicleButton">Add a vehicle type</button>
                     </details>
+                    <details id="travelTimes">
+                        <summary>Travel times <span class="muted small" id="travelSummary"></span></summary>
+                        <p class="muted small">The time each link takes door to door (loading, the drive and unloading), where you know it better than the route: type it here or on the link's card (T), paste a column from a spreadsheet, load a file, or read it off Google Maps or OpenStreetMap and type it back. A time of yours replaces the route's estimate in the model. Say when it holds: a road at the morning peak is not the road at night.</p>
+                        <div class="small" id="calibrationRow"></div>
+                        <div id="travelTable"></div>
+                        <div class="row small">
+                            <button class="link" type="button" id="loadTimesButton">Load your times (CSV)</button>
+                            <button class="link" type="button" id="saveTimesButton" disabled>Save your times (CSV)</button>
+                        </div>
+                        <div id="travelStatus"></div>
+                    </details>
                     <details id="suggestions">
                         <summary>Suggestions from public data</summary>
                         <p class="muted small">Nothing is fetched until you ask. Each source shows what it finds as hollow sites on the map; click one, or Adopt it here, to place it in your network with what was found there.</p>

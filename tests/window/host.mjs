@@ -42,6 +42,9 @@ export const limits = { options: 2 * 1024 * 1024, importerData: 8 * 1024 * 1024,
 
 // Konjugate's own cache of what an add-on fetched, in a scratch folder: the window test exercises the real one.
 const { createAddonCache } = await import(pathToFileURL(konjugateModule('src/addonCache.mjs')));
+// And its check on an address a window may open: https, a host the manifest lists.
+const { addressAllowed } = await import(pathToFileURL(konjugateModule('src/launcherHost.mjs')));
+const manifest = JSON.parse(await readFile(join(logisticsRoot, 'packages', 'toolbox', 'addon.json'), 'utf8'));
 
 export const placeAnswer = [{ display_name: 'Port Alder, Synthetic Coast', type: 'harbour', lat: '-29.99', lon: '-19.9', boundingbox: ['-29.9', '-29.8', '-19.75', '-19.6'] }];
 
@@ -53,6 +56,7 @@ export async function createHost() {
     const portwatch = syntheticPortwatch();
     const files = new Map(); // `${role}/${name}` -> { role, name, text, retrievedAt }
     const requests = [];
+    const opened = []; // pages the window opened in the browser
     const chosen = {}; // role -> text the next chooseFile picks
     let session = null;
     const kindOf = (query) => (query.includes('"landuse"="port"') ? 'ports' : query.includes('"building"="warehouse"') ? 'logistics'
@@ -98,6 +102,12 @@ export async function createHost() {
             }
             files.set(`${role}/${name}`, { role, name, text, url, retrievedAt });
             return { bytes: Buffer.byteLength(text), cached: Boolean(hit), retrievedAt };
+        },
+        // Opening a page in the browser: checked as Konjugate checks it, and recorded instead of opened.
+        async openLink({ url }) {
+            if (!manifest.permissions.includes('links.open')) throw new Error('This launcher was not granted links.open.');
+            opened.push(addressAllowed(url, manifest.links?.hosts ?? []));
+            return {};
         },
         async cacheInfo() { return cache.info(); },
         async clearCache() { await cache.clear(); return {}; },
@@ -161,7 +171,7 @@ export async function createHost() {
         }
     };
     const host = {
-        files, requests, chosen, cache, kept: 0, imported: null, scenarioRuns: 0,
+        files, requests, opened, chosen, cache, kept: 0, imported: null, scenarioRuns: 0,
         get session() { return session; },
         set session(value) { session = value; },
         async call(name, args) {
@@ -196,6 +206,7 @@ export async function openWindow(page, host, { inspect = true } = {}) {
                 chooseFile: (importerId, role) => window.logisticsHost('chooseFile', { importerId, role }),
                 clearFile: (importerId, role, name) => window.logisticsHost('clearFile', { importerId, role, name }),
                 fetchText: (url) => window.logisticsHost('fetchText', { url }),
+                openLink: (url) => window.logisticsHost('openLink', { url }),
                 fetchFile: (importerId, role, url, name, options = {}) => window.logisticsHost('fetchFile', { importerId, role, url, name, cache: options.cache, maximumAgeDays: options.maximumAgeDays }),
                 cacheInfo: () => window.logisticsHost('cacheInfo', {}),
                 clearCache: () => window.logisticsHost('clearCache', {}),

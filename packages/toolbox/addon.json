@@ -8,6 +8,7 @@
     "copyright": "Copyright © 2026 Zenin Easa Panthakkalakath",
     "permissions": [
         "data.import",
+        "links.open",
         "model.open",
         "network.fetch",
         "project.data",
@@ -19,7 +20,8 @@
         "scenarioForkTime",
         "suppliedPerParameter",
         "fetchCache",
-        "keepSession"
+        "keepSession",
+        "openLink"
     ],
     "contributes": {
         "toolstrip": [
@@ -46,6 +48,7 @@
                     { "role": "portwatchPorts", "label": "IMF PortWatch ports", "accept": ["json"], "description": "The IMF PortWatch ports around the region, as its ArcGIS service returns them." },
                     { "role": "portwatchActivity", "multiple": true, "label": "IMF PortWatch port activity", "accept": ["json"], "description": "A port's daily calls and trade estimates from IMF PortWatch, one file per port." },
                     { "role": "sites", "label": "Your own sites", "accept": ["csv", "txt"], "description": "One row per site: name, kind (supplier, port, warehouse, store, dark store or customer area), latitude, longitude, and optionally teuPerDay, floorArea, population and from (the sites it is supplied from, separated by |)." },
+                    { "role": "times", "label": "Your travel times", "accept": ["csv", "txt"], "description": "One row per link: from and to (site names), time door to door (1:25, 85 min or 1 h 25 min), and optionally kilometres, when (any, peak, midday or night) and a note." },
                     { "role": "operator", "label": "Your fleet operator", "accept": ["json"], "description": "A haulier's trucks: one or two truck sizes with their costs, depots with their trucks, and the lanes it carries by origin and destination." }
                 ]
             }
@@ -122,6 +125,12 @@
             "nominatim.openstreetmap.org",
             "overpass-api.de",
             "services9.arcgis.com"
+        ]
+    },
+    "links": {
+        "hosts": [
+            "www.google.com",
+            "www.openstreetmap.org"
         ]
     }
 }
