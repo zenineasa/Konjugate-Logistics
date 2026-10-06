@@ -169,6 +169,7 @@ document.querySelectorAll('.stepHeader').forEach((header) => {
         if (event.target.tagName === 'INPUT' || event.target.tagName === 'SELECT') return;
         const step = header.closest('.step');
         if (step) step.classList.toggle('collapsed');
+        if (step?.id === 'stepScenario') renderMarks();
     });
 });
 
@@ -604,6 +605,7 @@ function renderNetwork() {
     renderCard();
     renderPopover();
     renderVehicles();
+    renderMarks();
 }
 
 // Beside what is selected on the map: its name, to rename it there, and Delete.
@@ -1655,6 +1657,7 @@ function renderFlows() {
     const during = flows && state.mapShows !== 'baseline' ? flows : null;
     $('#legendFell').hidden = !during;
     $('#legendRose').hidden = !during;
+    renderMarks();
     if (!built) { map.setFlows(null); return; }
     const positions = new Map(state.pins.map((pin) => [pin.name, pin]));
     const sum = (names, index) => names.reduce((total, name) => total + (during[name]?.[index] ?? 0), 0);
@@ -1675,8 +1678,56 @@ function renderFlows() {
             title: `${laneEnds(lane)}: ${number(lane.rate, 1)} ${goods()}/day, ${number(lane.kilometres, 1)} km, ${number(lane.leadTime * 24, 1)} h, ${trucksOf(lane)}${lane.vehicles ? '' : ' trucks'}${lane.operator ? ` (${built.operator.name})` : ''}`
         })),
         // Who serves whom is drawn by the links themselves.
-        serves: []
+        serves: [],
+        unit: goods()
     });
+}
+
+// Where on the map a lane's X goes: half way along the road its link was routed over, else half way between its ends.
+function laneMidpoint(lane) {
+    const from = pinNamed(lane.from);
+    const to = pinNamed(lane.site ?? lane.to);
+    if (!from || !to) return null;
+    const points = state.links.find((link) => link.from === from.id && link.to === to.id)?.leg?.path?.points;
+    if (!points?.length) return { lat: (from.lat + to.lat) / 2, lon: (from.lon + to.lon) / 2 };
+    const step = (a, b) => Math.hypot(b.lat - a.lat, (b.lon - a.lon) * Math.cos(a.lat * Math.PI / 180));
+    const total = points.slice(1).reduce((sum, point, index) => sum + step(points[index], point), 0);
+    let walked = 0;
+    for (let index = 1; index < points.length; index += 1) {
+        const length = step(points[index - 1], points[index]);
+        if (walked + length >= total / 2 && length > 0) {
+            const share = (total / 2 - walked) / length;
+            return { lat: points[index - 1].lat + share * (points[index].lat - points[index - 1].lat), lon: points[index - 1].lon + share * (points[index].lon - points[index - 1].lon) };
+        }
+        walked += length;
+    }
+    return points[Math.floor(points.length / 2)];
+}
+
+// A red X on a closed road: on the road a road closure scenario closed, while the map shows that scenario; and, fainter,
+// on the road chosen in the Road closure tab before it runs, once the user has turned to that tab or chosen a road there
+// (not merely because it is the tab open after a build) and while the Scenarios step is open. A detour keeps the road
+// open: no X.
+function renderMarks() {
+    const marks = [];
+    const built = state.built;
+    const ran = state.scenario?.id === 'roadClosure' ? state.scenario.closure : null;
+    const showing = ran && state.mapShows !== 'baseline' && ran.mode !== 'detour';
+    if (built && showing) {
+        const lane = built.lanes.find((item) => item.name === ran.lane);
+        const at = lane && laneMidpoint(lane);
+        if (at) marks.push({ ...at, kind: 'closed', title: `${laneEnds(lane)}: ${ran.open > 0 ? `open ${ran.open}% of the way` : 'closed'} from day ${ran.startDay} for ${ran.days} days` });
+    }
+    const choosing = built && state.closureChosen && !$('#stepScenario').hidden && !$('#stepScenario').classList.contains('collapsed')
+        && state.scenarioTab === 'roadClosure' && $('#closureModeSelect').value !== 'detour';
+    const chosen = choosing ? built.lanes.find((item) => item.name === $('#closureLaneSelect').value) : null;
+    if (chosen && !(showing && chosen.name === ran.lane)) {
+        const at = laneMidpoint(chosen);
+        if (at) marks.push({ ...at, kind: 'planned', title: `${laneEnds(chosen)}: to be closed when the scenario runs` });
+    }
+    map.setMarks(marks);
+    $('#legendClosed').hidden = !marks.length;
+    $('#legendClosedText').textContent = marks.some((mark) => mark.kind === 'closed') ? 'Road closed' : 'Road to close';
 }
 
 function renderBuilt() {
@@ -2061,9 +2112,11 @@ const scenarioIds = ['chokepointDisruption', 'roadClosure', 'fleetChange', 'dema
 function showScenarioTab() {
     document.querySelectorAll('#scenarioTabs button').forEach((button) => button.classList.toggle('active', button.dataset.scenario === state.scenarioTab));
     document.querySelectorAll('.scenarioPanel').forEach((panel) => { panel.hidden = panel.dataset.panel !== state.scenarioTab; });
+    renderMarks();
 }
 document.querySelectorAll('#scenarioTabs button').forEach((button) => button.addEventListener('click', () => {
     state.scenarioTab = button.dataset.scenario;
+    if (state.scenarioTab === 'roadClosure') state.closureChosen = true;
     showScenarioTab();
 }));
 
@@ -2150,6 +2203,7 @@ function renderScenarioHints() {
     $('#demandHint').textContent = `${towns.length} ${state.built.stores ? 'site' : 'town'}${towns.length === 1 ? '' : 's'} ordering ${number(towns.reduce((sum, town) => sum + town.demand, 0), 1)} ${goods()}/day.`;
 }
 for (const selector of ['#closureLaneSelect', '#closureModeSelect', '#fleetLanesSelect', '#demandTownsSelect']) $(selector).addEventListener('change', renderScenarioHints);
+for (const selector of ['#closureLaneSelect', '#closureModeSelect']) $(selector).addEventListener('change', () => { state.closureChosen = true; renderMarks(); });
 
 // ---- the scenarios: running one ------------------------------------------------------------------------------------
 
@@ -2240,7 +2294,11 @@ function scenarioRun(id, start, runTime, status) {
         const what = mode === 'detour'
             ? `on a detour ${days}: ${number(plan.detour.hours, 1)} h and ${number(plan.detour.kilometres)} km more each way`
             : `${open > 0 ? `restricted to ${settings.closure.open}% of its loads` : 'closed'} ${days}: ${number(plan.teuPerDay, 1)} ${goods()} a day it no longer carries${plan.reroutedTo.length ? `, ordered from ${state.built.lanes.filter((item) => plan.reroutedTo.includes(item.name)).map((item) => item.from).join(' and ')} instead` : ', its orders waiting for the road to reopen'}`;
-        return { supplied: { byParameter: plan.supplied }, lanes: plan.supplied.orderShare.entities, describe: `${laneEnds(lane)} ${what}.` };
+        return {
+            supplied: { byParameter: plan.supplied }, lanes: plan.supplied.orderShare.entities, describe: `${laneEnds(lane)} ${what}.`,
+            // For the map's X on the closed road.
+            extra: { closure: { lane: lane.name, mode, open: settings.closure.open, startDay: Number($('#startInput').value), days: Number($('#durationInput').value) } }
+        };
     }
     if (id === 'fleetChange') {
         const lanes = fleetLanes(settings.fleet.lanes);

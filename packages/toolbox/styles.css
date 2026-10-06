@@ -252,3 +252,9 @@ td.better { color: var(--ok); font-weight: 600; }
 .vehicles .vehicle .field { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; margin: 3px 0; }
 .vehicles .vehicle .field input[type="number"] { width: 80px; }
 .vehicles .vehicle .field .basis { min-width: 54px; text-align: right; }
+
+/* A closed road: a red X with a dark casing, over the roads and links; one a scenario is about to close, fainter. */
+#map .roadMark .markCasing { stroke: rgba(0, 0, 0, 0.75); stroke-linecap: round; fill: none; }
+#map .roadMark .markCross { stroke: #ff3b30; stroke-linecap: round; fill: none; }
+#map .roadMark.planned { opacity: 0.7; }
+.swatch.closedMark { background: none; color: #ff3b30; font-style: normal; font-weight: 700; width: auto; height: auto; }

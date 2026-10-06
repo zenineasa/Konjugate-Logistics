@@ -47,6 +47,9 @@ export class MapView {
         this.places = [];
         this.flowLayer = element('g', { class: 'flows' }, svg);
         this.linkLayer = element('g', { class: 'links' }, svg);
+        // Marks on the roads: a red X where a road is closed (or about to be, in a scenario being set up).
+        this.marks = [];
+        this.markLayer = element('g', { class: 'marks' }, svg);
         this.siteLayer = element('g', { class: 'sites' }, svg);
         this.listen();
         new ResizeObserver(() => this.applyView()).observe(svg);
@@ -86,6 +89,7 @@ export class MapView {
         this.drawSites();
         this.drawLinks();
         this.drawFlows();
+        this.drawMarks();
         this.base.querySelectorAll('.scaled').forEach((node) => {
             node.setAttribute('stroke-width', Number(node.dataset.width) * unit);
             // A dash pattern in screen pixels, like the width.
@@ -236,6 +240,27 @@ export class MapView {
 
     isSelected(kind, id) {
         return this.selection.some((item) => item.kind === kind && item.id === id);
+    }
+
+    // `marks`: [{ lat, lon, kind: 'closed' | 'planned', title }]. A closed road is a red X; one a scenario is about to
+    // close, a fainter, dashed X.
+    setMarks(marks) {
+        this.marks = marks ?? [];
+        this.drawMarks();
+    }
+
+    drawMarks() {
+        const unit = this.unit();
+        this.markLayer.replaceChildren();
+        for (const mark of this.marks) {
+            const { x, y } = this.project(mark.lat, mark.lon);
+            const arm = 8 * unit;
+            const cross = `M${x - arm} ${y - arm}L${x + arm} ${y + arm}M${x + arm} ${y - arm}L${x - arm} ${y + arm}`;
+            const group = element('g', { class: `roadMark ${mark.kind}`, 'data-mark': mark.kind }, this.markLayer);
+            element('path', { d: cross, class: 'markCasing', 'stroke-width': 6 * unit }, group);
+            element('path', { d: cross, class: 'markCross', 'stroke-width': 3.2 * unit, ...(mark.kind === 'planned' ? { 'stroke-dasharray': `${3 * unit} ${2 * unit}` } : {}) }, group);
+            if (mark.title) element('title', {}, group).textContent = mark.title;
+        }
     }
 
     setFlows(flows) {
@@ -411,7 +436,7 @@ export class MapView {
                 }, this.flowLayer);
                 const how = { routed: 'over major roads', local: 'local streets, estimated', 'straight-line': 'no road route found: a straight-line estimate' }[corridor.basis] ?? corridor.basis;
                 const against = corridor.baseline === undefined ? '' : ` while the scenario lasted, ${number(corridor.baseline)} in the baseline`;
-                element('title', {}, path).textContent = `${number(corridor.rate)} TEU/day${against} (${how})\n${corridor.lanes.map((name) => name.replace(/^Road /, '')).join('\n')}`;
+                element('title', {}, path).textContent = `${number(corridor.rate)} ${this.flows.unit ?? 'TEU'}/day${against} (${how})\n${corridor.lanes.map((name) => name.replace(/^Road /, '')).join('\n')}`;
             }
         } else {
             this.drawStraightLanes(unit, at);

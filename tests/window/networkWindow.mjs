@@ -418,13 +418,40 @@ try {
     assert.deepEqual(host.session.links.find((link) => link.id === harbourLink.id).vehicles, [{ type: 'smallTruck', fleet: null }]);
     noErrors();
 
+    // 7a. A road chosen to close in the Road closure tab is marked with a faint red X on the map, half way along it;
+    // none on a detour, which keeps the road open.
+    const marks = (kind) => page.locator(`#map .roadMark.${kind}`).count();
+    assert.equal(await marks('planned'), 0, 'no X before a road is chosen to close');
+    await page.click('#scenarioTabs [data-scenario="roadClosure"]');
+    const harbourLane = storeLanes.find((lane) => lane.site === 'Harbour shop');
+    await page.selectOption('#closureLaneSelect', harbourLane.name);
+    assert.equal(await marks('planned'), 1);
+    assert.match(await page.textContent('#map .roadMark.planned title'), /^Warehouse 1 → Harbour shop: to be closed when the scenario runs$/);
+    assert.equal(await page.isVisible('#legendClosed'), true);
+    assert.equal(await page.textContent('#legendClosedText'), 'Road to close');
+    // On the road: the X's centre is on the link's own path.
+    const onPath = await page.evaluate((id) => {
+        const cross = document.querySelector('#map .roadMark .markCross').getBBox();
+        const centre = { x: cross.x + cross.width / 2, y: cross.y + cross.height / 2 };
+        const path = document.querySelector(`#map path.link[data-link="${CSS.escape(id)}"]`);
+        let nearest = Infinity;
+        for (let at = 0; at <= path.getTotalLength(); at += path.getTotalLength() / 200) {
+            const point = path.getPointAtLength(at);
+            nearest = Math.min(nearest, Math.hypot(point.x - centre.x, point.y - centre.y));
+        }
+        return nearest / cross.width;
+    }, harbourLink.id);
+    assert.ok(onPath < 0.1, `the X sits on the link's road (${onPath})`);
+    await page.selectOption('#closureModeSelect', 'detour');
+    assert.equal(await marks('planned'), 0, 'a detour closes nothing');
+    await page.selectOption('#closureModeSelect', 'wait');
+    assert.equal(await marks('planned'), 1);
+    noErrors();
+
     // 7b. With an engine (KONJUGATE_ENGINE=export runs the model as Konjugate's code export writes it): Harbour shop's
     // only lane closed for ten days, and the summary shows its shelves empty and its shoppers waiting.
     if (process.env.KONJUGATE_ENGINE === 'export') {
         assert.equal(await page.isVisible('#scenarioTabs'), true, 'the scenarios show once the model is built');
-        await page.click('#scenarioTabs [data-scenario="roadClosure"]');
-        const harbourLane = storeLanes.find((lane) => lane.site === 'Harbour shop');
-        await page.selectOption('#closureLaneSelect', harbourLane.name);
         assert.match(await page.textContent('#closureHint'), /Harbour shop's orders over it queue until it reopens/);
         await page.fill('#startInput', '5');
         await page.fill('#durationInput', '10');
@@ -438,6 +465,11 @@ try {
         const empty = await stateOf(() => window.logisticsToolboxState.scenario.stores.find((item) => item.name === 'Harbour shop').emptyDays);
         assert.ok(empty.scenario > 5 && empty.baseline === 0, `its shelves were empty for most of the closure (${empty.scenario} days)`);
         assert.match(result, /fullest/, 'a warehouse with room for 400 pallets says how full it got');
+        // The closed road's X, solid now, and gone from the map's baseline view.
+        assert.equal(await marks('closed'), 1);
+        assert.equal(await marks('planned'), 0, 'one X for the road, not two');
+        assert.match(await page.textContent('#map .roadMark.closed title'), /^Warehouse 1 → Harbour shop: closed from day 5 for 10 days$/);
+        assert.equal(await page.textContent('#legendClosedText'), 'Road closed');
         noErrors();
     }
 
