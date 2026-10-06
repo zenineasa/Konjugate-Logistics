@@ -155,6 +155,8 @@ test('a network with vehicles builds stores that hold stock, restocked over lane
     const byName = (name) => pins.find((pin) => pin.name === name);
     byName('Central depot').fields.capacity = { value: 40, basis: 'user' };
     byName('Harbour shop').fields.cover = { value: 1.5, basis: 'user' };
+    byName('Harbour shop').fields.lostSales = { value: 0, basis: 'user' };
+    byName('High street').fields.saleValue = { value: 2500, basis: 'user' };
     const links = suggestLinks(pins, [], router);
     routeLinks(pins, links, router);
     const catalogue = defaultCatalogue();
@@ -195,6 +197,14 @@ test('a network with vehicles builds stores that hold stock, restocked over lane
     const provenance = (entity, parameter) => data.provenance.find((entry) => entry.entity === entity && entry.parameter === parameter);
     assert.deepEqual([provenance('Harbour shop', 'Stock cover target').value, provenance('Harbour shop', 'Stock cover target').basis], [1.5, 'user']);
     assert.equal(provenance('High street', 'Stock cover target').basis, 'assumed');
+    // Every shopper at the harbour shop waits, as the user said; the other stores lose the default, one figure for all.
+    const lostShare = (store) => document.edges.find((edge) => edge.name === `Sales lost: ${store} stock → ${store}`)
+        .parameters.find((parameter) => parameter.symbol === 'lostShare');
+    assert.equal(lostShare('Harbour shop').value, 0);
+    assert.equal(shared('storeLostShare')[0].value, 0.8);
+    assert.equal(lostShare('High street').sharedParameterId, shared('storeLostShare')[0].id);
+    assert.deepEqual([provenance('Harbour shop', 'Sales lost when out of stock').basis, provenance('Night hub', 'Orders lost when out of stock').value], ['user', 50]);
+    assert.deepEqual(data.stores.map((item) => [item.name, item.lostShare, item.saleValue]).sort(), [['Harbour shop', 0, 1000], ['High street', 0.8, 2500], ['Night hub', 0.5, 1000]]);
     assert.equal(provenance('Mini-van', 'Capacity').basis, 'user');
     assert.equal(provenance('Heavy truck', 'Capacity').basis, 'assumed');
     assert.ok(data.warnings.some((text) => text.startsWith('Central depot has room for 40 pallets')), data.warnings.join(' / '));

@@ -84,6 +84,10 @@ function resolvePin(entry, known, kind) {
     for (const key of ['capacity', 'coverDays', 'holdingCost']) {
         if (Number(entry[key]) > 0) Object.assign(site, { [key]: Number(entry[key]), [`${key}Basis`]: entry[`${key}Basis`] === 'assumed' ? 'assumed' : 'user' });
     }
+    // A store's: the share of the sales it cannot make that are lost (0 to 1, 0 a figure too), and what a pallet sold is worth.
+    const lost = Number(entry.lostShare);
+    if (entry.lostShare !== undefined && entry.lostShare !== null && lost >= 0 && lost <= 1) Object.assign(site, { lostShare: lost, lostShareBasis: entry.lostShareBasis === 'assumed' ? 'assumed' : 'user' });
+    if (Number(entry.saleValue) > 0) Object.assign(site, { saleValue: Number(entry.saleValue), saleValueBasis: entry.saleValueBasis === 'assumed' ? 'assumed' : 'user' });
     if (base && (entry.lat !== base.lat || entry.lon !== base.lon)) site.moved = true;
     return site;
 }

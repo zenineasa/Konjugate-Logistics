@@ -24,6 +24,10 @@ export const unit = 'pallets';
 // `positive`: nothing (0) means the default, as an empty field does: a site with no room or no stock target sells nothing.
 const capacityField = (detail) => ({ key: 'capacity', label: 'Storage capacity', unit: 'pallets', value: null, positive: true, detail });
 const coverField = (value, detail) => ({ key: 'cover', label: 'Stock cover', unit: 'days', value, positive: true, detail });
+// What a store loses when its shelves are short, and what a sale is worth: the summary counts lost sales in pallets and
+// in money. 0 lost is a figure (everyone waits), so the field takes it; it is a share, so no more than 100.
+const lostField = (value, detail) => ({ key: 'lostSales', label: 'Sales lost when out', unit: '%', value, max: 100, detail });
+const saleValueField = () => ({ key: 'saleValue', label: 'Value of a pallet sold', unit: 'a pallet', value: 1000, positive: true, detail: 'What its sales bring in a pallet: the summary prices the sales it loses at this.' });
 
 export const roles = {
     supplier: {
@@ -46,9 +50,11 @@ export const roles = {
     store: {
         label: 'Store', kind: 'demand',
         fields: [
-            { key: 'demand', label: 'Sells', unit: 'pallets a day', value: 5, detail: 'Sold from its own stock; what it cannot sell for want of stock waits until a delivery comes.' },
+            { key: 'demand', label: 'Sells', unit: 'pallets a day', value: 5, detail: 'Sold from its own stock; of what it cannot sell for want of stock, some is lost and the rest waits for a delivery.' },
             capacityField('Shelves and back room: the most it can hold. Empty: no limit.'),
-            coverField(2, 'The stock it aims to hold, in days of sales, on top of what is on its way.')
+            coverField(2, 'The stock it aims to hold, in days of sales, on top of what is on its way.'),
+            lostField(80, 'Of the sales it cannot make for want of stock, the share its shoppers make elsewhere rather than wait for. 0: every shopper waits.'),
+            saleValueField()
         ]
     },
     darkStore: {
@@ -56,7 +62,9 @@ export const roles = {
         fields: [
             { key: 'demand', label: 'Delivers', unit: 'pallets a day', value: 3, detail: 'Sold from its own stock, as a store, until online orders and the last mile come.' },
             capacityField('The most it can hold. Empty: no limit.'),
-            coverField(1, 'The stock it aims to hold, in days of orders, on top of what is on its way.')
+            coverField(1, 'The stock it aims to hold, in days of orders, on top of what is on its way.'),
+            lostField(50, 'Of the orders it cannot fill for want of stock, the share cancelled rather than delivered late. 0: every order waits.'),
+            saleValueField()
         ]
     },
     customerArea: {
@@ -102,7 +110,7 @@ export function setField(pin, key, text) {
     const field = roles[pin.role].fields.find((item) => item.key === key);
     if (!field) return pin;
     const value = Number(text);
-    pin.fields[key] = text !== '' && text !== null && Number.isFinite(value) && (field.positive ? value > 0 : value >= 0)
+    pin.fields[key] = text !== '' && text !== null && Number.isFinite(value) && (field.positive ? value > 0 : value >= 0) && !(value > (field.max ?? Infinity))
         ? { value, basis: 'user' }
         : { value: field.value, basis: field.value === null ? null : 'assumed' };
     return pin;
@@ -260,6 +268,11 @@ export function networkSelection(pins, links, { paths = true, catalogue = null }
         if (pin.role === 'warehouse' || pin.role === 'store' || pin.role === 'darkStore') {
             carry('capacity', 'capacity');
             carry('cover', 'coverDays');
+        }
+        if (pin.role === 'store' || pin.role === 'darkStore') {
+            // A share lost: 0 is a figure here, so it is carried whatever it is, as a fraction.
+            if (field('lostSales')?.value >= 0) Object.assign(entry, { lostShare: field('lostSales').value / 100, lostShareBasis: field('lostSales').basis });
+            carry('saleValue', 'saleValue');
         }
         if (kindOf(pin.role) === 'demand') {
             if (field('demand')?.value > 0) Object.assign(entry, { teuPerDay: field('demand').value, teuPerDayBasis: field('demand').basis });

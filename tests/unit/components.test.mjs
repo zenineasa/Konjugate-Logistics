@@ -51,16 +51,16 @@ test('a project-scoped shared parameter means the same thing in every template t
 
 test('the port network places from the templates with every equation valid and every endpoint matched', async () => {
     const document = await buildPortNetwork();
-    // A port, two road lanes, two warehouses, three zones; ten edges per road shipment (taking and loading trucks of each size, and placing the order), three per delivery.
+    // A port, two road lanes, two warehouses, three zones; ten edges per road shipment (taking and loading trucks of each size, and placing the order), five per delivery (with the two that drop lost sales).
     assert.equal(document.nodes.length, 8);
-    assert.equal(document.edges.length, 2 * 10 + 3 * 3);
+    assert.equal(document.edges.length, 2 * 10 + 3 * 5);
     const symbols = document.sharedParameters.map((shared) => shared.symbol);
     assert.equal(symbols.filter((symbol) => symbol === 'secondsPerDay').length, 1);
     assert.equal(symbols.filter((symbol) => symbol === 'truckCapacity').length, 1, 'Truck capacity is one definition across lanes and shipments.');
     assert.ok(symbols.includes('leadTime') && symbols.includes('leadTime2'), 'Each road lane must get its own travel time.');
     assert.equal(document.sharedParameters.find((shared) => shared.symbol === 'leadTime2').value, 3);
     const withRail = await buildPortNetwork({ railShare: 0.4 });
-    assert.equal(withRail.edges.length, 2 * 10 + 6 + 3 * 3, 'A rail shipment has six edges: no trucks to take.');
+    assert.equal(withRail.edges.length, 2 * 10 + 6 + 3 * 5, 'A rail shipment has six edges: no trucks to take.');
 });
 
 test('a road shipment conserves what it moves: containers into the lane equal those taken from the origin', async () => {

@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { completeFields, createPin, setField } from '../../packages/toolbox/lib/network.mjs';
+import { completeFields, createPin, networkSelection, setField } from '../../packages/toolbox/lib/network.mjs';
 import {
     catalogueForModel, completeCatalogue, createVehicle, defaultCatalogue, linkKind, linkVehicleProblem, setVehicleField, vehicleProblem, vehiclesOf
 } from '../../packages/toolbox/lib/vehicles.mjs';
@@ -82,4 +82,21 @@ test('a site\'s storage capacity and cover: nothing is the default, as empty is;
     completeFields(old);
     assert.deepEqual(Object.keys(old.fields), ['floorArea', 'capacity', 'cover', 'holdingCost']);
     assert.deepEqual(old.fields.cover, { value: 3, basis: 'assumed' });
+});
+
+test('a store loses most of the sales it cannot make, a dark store half; 0 is a figure, more than 100% is not', () => {
+    const store = createPin('store', { lat: 0, lon: 0 }, { name: 'Shop' });
+    const dark = createPin('darkStore', { lat: 0, lon: 0 }, { name: 'Hub' });
+    assert.deepEqual([store.fields.lostSales, dark.fields.lostSales, store.fields.saleValue], [{ value: 80, basis: 'assumed' }, { value: 50, basis: 'assumed' }, { value: 1000, basis: 'assumed' }]);
+    setField(store, 'lostSales', '0');
+    assert.deepEqual(store.fields.lostSales, { value: 0, basis: 'user' }, 'every shopper waits');
+    setField(dark, 'lostSales', '150');
+    assert.deepEqual(dark.fields.lostSales, { value: 50, basis: 'assumed' });
+    setField(dark, 'saleValue', '2400');
+    const [shop, hub] = networkSelection([store, dark], []).selection.towns;
+    assert.deepEqual([shop.lostShare, shop.lostShareBasis, shop.saleValue, shop.saleValueBasis], [0, 'user', 1000, 'assumed']);
+    assert.deepEqual([hub.lostShare, hub.lostShareBasis, hub.saleValue, hub.saleValueBasis], [0.5, 'assumed', 2400, 'user']);
+    const old = { role: 'store', fields: { demand: { value: 4, basis: 'user' } } };
+    completeFields(old);
+    assert.deepEqual(old.fields.lostSales, { value: 80, basis: 'assumed' }, 'a store from an older session loses the default');
 });

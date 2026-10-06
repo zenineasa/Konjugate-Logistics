@@ -50,6 +50,9 @@ const state = {
     // The chokepoint disruption: the user's own shares (port name -> { chokepoint id -> share }), the transits
     // fetched per chokepoint, and the last run's summary.
     dependence: new Map(), transits: new Map(), scenario: null,
+    // The runs made on this network, in business terms, to set one beside another (the latest last), and the number of
+    // the run the latest is compared with (null: none; undefined: the one before it).
+    runs: [], compareWith: undefined,
     // The scenario tab chosen.
     scenarioTab: 'chokepointDisruption',
     // Ports with standby lanes in the model, for cargo diverted to them.
@@ -534,6 +537,8 @@ function resetNetwork() {
     renderHistoryButtons();
     state.built = null;
     state.scenario = null;
+    state.runs = [];
+    state.compareWith = undefined;
     map.setFlows(null);
     $('#buildResult').innerHTML = '';
     $('#buildStatus').innerHTML = '';
@@ -639,10 +644,24 @@ function placePopover() {
     // Placed within the map area (an SVG has no offsetTop: measured from both rectangles instead).
     const area = $('.mapArea').getBoundingClientRect();
     const rect = $('#map').getBoundingClientRect();
-    const left = Math.max(4, Math.min(rect.width - popover.offsetWidth - 4, screen.x + 16));
-    const top = Math.max(4, screen.y - popover.offsetHeight - 14);
-    popover.style.left = `${rect.left - area.left + left}px`;
-    popover.style.top = `${rect.top - area.top + top}px`;
+    const [width, height] = [popover.offsetWidth, popover.offsetHeight];
+    const clamp = ({ x, y }) => ({ x: Math.max(4, Math.min(rect.width - width - 4, x)), y: Math.max(4, Math.min(rect.height - height - 4, y)) });
+    // Where it may go, in order of preference: above and to the right of the site, as before, then the other corners
+    // and the sides. It takes the first that covers no other site (and never the site itself or its link handle, up
+    // and to its right), else the one that covers fewest.
+    const candidates = [
+        { x: screen.x + 16, y: screen.y - height - 14 }, { x: screen.x - width - 16, y: screen.y - height - 14 },
+        { x: screen.x + 16, y: screen.y + 14 }, { x: screen.x - width - 16, y: screen.y + 14 },
+        { x: screen.x + 22, y: screen.y - height / 2 }, { x: screen.x - width - 22, y: screen.y - height / 2 }
+    ].map(clamp);
+    const others = state.pins.filter((other) => other !== at).map((other) => map.toScreen(other.lat, other.lon))
+        .filter((point) => point && point.x > -20 && point.y > -20 && point.x < rect.width + 20 && point.y < rect.height + 20);
+    const covers = (box, point, margin) => point.x > box.x - margin && point.x < box.x + width + margin && point.y > box.y - margin && point.y < box.y + height + margin;
+    const own = [screen, { x: screen.x + 13, y: screen.y - 13 }];
+    const cost = (box) => (own.some((point) => covers(box, point, 6)) ? 1000 : 0) + others.filter((point) => covers(box, point, 8)).length;
+    const best = candidates.reduce((chosen, box) => (cost(box) < cost(chosen) ? box : chosen));
+    popover.style.left = `${rect.left - area.left + best.x}px`;
+    popover.style.top = `${rect.top - area.top + best.y}px`;
 }
 
 $('#popoverName').addEventListener('change', () => {
@@ -1471,7 +1490,7 @@ function renderCard() {
             ${roles[pin.role].fields.map((field) => {
                 const value = pin.fields[field.key] ?? {};
                 const placeholder = field.key === 'teuPerDay' ? (found?.activity ? 'from PortWatch' : `${number(state.portVolume ?? 100)} assumed`) : field.key === 'capacity' ? 'no limit' : '';
-                return `<div class="field"><label for="field-${field.key}">${escape(field.label)}</label><span><input type="number" min="0" step="any" id="field-${field.key}" data-field="${field.key}" value="${value.value ?? ''}" placeholder="${escape(placeholder)}"> <span class="muted">${escape(field.unit)}</span></span><span class="basis ${value.basis ?? ''}">${escape(basisLabel[value.basis] ?? '')}</span></div><div class="detail">${escape(field.detail)}</div>`;
+                return `<div class="field"><label for="field-${field.key}">${escape(field.label)}</label><span><input type="number" min="0"${field.max ? ` max="${field.max}"` : ''} step="any" id="field-${field.key}" data-field="${field.key}" value="${value.value ?? ''}" placeholder="${escape(placeholder)}"> <span class="muted">${escape(field.unit)}</span></span><span class="basis ${value.basis ?? ''}">${escape(basisLabel[value.basis] ?? '')}</span></div><div class="detail">${escape(field.detail)}</div>`;
             }).join('')}
             <div class="detail road">${escape(roadText(pin))}</div>
             ${found ? `<div class="detail">Adopted from OpenStreetMap${found.activity ? `; IMF PortWatch: about ${number(found.activity.importTonnesPerDay)} t of container imports a day, ${found.activity.from} to ${found.activity.to}` : ''}${found.population ? `; population ${number(found.population)}` : ''}${found.floorAreaSquareMetres ? `; ${number(found.floorAreaSquareMetres)} m² of floor area` : ''}.</div>` : ''}
@@ -1881,6 +1900,8 @@ async function build({ focus = false } = {}) {
         }));
         if (!answer.imported) throw new Error((answer.report?.errors ?? ['The model could not be built.']).join(' '));
         state.built = answer.data;
+        // When it was built: two runs on different builds ran on different networks, and their comparison says so.
+        state.built.builtAt = Date.now();
         // The host now holds this model, so a scenario can run on it.
         state.imported = true;
         state.builtEdits = editsAtStart;
@@ -2071,7 +2092,8 @@ function sessionState() {
         arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(),
         operator: $('#operatorSelect').value || null, operatorFile: Boolean(state.operatorFile), standby: [...state.standby],
         disruption: { ...disruptionSettings(), dependence: [...state.dependence], transits: [...state.transits].filter(([, value]) => value && !value.error) },
-        scenarioTab: state.scenarioTab, scenarioSettings: scenarioSettings(), scenario: state.scenario
+        scenarioTab: state.scenarioTab, scenarioSettings: scenarioSettings(), scenario: state.scenario,
+        runs: state.runs, compareWith: state.compareWith ?? null
     };
 }
 
@@ -2174,6 +2196,8 @@ async function restoreSession() {
             renderBuilt();
             $('#showButton').disabled = false;
             state.scenario = saved.scenario ?? null;
+            state.runs = Array.isArray(saved.runs) ? saved.runs : [];
+            state.compareWith = saved.compareWith ?? undefined;
             renderScenario();
             $('#buildStatus').innerHTML = notice('ok', `The model in the canvas is the one this session built: ${saved.built.nodes} nodes and ${saved.built.edges} relationships.`);
         }
@@ -2627,6 +2651,7 @@ $('#runScenarioButton').addEventListener('click', async () => {
         // The host holds a value outside a parameter's range to it: say so, since the run is then not what was asked for.
         const clamped = (answer.interventions ?? []).filter((change) => change.clamped);
         state.scenario.clamped = clamped.map((change) => `${change.name}: ${change.clamped.count} of ${change.clamped.of} values held to ${number(change.clamped.minimum, 2)} to ${number(change.clamped.maximum, 2)}`);
+        keepRun(state.scenario);
         // Keep the session (with this result) with the project before showing it, so closing the window as soon as
         // the result appears loses nothing.
         await call(api.openInCanvas(scenarioId, { focus: false, silent: true, session: sessionState() }));
@@ -2656,10 +2681,11 @@ api?.onProgress?.((progress) => {
 
 // ---- the scenarios: what a run showed --------------------------------------------------------------------------------
 
-const summarySignals = ['arrived', 'queue', 'waitDays', 'stock', 'spaceUsed', 'backlog', 'delivered', 'ordered', 'arriving', 'utilisation', 'transportCost', 'fleetCost', 'holdingCost', 'backlogCost'];
+const summarySignals = ['arrived', 'queue', 'waitDays', 'stock', 'spaceUsed', 'backlog', 'delivered', 'ordered', 'lost', 'arriving', 'utilisation', 'transportCost', 'fleetCost', 'holdingCost', 'backlogCost'];
 
 // What the run showed, from the day the scenario starts to the end of the run, kept small enough to save with the
-// session: the share of orders delivered, how long an order waited and the costs, per port the longest anchorage wait,
+// session: the share of demand met, the sales lost (in goods and in money) and the costs, how long an order waited, per
+// store how long it ran out and what it lost, per port the longest anchorage wait,
 // per lane what it carried and how busy its trucks were, per warehouse the lowest stock and per town the highest
 // backlog, each against the baseline; and for the map, what every lane carried while the scenario lasted.
 function summariseRun(answer, id, run, start, duration) {
@@ -2719,7 +2745,13 @@ function summariseRun(answer, id, run, start, duration) {
             transport: both((series) => total(series, laneNames, 'transportCost')),
             fleet: both((series) => total(series, laneNames, 'fleetCost')),
             holding: both((series) => total(series, [...warehouseNames, ...stores.map((item) => item.stock)], 'holdingCost')),
-            backlog: both((series) => total(series, townNames, 'backlogCost'))
+            backlog: both((series) => total(series, townNames, 'backlogCost')),
+            // Sales the stores could not make and that were lost, not waited for: in goods, and priced at each store's
+            // value of a pallet sold.
+            ...(stores.length ? {
+                lost: both((series) => total(series, stores.map((item) => item.name), 'lost')),
+                lostValue: both((series) => stores.reduce((sum, item) => sum + grew(series[item.name]?.lost) * (item.saleValue ?? 0), 0))
+            } : {})
         },
         ports: built.ports.map((port) => ({
             name: port.name, lost: grew(baseline[port.name]?.arrived) - grew(scenario[port.name]?.arrived),
@@ -2744,8 +2776,10 @@ function summariseRun(answer, id, run, start, duration) {
             const low = extreme(scenario[item.stock]?.stock, (value, best) => value < best);
             const empty = (series) => from(series).filter((point) => point[1] < 0.1 * item.demand * 0.1).length;
             const step = (series) => { const points = from(series); return points.length > 1 ? (points.at(-1)[0] - points[0][0]) / (points.length - 1) / day : 0; };
+            const lost = both((series) => grew(series[item.name]?.lost));
             return {
                 name: item.name, baseline: extreme(baseline[item.stock]?.stock, (value, best) => value < best)[1], low: low[1], day: low[0] / day,
+                lost, lostValue: { baseline: lost.baseline * (item.saleValue ?? 0), scenario: lost.scenario * (item.saleValue ?? 0) },
                 emptyDays: { baseline: empty(baseline[item.stock]?.stock) * step(baseline[item.stock]?.stock), scenario: empty(scenario[item.stock]?.stock) * step(scenario[item.stock]?.stock) },
                 scenPts: sampleSpark(scenario[item.stock]?.stock, start), basePts: sampleSpark(baseline[item.stock]?.stock, start)
             };
@@ -2758,6 +2792,113 @@ function summariseRun(answer, id, run, start, duration) {
             };
         })
     };
+}
+
+// ---- runs side by side -----------------------------------------------------------------------------------------------
+// Every run is kept in business terms (a few numbers, small enough to save with the session), so the latest can be set
+// beside an earlier one: the same closure with more stock cover, say, or the same network under two scenarios.
+const runsKept = 8;
+// Days a store was out beyond the baseline's, under which it did not run out (an hour).
+const outNoise = 0.04;
+
+function keepRun(result) {
+    const next = (state.runs.at(-1)?.number ?? 0) + 1;
+    const stores = (result.stores ?? []).map((item) => ({ name: item.name, out: Math.max(0, item.emptyDays.scenario - item.emptyDays.baseline), lost: item.lost?.scenario ?? 0, lostValue: item.lostValue?.scenario ?? 0 }));
+    result.run = next;
+    state.runs.push({
+        number: next, at: Date.now(), builtAt: state.built?.builtAt ?? null, describe: result.describe, headline: scenarioHeadline(result),
+        start: result.start, totals: result.totals, stores
+    });
+    state.runs = state.runs.slice(-runsKept);
+    // A new run is set beside the one before it, unless the user chose to compare with none.
+    if (state.compareWith !== null) state.compareWith = undefined;
+}
+
+// The run the latest is set beside: the one the user chose, else the one before it; null for none.
+function comparedRun(result) {
+    if (state.compareWith === null || !result?.run) return null;
+    const others = state.runs.filter((run) => run.number !== result.run);
+    return (state.compareWith === undefined ? others.at(-1) : others.find((run) => run.number === state.compareWith)) ?? null;
+}
+
+// The two runs' business figures side by side, with the difference: better in green, worse in red.
+function renderComparison(result) {
+    const others = state.runs.filter((run) => run.number !== result.run);
+    if (!result.run || !others.length) return '';
+    const other = comparedRun(result);
+    const time = (at) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const options = `<option value="">nothing</option>${[...others].reverse().map((run) => `<option value="${run.number}"${other?.number === run.number ? ' selected' : ''}>Run ${run.number}, ${time(run.at)}: ${escape(run.describe.length > 70 ? `${run.describe.slice(0, 68)}…` : run.describe)}</option>`).join('')}`;
+    const choose = `<div class="field compareChoice"><label for="compareSelect">Set beside run ${result.run}</label><select id="compareSelect">${options}</select></div>`;
+    if (!other) return `<div class="comparison">${choose}</div>`;
+    const latest = state.runs.find((run) => run.number === result.run);
+    if (!latest) return `<div class="comparison">${choose}</div>`;
+    const percent = (value) => `${number(value * 100, 1)}%`;
+    const outOf = (run) => run.stores.filter((item) => item.out > outNoise);
+    const longest = (run) => Math.max(0, ...run.stores.map((item) => item.out));
+    const hasStores = latest.stores.length && other.stores.length;
+    // [label, value of a run, format, higher is better, noise]
+    const rows = [
+        ['Share of demand met', (run) => run.totals.fill.scenario, percent, true, 0.001, (value) => `${value > 0 ? '+' : ''}${number(value * 100, 1)} points`],
+        ...(hasStores ? [
+            ['Stores that ran out', (run) => outOf(run).length, (value) => number(value), false, 0.5],
+            ['Longest a store was out (days)', longest, (value) => number(value, 1), false, 0.05],
+            [`Sales lost (${goods()})`, (run) => run.totals.lost?.scenario ?? 0, (value) => number(value, 1), false, 0.05],
+            ['Value of sales lost', (run) => run.totals.lostValue?.scenario ?? 0, (value) => number(value), false, 0.5]
+        ] : []),
+        ...(latest.totals.wait && other.totals.wait ? [['Days an order waited', (run) => run.totals.wait.scenario, (value) => number(value, 2), false, 0.01]] : []),
+        ['Running cost', (run) => runningCost(run.totals).scenario, (value) => number(value), false, 0.5]
+    ];
+    const body = rows.map(([label, value, format, higherIsBetter, noise, formatDifference]) => {
+        const [now, then] = [value(latest), value(other)];
+        const difference = now - then;
+        const significant = Math.abs(difference) > Math.max(noise, 0.005 * Math.abs(then));
+        const better = significant && (difference > 0) === higherIsBetter;
+        const shown = significant ? (formatDifference ?? ((change) => `${change > 0 ? '+' : '−'}${format(Math.abs(change))}`))(difference) : 'same';
+        return `<tr><td>${label}</td><td class="number">${format(now)}</td><td class="number">${format(then)}</td><td class="number${significant ? (better ? ' better' : ' worse') : ' muted'}">${shown}</td></tr>`;
+    }).join('');
+    const network = latest.builtAt && other.builtAt && latest.builtAt !== other.builtAt
+        ? 'on the network as it is now and as it was built then' : 'on the same build of the network';
+    const sameStart = latest.start === other.start ? '' : ` Run ${other.number} counts from day ${number(other.start)}, this one from day ${number(latest.start)}.`;
+    return `<div class="comparison">${choose}
+        <p class="small muted">Run ${other.number}, ${network}: ${escape(other.describe)}${sameStart}</p>
+        <table class="business"><thead><tr><th></th><th class="number">Run ${latest.number}</th><th class="number">Run ${other.number}</th><th class="number">difference</th></tr></thead><tbody>${body}</tbody></table>
+    </div>`;
+}
+
+// Transport, fleet and holding costs together: what running the network cost, scenario and baseline.
+function runningCost(totals) {
+    const sum = (side) => ['transport', 'fleet', 'holding'].reduce((total, key) => total + (totals[key]?.[side] ?? 0), 0);
+    return { scenario: sum('scenario'), baseline: sum('baseline') };
+}
+
+// One sentence on what the scenario did to the business: which stores ran out and for how long, the sales lost and
+// what they were worth, and what running the network cost against the baseline. A network of towns (no stores) says
+// how much of its demand was met and how long orders waited instead.
+function scenarioHeadline(result) {
+    const totals = result.totals;
+    const parts = [];
+    const stores = result.stores ?? [];
+    if (stores.length) {
+        const out = stores.map((item) => ({ name: item.name, days: item.emptyDays.scenario - item.emptyDays.baseline })).filter((item) => item.days > outNoise).sort((a, b) => b.days - a.days);
+        if (!out.length) parts.push('No store ran out');
+        else if (out.length === 1) parts.push(`${out[0].name} ran out for ${number(out[0].days, 1)} days`);
+        else parts.push(`${out.length} stores ran out, ${out[0].name} longest at ${number(out[0].days, 1)} days`);
+        const lost = totals.lost ? totals.lost.scenario - totals.lost.baseline : 0;
+        const value = totals.lostValue ? totals.lostValue.scenario - totals.lostValue.baseline : 0;
+        const amount = `${number(lost, lost < 10 ? 1 : 0)} ${goods()} of sales`;
+        const worth = value > 0.5 ? `, worth ${number(value)}` : '';
+        if (lost > 0.05) parts.push(out.length ? `losing ${amount}${worth}` : `but ${amount} were lost${worth}`);
+        else if (totals.lost) parts.push(out.length ? 'but shoppers waited and no sales were lost' : 'and no sales were lost');
+    } else {
+        const fell = totals.fill.baseline - totals.fill.scenario;
+        parts.push(fell > 0.0005 ? `${number(totals.fill.scenario * 100, 1)}% of demand was met, against ${number(totals.fill.baseline * 100, 1)}% in the baseline` : 'Demand was met as in the baseline');
+        if (totals.wait && totals.wait.scenario - totals.wait.baseline > 0.01) parts.push(`orders waited ${number(totals.wait.scenario, 2)} days on average (${number(totals.wait.baseline, 2)})`);
+    }
+    const cost = runningCost(totals);
+    const change = cost.scenario - cost.baseline;
+    const share = Math.abs(change) / Math.max(1e-9, cost.baseline);
+    const costs = share < 0.005 ? 'running costs as in the baseline' : `running costs ${change > 0 ? 'up' : 'down'} ${number(Math.abs(change))} (${number(share * 100, share < 0.1 ? 1 : 0)}%) against the baseline`;
+    return `${parts.map((part, index) => (index && !part.startsWith('and ') ? `, ${part}` : index ? ` ${part}` : part)).join('')}; ${costs}.`;
 }
 
 function renderScenarioResult() {
@@ -2791,12 +2932,23 @@ function renderScenarioResult() {
         const scen = `<polyline points="${toPts(scenPts)}" fill="none" stroke="${stroke}" stroke-width="1.5"/>`;
         return `<svg class="sparkline" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" aria-hidden="true" title="Trajectory over time">${base}${scen}</svg>`;
     };
+    const totalsRow = (label, pair, format, options = {}, title = '') => `<tr><td${title ? ` title="${escape(title)}"` : ''}>${label}</td><td${worse(pair.scenario, pair.baseline, options)}>${format(pair.scenario)}</td><td class="number">${format(pair.baseline)}</td></tr>`;
+    const running = result.totals ? runningCost(result.totals) : null;
+    // In business terms first: demand met, sales lost and what running the network cost; the rest under Details.
     const totals = result.totals ? `
+        <table class="business"><thead><tr><th>Since day ${number(result.start)}</th><th class="number">Scenario</th><th class="number">baseline</th></tr></thead>
+            <tbody>
+                ${totalsRow('Share of demand met', result.totals.fill, percent, { lowerIsWorse: true, noise: 0.001 }, 'Of what was ordered since the scenario started, the share sold or delivered by the end of the run')}
+                ${result.totals.lost ? totalsRow(`Sales lost (${goods()})`, result.totals.lost, (value) => number(value, 1), { noise: 0.05 }, 'Sales the stores could not make for want of stock, whose shoppers went elsewhere rather than wait') : ''}
+                ${result.totals.lostValue ? totalsRow('Value of sales lost', result.totals.lostValue, (value) => number(value), {}, 'The sales lost, at each store\'s value of a pallet sold') : ''}
+                ${[['transport', 'Transport cost'], ['fleet', 'Fleet cost'], ['holding', 'Holding cost']].map(([key, label]) => totalsRow(label, result.totals[key], (value) => number(value))).join('')}
+                ${totalsRow('Running cost', running, (value) => number(value), {}, 'Transport, fleet and holding costs together')}
+            </tbody></table>` : '';
+    const detailTotals = result.totals ? `
         <table><thead><tr><th>Since day ${number(result.start)}</th><th class="number">Scenario</th><th class="number">baseline</th></tr></thead>
             <tbody>
-                <tr><td>Orders delivered</td><td${worse(result.totals.fill.scenario, result.totals.fill.baseline, { lowerIsWorse: true, noise: 0.001 })}>${percent(result.totals.fill.scenario)}</td><td class="number">${percent(result.totals.fill.baseline)}</td></tr>
-                ${result.totals.wait ? `<tr><td title="The time an order spent waiting in a town's backlog, averaged over every order since the scenario started">Days an order waited</td><td${worse(result.totals.wait.scenario, result.totals.wait.baseline, { noise: 0.01 })}>${number(result.totals.wait.scenario, 2)}</td><td class="number">${number(result.totals.wait.baseline, 2)}</td></tr>` : ''}
-                ${[['transport', 'Transport cost'], ['fleet', 'Fleet cost'], ['holding', 'Holding cost'], ['backlog', 'Backlog cost']].map(([key, label]) => `<tr><td>${label}</td><td${worse(result.totals[key].scenario, result.totals[key].baseline)}>${number(result.totals[key].scenario)}</td><td class="number">${number(result.totals[key].baseline)}</td></tr>`).join('')}
+                ${result.totals.wait ? totalsRow('Days an order waited', result.totals.wait, (value) => number(value, 2), { noise: 0.01 }, `The time an order spent waiting in a ${state.built?.stores ? 'store\'s or customer area\'s' : 'town\'s'} backlog, averaged over every order since the scenario started`) : ''}
+                ${totalsRow('Backlog cost', result.totals.backlog, (value) => number(value), {}, 'A charge for every order-day spent waiting: a measure of service, not money spent')}
             </tbody></table>` : '';
     const ports = id.startsWith('chokepoint') ? `
         <table><thead><tr><th>Port</th><th class="number">Kept out (${goods()})</th><th class="number">arrived later</th><th class="number">never arrived</th>${result.diversion ? '<th class="number">diverted here</th>' : ''}</tr></thead>
@@ -2819,17 +2971,35 @@ function renderScenarioResult() {
     // (A warehouse with no limit has a capacity too large to count: its space used stays near nothing.)
     const spaceShown = result.warehouses.some((item) => item.space?.scenario > 0.001);
     const storeRows = [...(result.stores ?? [])].sort((a, b) => (b.emptyDays.scenario - a.emptyDays.scenario) || (a.low / Math.max(a.baseline, 1e-9) - b.low / Math.max(b.baseline, 1e-9))).slice(0, 8);
+    // Per store, how long it ran out and what it lost, the worst first (a session from before lost sales has none).
+    const lostOf = (item) => item.lostValue?.scenario ?? 0;
+    // Only the stores the scenario touched: the headline says when none ran out.
+    const businessStores = [...(result.stores ?? [])].filter((item) => item.emptyDays.scenario - item.emptyDays.baseline > outNoise || (item.lost?.scenario ?? 0) - (item.lost?.baseline ?? 0) > 0.05).sort((a, b) => (lostOf(b) - lostOf(a)) || (b.emptyDays.scenario - a.emptyDays.scenario)).slice(0, 8);
+    const storesTable = businessStores.length ? `
+        <table class="business"><thead><tr><th>Store</th><th class="number" title="Days its shelves were all but empty since the scenario began">days out</th><th class="number">baseline</th><th class="number">sales lost (${goods()})</th><th class="number">value lost</th></tr></thead>
+            <tbody>${businessStores.map((item) => `<tr><td>${escape(item.name)}</td><td${worse(item.emptyDays.scenario, item.emptyDays.baseline, { noise: 0.04 })}>${number(item.emptyDays.scenario, 1)}</td><td class="number">${number(item.emptyDays.baseline, 1)}</td><td${worse(item.lost?.scenario ?? 0, item.lost?.baseline ?? 0, { noise: 0.05 })}>${number(item.lost?.scenario ?? 0, 1)}</td><td${worse(lostOf(item), item.lostValue?.baseline ?? 0)}>${number(lostOf(item))}</td></tr>`).join('')}</tbody></table>` : '';
+    const detailsWereOpen = $('#scenarioResult details.resultDetails')?.open ?? false;
     $('#scenarioResult').innerHTML = `
         <p class="small">${escape(describe)}</p>
+        ${result.totals ? `<p class="headline">${escape(scenarioHeadline(result))}</p>` : ''}
         ${result.clamped?.length ? notice('warning', `Some of the values this scenario supplied lie outside what the model allows, and were held to its limits, so the run differs from what was asked: ${result.clamped.join('; ')}.`) : ''}
-        ${totals}${ports}${waits}${lanes}
+        ${totals}${storesTable}${renderComparison(result)}
+        <details class="resultDetails"${detailsWereOpen ? ' open' : ''}><summary>Details: waits, ports, lanes and stock</summary>
+        ${detailTotals}${ports}${waits}${lanes}
         <table><thead><tr><th>Warehouse</th><th class="number">Lowest stock</th><th class="number">baseline</th><th class="number">day</th>${spaceShown ? '<th class="number" title="Its stock at its fullest, as a share of its storage capacity: above 100%, goods ordered before demand fell arrived with no room for them">fullest</th>' : ''}</tr></thead>
             <tbody>${result.warehouses.map((item) => `<tr><td><div class="nameWithSpark"><span>${escape(item.name)}</span>${drawSpark(item.scenPts, item.basePts, { stroke: 'var(--warn)' })}</div></td><td${worse(item.low, item.baseline, { lowerIsWorse: true })}>${number(item.low)}</td><td class="number">${number(item.baseline)}</td><td class="number">${number(item.day, 1)}</td>${spaceShown ? (item.space?.scenario > 0.001 ? `<td${item.space.scenario > 1.005 ? ' class="number worse"' : ' class="number"'}>${percent(item.space.scenario)}</td>` : '<td class="number muted">no limit</td>') : ''}</tr>`).join('')}</tbody></table>
-        ${storeRows.length ? `<table><thead><tr><th>Store</th><th class="number">Lowest stock</th><th class="number">baseline</th><th class="number" title="Days its shelves were all but empty since the scenario began">days empty</th></tr></thead>
+        ${storeRows.length ? `<table><thead><tr><th>Store stock</th><th class="number">Lowest stock</th><th class="number">baseline</th><th class="number" title="Days its shelves were all but empty since the scenario began">days empty</th></tr></thead>
             <tbody>${storeRows.map((item) => `<tr><td><div class="nameWithSpark"><span>${escape(item.name)}</span>${drawSpark(item.scenPts, item.basePts, { stroke: 'var(--warn)' })}</div></td><td${worse(item.low, item.baseline, { lowerIsWorse: true, noise: 0.05 })}>${number(item.low, 1)}</td><td class="number">${number(item.baseline, 1)}</td><td${worse(item.emptyDays.scenario, item.emptyDays.baseline, { noise: 0.04 })}>${number(item.emptyDays.scenario, 1)}</td></tr>`).join('')}</tbody></table>` : ''}
         <table><thead><tr><th>${state.built?.stores ? 'Shoppers waiting' : 'Town'}</th><th class="number">Highest backlog</th><th class="number">baseline</th><th class="number">day</th></tr></thead>
             <tbody>${towns.map((item) => `<tr><td><div class="nameWithSpark"><span>${escape(item.name)}</span>${drawSpark(item.scenPts, item.basePts, { stroke: 'var(--danger)' })}</div></td><td${worse(item.peak, item.baseline)}>${number(item.peak)}</td><td class="number">${number(item.baseline)}</td><td class="number">${number(item.day, 1)}</td></tr>`).join('')}</tbody></table>
-        <p class="muted small">Costs are in the model's cost units, counted from the day the scenario starts. The forked run is in the canvas beside the baseline; Show in Konjugate brings it forward.</p>`;
+        </details>
+        <p class="muted small">Costs and values are in the model's cost units, counted from the day the scenario starts. The forked run is in the canvas beside the baseline; Show in Konjugate brings it forward.</p>`;
+    $('#compareSelect')?.addEventListener('change', () => {
+        state.compareWith = $('#compareSelect').value ? Number($('#compareSelect').value) : null;
+        renderScenarioResult();
+        $('#compareSelect')?.focus();
+        keepSessionSoon();
+    });
 }
 
 // ---- the period of history -----------------------------------------------------------------------------------------

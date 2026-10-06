@@ -143,7 +143,7 @@ test('a curated region becomes a model in which every port ships what arrives an
     }
     const zones = new Set(served.map((item) => item.zone)).size;
     assert.equal(document.nodes.length, selection.ports.length + zones + lanes.length + selection.towns.length);
-    assert.equal(document.edges.length, 10 * lanes.length + 3 * served.length, 'ten edges a lane, three a delivery');
+    assert.equal(document.edges.length, 10 * lanes.length + 5 * served.length, 'ten edges a lane, five a delivery');
     assert.equal(document.runConfigurations[0].globalTimeStep, 900, '15-minute steps');
     assert.equal(document.runConfigurations[0].outputInterval, 3600, 'hourly outputs');
     for (const lane of lanes) {

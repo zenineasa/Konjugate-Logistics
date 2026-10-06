@@ -7,7 +7,7 @@ How the toolbox window should feel to three kinds of user, and what that means f
 ## Three users
 
 - **A newcomer** reads the screen. Every action has a visible, labelled button, a field or a menu item; nothing depends on knowing a gesture or a key. The window says what to do next (the Network step's checklist), why a button is unavailable (its tooltip) and why something was refused (a message on the map and in the step). Nothing they do is lost: every change can be undone.
-- **A regular user** works on the map. Click to select, drag to move or link, right-click for the menu of what is under the pointer, click twice to rename. The card in the panel and the bar beside the selection follow what they do.
+- **A regular user** works on the map. Click to select, drag to move or link, right-click for the menu of what is under the pointer, click twice to rename. The card in the panel and the bar beside the selection follow what they do; the bar sits where it covers no other site when it can (above and to the right, else another corner or side).
 - **A power user** keeps their hands on the keyboard and works on many things at once: shortcuts for every frequent action, several sites selected at a time (Shift-click, a box, select all) and acted on together, and undo and redo for everything.
 
 ## Rules
@@ -49,7 +49,7 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 | Select | Click it, or its row in the list | Click it on the map | Shift-click or command-click to add; Shift-drag a box (with the command key: add); select all |
 | Rename | The name on its card, or in the bar beside it | Click it twice | `Enter` or `F2` |
 | Change its role | The role on its card | Its menu, "Make it a …" | |
-| Change a figure (storage capacity, stock cover and the rest) | Its card | | |
+| Change a figure (storage capacity, stock cover, sales lost when out and the rest) | Its card | | |
 | Move | | Drag it (dragging one of several selected moves them all) | Arrow keys (Shift: further) |
 | Duplicate | Its card, or the selection's card | Its menu | Command+D |
 | Delete | Delete on its card, or in the bar beside it | Its menu | The delete key |
@@ -70,6 +70,8 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 | See the shortcuts | ? above the map | | `?` |
 | Load an area again fresh | Load fresh beside Load roads, or beside the date the roads were fetched | | |
 | Clear the maps kept on this computer | Clear at the foot of the Map step | | |
+| Set a run beside another | Set beside, under the scenario's result (the run before it unless chosen; nothing to hide it) | | Tab to it, then the arrow keys |
+| Read a run's details | Details, under its result | | |
 
 ## Not yet
 

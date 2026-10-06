@@ -105,6 +105,13 @@ export function checkInvariants({ name, document, series }, { fleetsChange = fal
             assert.ok(maxDrift(trucks) < tolerance(parts), `${name}: ${lane} must keep its trucks${size ? ' of the second size' : ''} (drift ${maxDrift(trucks)}).`);
         }
     }
+    // Every order is delivered, lost or still waiting.
+    for (const town of towns) {
+        const parts = ['backlog', 'ordered', 'delivered', 'lost'].map((symbol) => series(`${town}.${symbol}`));
+        const [backlog, ordered, delivered, lost] = parts;
+        const gap = backlog.map((value, index) => value - backlog[0] - (ordered[index] - delivered[index] - lost[index]));
+        assert.ok(Math.max(...gap.map(Math.abs)) < tolerance(parts), `${name}: ${town}'s orders must be delivered, lost or waiting (drift ${Math.max(...gap.map(Math.abs))}).`);
+    }
     const nodeName = new Map(document.nodes.map((node) => [node.id, node.name]));
     for (const warehouse of warehouses) {
         const itsLanes = [...new Set(document.edges
@@ -119,7 +126,7 @@ export function checkInvariants({ name, document, series }, { fleetsChange = fal
 
 // Every state that is not a running total holds still.
 export function checkSteady({ name, document, series }) {
-    const cumulative = /^(arrived|handled|delivered|ordered|transportCost|fleetCost|holdingCost|backlogCost)$/;
+    const cumulative = /^(arrived|handled|delivered|ordered|lost|transportCost|fleetCost|holdingCost|backlogCost)$/;
     for (const node of document.nodes) {
         for (const state of node.states) {
             if (cumulative.test(state.symbol)) continue;

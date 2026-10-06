@@ -280,7 +280,7 @@ if (flag('run')) {
         if (code !== 0) throw new Error(`The engine exited with ${code}.`);
         const result = decodeResultFile(await readFile(join(directory, 'result.kjr')));
         const first = new Map(result.samples[0].states.map((state) => [state.stateId, state.value]));
-        const cumulative = new Set(document.nodes.flatMap((node) => node.states.filter((state) => /^(arrived|handled|delivered|ordered|transportCost|fleetCost|holdingCost|backlogCost)$/.test(state.symbol)).map((state) => state.id)));
+        const cumulative = new Set(document.nodes.flatMap((node) => node.states.filter((state) => /^(arrived|handled|delivered|ordered|lost|transportCost|fleetCost|holdingCost|backlogCost)$/.test(state.symbol)).map((state) => state.id)));
         let worst = 0;
         for (const state of result.samples.at(-1).states) {
             if (cumulative.has(state.stateId)) continue;

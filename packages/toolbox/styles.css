@@ -196,6 +196,13 @@ td.better { color: var(--ok); font-weight: 600; }
 
 .nameWithSpark { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .sparkline { vertical-align: middle; flex-shrink: 0; }
+/* A scenario's result: one sentence on what it did to the business, then its tables. */
+#scenarioResult .headline { font-size: 14px; font-weight: 600; line-height: 1.4; margin: 6px 0 8px; }
+/* The latest run beside an earlier one. */
+.comparison { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 8px; }
+.comparison .compareChoice { display: flex; align-items: center; gap: 8px; }
+.comparison .compareChoice select { flex: 1; min-width: 0; }
+.comparison td.muted { color: var(--muted); }
 
 .palette { display: inline-flex; flex-wrap: wrap; gap: 4px; }
 .palette .tool .swatch { margin-right: 4px; }

@@ -320,7 +320,7 @@ try {
             await toolbox.click('#runScenarioButton');
             await toolbox.waitForFunction((pattern) => new RegExp(pattern).test(document.querySelector('#scenarioResult').textContent), expected.source, { timeout: 120000 }).catch(fail);
             const result = await toolbox.textContent('#scenarioResult');
-            assert.match(result, /Orders delivered/);
+            assert.match(result, /Share of demand met/);
             return result;
         };
         // The busiest lane closed for 3 days from day 2, its trucks waiting: the cargo waits at the port, and its

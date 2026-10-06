@@ -176,8 +176,8 @@ try {
         // A road shipment has three endpoints; the app matches them by state symbols.
         await applyBundle('roadShipment', [port, laneA, warehouseA], 10);
         await applyBundle('roadShipment', [port, laneB, warehouseB], 10);
-        await applyBundle('delivery', [warehouseA, zone1], 3);
-        await applyBundle('delivery', [warehouseB, zone2], 3);
+        await applyBundle('delivery', [warehouseA, zone1], 5);
+        await applyBundle('delivery', [warehouseB, zone2], 5);
 
         // Edit shared parameters in the parameters table, as a user would.
         await window.click('#parametersButton');
@@ -222,7 +222,7 @@ try {
     // --- The app built what the templates say. --------------------------------------------------
     const scriptBuilt = await scriptBuiltNetwork();
     assert.equal(appBuilt.nodes.length, 7);
-    assert.equal(appBuilt.edges.length, 2 * 10 + 2 * 3);
+    assert.equal(appBuilt.edges.length, 2 * 10 + 2 * 5);
     const sharedSummary = (document) => Object.fromEntries(document.sharedParameters.map((shared) => [shared.symbol, shared.value]));
     assert.deepEqual(sharedSummary(appBuilt), sharedSummary(scriptBuilt), 'The app and the script should create the same shared parameters with the same values.');
     appBuilt.nodes.forEach((node, index) => {

@@ -87,6 +87,10 @@ try {
     assert.equal(capacity.length, 1, 'one mini-van capacity for the model');
     assert.equal(capacity[0].unit, 'pallets/vehicle');
     assert.ok(document.nodes.find((node) => node.name === tight.name).states.find((item) => item.symbol === 'stock').unit === 'pallets');
+    // Stores lose four sales in five they cannot make, dark stores one in two: one figure for each, unless a store has its own.
+    const lostShares = Object.fromEntries(document.sharedParameters.filter((shared) => /LostShare$/.test(shared.symbol)).map((shared) => [shared.symbol, shared.value]));
+    assert.deepEqual(lostShares, { storeLostShare: 0.8, darkStoreLostShare: 0.5 });
+    assert.deepEqual(built.stores.map((item) => item.lostShare).sort(), [0.5, ...Array(8).fill(0.8)]);
     assert.ok(built.warnings.some((text) => text.startsWith(`${tight.name} has room for 45 pallets`)), `the warehouse with little room says so: ${built.warnings.join(' / ')}`);
 
     const baseline = await runDocument(directory, 'vehicles-baseline', document, 30);
@@ -106,6 +110,13 @@ try {
     assert.ok(at(closed, `${first.name} stock.stock`, 14) < 0.05 * at(baseline, `${first.name} stock.stock`, 14), `closure: ${first.name} runs out (${at(closed, `${first.name} stock.stock`, 14).toFixed(2)} pallets on day 14).`);
     assert.ok(at(closed, `${first.name}.backlog`, 14) > 5 * at(baseline, `${first.name}.backlog`, 14), `closure: ${first.name}'s shoppers wait.`);
     assert.ok(at(closed, `${neighbour.to}.stock`, 14) > 0.9 * at(baseline, `${neighbour.to}.stock`, 14), `closure: ${neighbour.site} keeps its stock.`);
+    // Of the sales its shelves cannot make, four in five are lost (a store's default) and one waits: so it loses four
+    // times what its queue grows by; the neighbour loses nothing.
+    const lostThen = at(closed, `${first.name}.lost`, 14);
+    const waiting = at(closed, `${first.name}.backlog`, 14) - at(baseline, `${first.name}.backlog`, 14);
+    assert.ok(Math.abs(lostThen / waiting - 4) < 0.25, `closure: ${first.name} loses four sales for each that waits (${lostThen.toFixed(1)} lost, ${waiting.toFixed(1)} waiting).`);
+    assert.ok(at(baseline, `${first.name}.lost`, 30) < 1e-9 && at(closed, `${neighbour.site}.lost`, 30) < 1e-6, 'nothing is lost while the shelves are stocked.');
+    const lostAll = closed.series(`${first.name}.lost`).at(-1);
 
     // The big store's mini-vans cut by three quarters: its deliveries fall behind and its stock runs down.
     const vanLane = built.lanes.find((item) => item.kind === 'store' && item.site === store(2).name && item.vehicles[0].type === 'miniVan');
@@ -129,7 +140,7 @@ try {
     const used = surged.series(`${tight.name}.spaceUsed`);
     assert.ok(stockOf(surged).every((value, index) => Math.abs(used[index] - value / 45) < 1e-6), 'space used is its stock over its capacity.');
 
-    console.log(`✓ network with vehicles: ${document.nodes.length} nodes (${pins.length} pins, ${built.lanes.length} lanes, ${built.stores.length} stores with stock) hold still in pallets; closing ${lane.name.replace(/^Road /, '')} empties ${first.name} while ${neighbour.site} keeps its stock; a quarter of the vans runs ${store(2).name} down to ${at(cut, `${vanLane.to}.stock`, 14).toFixed(0)} pallets; ${tight.name}, with room for 45 pallets, holds at most ${most.toFixed(0)} under a surge (${Math.max(...stockOf(free)).toFixed(0)} with no limit); goods, vehicles and orders conserved.`);
+    console.log(`✓ network with vehicles: ${document.nodes.length} nodes (${pins.length} pins, ${built.lanes.length} lanes, ${built.stores.length} stores with stock) hold still in pallets; closing ${lane.name.replace(/^Road /, '')} empties ${first.name} (${lostAll.toFixed(0)} pallets of sales lost) while ${neighbour.site} keeps its stock; a quarter of the vans runs ${store(2).name} down to ${at(cut, `${vanLane.to}.stock`, 14).toFixed(0)} pallets; ${tight.name}, with room for 45 pallets, holds at most ${most.toFixed(0)} under a surge (${Math.max(...stockOf(free)).toFixed(0)} with no limit); goods, vehicles and orders conserved.`);
 } finally {
     await rm(directory, { recursive: true, force: true });
 }

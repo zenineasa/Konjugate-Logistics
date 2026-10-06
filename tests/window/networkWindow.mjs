@@ -142,7 +142,22 @@ try {
     // Beside the site, not somewhere else on the map.
     const popoverBox = await page.locator('#pinPopover').boundingBox();
     const sitePoint = await screenOf(placements[9][1]);
-    assert.ok(Math.abs(popoverBox.x - sitePoint.x) < 40 && sitePoint.y - (popoverBox.y + popoverBox.height) > 0 && sitePoint.y - (popoverBox.y + popoverBox.height) < 40, `the popover at ${JSON.stringify(popoverBox)} is beside the site at ${JSON.stringify(sitePoint)}`);
+    // Within 40 pixels of the site, not over it.
+    const gap = (box, point) => Math.hypot(Math.max(box.x - point.x, 0, point.x - box.x - box.width), Math.max(box.y - point.y, 0, point.y - box.y - box.height));
+    assert.ok(gap(popoverBox, sitePoint) > 5 && gap(popoverBox, sitePoint) < 40, `the popover at ${JSON.stringify(popoverBox)} is beside the site at ${JSON.stringify(sitePoint)}`);
+    // Nor over another site: beside each pin in turn, it covers none of the others.
+    for (const [index, [, point]] of placements.entries()) {
+        await clickAt(point);
+        await page.waitForSelector('#pinPopover:not([hidden])');
+        const box = await page.locator('#pinPopover').boundingBox();
+        for (const [other, [, otherPoint]] of placements.entries()) {
+            if (other === index) continue;
+            const at = await screenOf(otherPoint);
+            assert.ok(gap(box, at) > 0, `beside pin ${index + 1}, the popover at ${JSON.stringify(box)} covers pin ${other + 1} at ${JSON.stringify(at)}`);
+        }
+    }
+    await clickAt(placements[9][1]);
+    await page.waitForSelector('#pinPopover:not([hidden])');
     assert.equal(await page.inputValue('#popoverName'), 'Customer area 1');
     assert.equal(await page.textContent('#popoverRole'), 'Customer area');
     await page.fill('#popoverName', 'Hill suburbs');
@@ -566,11 +581,36 @@ try {
         const empty = await stateOf(() => window.logisticsToolboxState.scenario.stores.find((item) => item.name === 'Harbour shop').emptyDays);
         assert.ok(empty.scenario > 5 && empty.baseline === 0, `its shelves were empty for most of the closure (${empty.scenario} days)`);
         assert.match(result, /fullest/, 'a warehouse with room for 400 pallets says how full it got');
+        // In business terms first: one sentence, then demand met, sales lost and running costs; the rest under Details.
+        const headline = await page.textContent('#scenarioResult .headline');
+        assert.match(headline, /^Harbour shop ran out for [\d.]+ days, losing [\d,.]+ pallets of sales, worth [\d,]+; running costs (up|down) [\d,]+ \([\d.]+%\) against the baseline\.$|^Harbour shop ran out for [\d.]+ days, losing [\d,.]+ pallets of sales, worth [\d,]+; running costs as in the baseline\.$/, headline);
+        const lost = await stateOf(() => window.logisticsToolboxState.scenario.stores.find((item) => item.name === 'Harbour shop'));
+        assert.ok(lost.lost.scenario > 0 && lost.lost.baseline === 0 && Math.abs(lost.lostValue.scenario - 1000 * lost.lost.scenario) < 1e-6, `four in five of the sales it could not make are lost, at 1,000 a pallet (${JSON.stringify(lost.lost)})`);
+        assert.equal(await page.isVisible('#scenarioResult details.resultDetails table'), false, 'the details start folded');
+        assert.match(await page.textContent('#scenarioResult details.resultDetails'), /Backlog cost/);
         // The closed road's X, solid now, and gone from the map's baseline view.
         assert.equal(await marks('closed'), 1);
         assert.equal(await marks('planned'), 0, 'one X for the road, not two');
         assert.match(await page.textContent('#map .roadMark.closed title'), /^Warehouse 1 → Harbour shop: closed from day 5 for 10 days$/);
         assert.equal(await page.textContent('#legendClosedText'), 'Road closed');
+        // The same closure for half as long, set beside the first run: fewer sales lost, on the same build.
+        await page.fill('#durationInput', '5');
+        await page.click('#runScenarioButton');
+        await page.waitForFunction(() => /for 5 days/.test(document.querySelector('#scenarioResult p')?.textContent ?? ''), null, { timeout: 120000 }).catch(fail);
+        const compared = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('#scenarioResult .comparison tbody tr')].map((row) => [row.cells[0].textContent, [...row.cells].slice(1).map((cell) => [cell.textContent, cell.className])])));
+        const side = await compared();
+        assert.match(await page.textContent('#scenarioResult .comparison'), /Run 1, on the same build of the network: Warehouse 1 → Harbour shop closed from day 5 for 10 days/);
+        assert.equal(await page.inputValue('#compareSelect'), '1', 'set beside the run before it');
+        const [now, then, difference] = side['Value of sales lost'];
+        assert.ok(Number(now[0].replace(/,/g, '')) < Number(then[0].replace(/,/g, '')) && /better/.test(difference[1]) && /^−/.test(difference[0]), `a shorter closure loses less (${JSON.stringify(side['Value of sales lost'])})`);
+        assert.ok(/better/.test(side['Longest a store was out (days)'][2][1]));
+        // Set beside nothing, then the first run again; the choice is kept with the session.
+        await page.selectOption('#compareSelect', '');
+        assert.equal(await page.locator('#scenarioResult .comparison table').count(), 0);
+        await page.selectOption('#compareSelect', '1');
+        assert.equal(await page.locator('#scenarioResult .comparison table').count(), 1);
+        assert.deepEqual(await stateOf(() => window.logisticsToolboxState.runs.map((run) => run.number)), [1, 2]);
+        await page.fill('#durationInput', '10');
         noErrors();
     }
 

@@ -82,6 +82,12 @@ export const regionModelDefaults = {
     // The stock cover a store and a dark store aim for, in days of sales, unless the user set their own.
     storeCoverDays: 2,
     darkStoreCoverDays: 1,
+    // Of the sales a store or a dark store cannot make for want of stock, the share lost (its shoppers go elsewhere, its
+    // orders are cancelled) rather than waiting for a delivery, unless the user set their own; and what a pallet sold
+    // is worth, to price them.
+    storeLostShare: 0.8,
+    darkStoreLostShare: 0.5,
+    saleValue: 1000,
     days: 90, stepMinutes: 15, outputMinutes: 60
 };
 
@@ -798,14 +804,25 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
                     ? { symbol: 'darkStoreCoverDays', name: 'Stock cover target at dark stores', value: storeCover }
                     : { symbol: 'storeCoverDays', name: 'Stock cover target at stores', value: storeCover }
             });
-            // Shoppers buy from the shelves within the sale time, drawing at most the stock there per shelf draw-down time.
+            // Shoppers buy from the shelves within the sale time, drawing at most the stock there per shelf draw-down time;
+            // of what the shelves cannot sell, a share is lost and the rest waits. The share is the store's own when the
+            // user set it, else one for every store (or dark store), so it can be changed for all at once.
+            const ownLost = Number.isFinite(town.lostShare) && town.lostShareBasis !== 'assumed';
+            const lostShare = ownLost ? town.lostShare : town.role === 'darkStore' ? settings.darkStoreLostShare : settings.storeLostShare;
             bundle('delivery', `${town.name} sales`, { warehouse: stockNode, zone: node }, {
                 shared: { share: 1, demandShare: 1 },
                 as: {
                     responseDays: { symbol: 'saleDays', name: 'Sale time at stores', value: settings.saleDays },
-                    drawDownDays: { symbol: 'shelfDrawDownDays', name: 'Shelf draw-down time', value: settings.shelfDrawDownDays }
+                    drawDownDays: { symbol: 'shelfDrawDownDays', name: 'Shelf draw-down time', value: settings.shelfDrawDownDays },
+                    lostShare: ownLost ? { own: true, value: lostShare }
+                        : town.role === 'darkStore' ? { symbol: 'darkStoreLostShare', name: 'Orders lost when out of stock at dark stores', value: lostShare }
+                            : { symbol: 'storeLostShare', name: 'Sales lost when out of stock at stores', value: lostShare }
                 }
             });
+            note(town.name, kindName === 'store' ? 'Sales lost when out of stock' : 'Orders lost when out of stock', lostShare * 100, '%', ownLost ? 'user' : 'assumed',
+                ownLost ? 'Your figure.' : `Assumed: the default for a ${kindName}, until you set it. Of what it cannot sell for want of stock, this share is lost; the rest waits for a delivery.`);
+            const ownValue = Number(town.saleValue) > 0 && town.saleValueBasis !== 'assumed';
+            const saleValue = ownValue ? Number(town.saleValue) : settings.saleValue;
             for (const [laneIndex, lane] of laneSpecs.entries()) {
                 const zone = lane.allocation.zone;
                 placeLane({
@@ -815,7 +832,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
                 });
                 if (laneSpecs.length > 1) note(town.name, `Share ordered from ${zone.name}`, lane.allocation.share * 100, '%', 'assumed', `By the warehouse's size and road access, and ${lane.allocation.leg.hours.toFixed(1)} h by road.`);
             }
-            stores.push({ name: town.name, stock: stockName, role: town.role, demand: townDemand });
+            stores.push({ name: town.name, stock: stockName, role: town.role, demand: townDemand, lostShare, saleValue, saleValueBasis: ownValue ? 'user' : 'assumed' });
             continue;
         }
         for (const allocation of itsAllocations) {
@@ -828,7 +845,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
             }
         }
     }
-    if (stores.length) note('Every store', 'Sale time and shelf draw-down time', settings.saleDays, 'day', 'assumed', `A shopper buys what is on the shelf within ${number(settings.saleDays * 24, 1)} hours, and the shelves can be emptied in as long: a store sells what it has, and its shoppers wait for what it has not.`);
+    if (stores.length) note('Every store', 'Sale time and shelf draw-down time', settings.saleDays, 'day', 'assumed', `A shopper buys what is on the shelf within ${number(settings.saleDays * 24, 1)} hours, and the shelves can be emptied in as long: a store sells what it has; of what it has not, some sales are lost and the rest wait.`);
 
     if (operator && lanes.length) {
         const [first, second] = operator.trucks;

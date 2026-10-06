@@ -6,7 +6,7 @@
     "domains": [
         "logistics"
     ],
-    "description": "Serves a demand zone from a warehouse: ships towards clearing the zone's backlog within the response time, drawing at most this zone's allocation share of the warehouse's stock per draw-down time, and only while the warehouse holds more than the serve-only-above level (0 serves the zone until the warehouse is empty; a higher level protects stock for other zones). Two matched edges move the shipment out of the warehouse into the zone's deliveries and clear the same amount from its backlog, and a third feeds the zone's demand into the warehouse's forecast. When several warehouses serve one zone, each takes its share of the zone's demand: of the backlog it clears and of the demand it forecasts (the shares add up to 1; 1 serves the whole zone). Select the warehouse and the demand zone, then click this bundle.",
+    "description": "Serves a demand zone from a warehouse: ships towards clearing the zone's backlog within the response time, drawing at most this zone's allocation share of the warehouse's stock per draw-down time, and only while the warehouse holds more than the serve-only-above level (0 serves the zone until the warehouse is empty; a higher level protects stock for other zones). Two matched edges move the shipment out of the warehouse into the zone's deliveries and clear the same amount from its backlog, and a third feeds the zone's demand into the warehouse's forecast. When several warehouses serve one zone, each takes its share of the zone's demand: of the backlog it clears and of the demand it forecasts (the shares add up to 1; 1 serves the whole zone). Select the warehouse and the demand zone, then click this bundle. Of the demand the warehouse's stock cannot meet (its share of the stock per draw-down time short of this zone's share of demand), the lost share is dropped from the backlog into the zone's lost sales instead of waiting: 0 (the default) keeps every order waiting; 1 loses every sale the shelves cannot make.",
     "color": "#73b9c2",
     "endpoints": [
         {
@@ -40,6 +40,14 @@
             "name": "Share of the zone's demand",
             "symbol": "demandShare",
             "value": 1,
+            "unit": "",
+            "scope": "instance"
+        },
+        {
+            "key": "lostShare",
+            "name": "Share of unmet demand lost",
+            "symbol": "lostShare",
+            "value": 0,
             "unit": "",
             "scope": "instance"
         },
@@ -162,6 +170,104 @@
                     "name": "Order response time",
                     "symbol": "responseDays",
                     "shared": "responseDays"
+                },
+                {
+                    "name": "Stock draw-down time",
+                    "symbol": "drawDownDays",
+                    "shared": "drawDownDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Sales lost",
+            "from": "warehouse",
+            "to": "zone",
+            "ports": {
+                "source": "stock",
+                "target": [
+                    "lost",
+                    "demandRate"
+                ]
+            },
+            "output": {
+                "role": "target",
+                "state": "lost"
+            },
+            "latex": "\\frac{\\mathrm{lostShare}}{\\mathrm{secondsPerDay}} \\cdot \\begin{cases} \\max(0, \\mathrm{demandShare} \\cdot \\mathrm{targetDemandRate} - \\frac{\\mathrm{share} \\cdot \\mathrm{sourceStock}}{\\mathrm{drawDownDays}}) & \\mathrm{sourceStock} > \\mathrm{safetyStock} \\\\ \\mathrm{demandShare} \\cdot \\mathrm{targetDemandRate} & \\text{otherwise} \\end{cases}",
+            "parameters": [
+                {
+                    "name": "Share of unmet demand lost",
+                    "symbol": "lostShare",
+                    "shared": "lostShare"
+                },
+                {
+                    "name": "Share of the zone's demand",
+                    "symbol": "demandShare",
+                    "shared": "demandShare"
+                },
+                {
+                    "name": "Allocation share",
+                    "symbol": "share",
+                    "shared": "share"
+                },
+                {
+                    "name": "Serve only above",
+                    "symbol": "safetyStock",
+                    "shared": "safetyStock"
+                },
+                {
+                    "name": "Stock draw-down time",
+                    "symbol": "drawDownDays",
+                    "shared": "drawDownDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Lost from backlog",
+            "from": "warehouse",
+            "to": "zone",
+            "ports": {
+                "source": "stock",
+                "target": [
+                    "backlog",
+                    "demandRate"
+                ]
+            },
+            "output": {
+                "role": "target",
+                "state": "backlog"
+            },
+            "latex": "-(\\frac{\\mathrm{lostShare}}{\\mathrm{secondsPerDay}} \\cdot \\begin{cases} \\max(0, \\mathrm{demandShare} \\cdot \\mathrm{targetDemandRate} - \\frac{\\mathrm{share} \\cdot \\mathrm{sourceStock}}{\\mathrm{drawDownDays}}) & \\mathrm{sourceStock} > \\mathrm{safetyStock} \\\\ \\mathrm{demandShare} \\cdot \\mathrm{targetDemandRate} & \\text{otherwise} \\end{cases})",
+            "parameters": [
+                {
+                    "name": "Share of unmet demand lost",
+                    "symbol": "lostShare",
+                    "shared": "lostShare"
+                },
+                {
+                    "name": "Share of the zone's demand",
+                    "symbol": "demandShare",
+                    "shared": "demandShare"
+                },
+                {
+                    "name": "Allocation share",
+                    "symbol": "share",
+                    "shared": "share"
+                },
+                {
+                    "name": "Serve only above",
+                    "symbol": "safetyStock",
+                    "shared": "safetyStock"
                 },
                 {
                     "name": "Stock draw-down time",

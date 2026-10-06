@@ -6,7 +6,7 @@
     "domains": [
         "logistics"
     ],
-    "description": "A group of customers ordering at a steady rate, with an optional demand step: from the step day on, demand is multiplied by the step multiplier (1 for no step; both are shared by every zone). Orders add to the backlog; Delivery bundles clear it. Delivered and ordered are running totals, so backlog always equals its starting value plus ordered minus delivered, and ordered minus delivered over a period gives the fill rate. Backlog cost accrues per TEU per day waiting.",
+    "description": "A group of customers ordering at a steady rate, with an optional demand step: from the step day on, demand is multiplied by the step multiplier (1 for no step; both are shared by every zone). Orders add to the backlog; Delivery bundles clear it, and drop from it the sales lost when the shelves are short (a store's shoppers who go elsewhere rather than wait). Delivered, lost and ordered are running totals, so backlog always equals its starting value plus ordered minus delivered minus lost, and ordered minus delivered over a period gives the fill rate. Backlog cost accrues per TEU per day waiting.",
     "shape": "sphere",
     "color": "#52727a",
     "states": [
@@ -25,6 +25,12 @@
         {
             "symbol": "ordered",
             "label": "Ordered (cumulative)",
+            "initialValue": 0,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "lost",
+            "label": "Sales lost (cumulative)",
             "initialValue": 0,
             "unit": "TEU"
         },
