@@ -3,8 +3,8 @@
 name: Release
 
 # Deliberately not triggered on every push -- only an explicit version tag (or a manual run)
-# builds a signed release zip. build.yml remains the separate, unsigned verification workflow
-# that runs on every push and PR. Mirrors Konjugate core's own build/release split
+# builds a signed release zip. build.yml remains the separate, unsigned verification workflow,
+# run by hand. Mirrors Konjugate core's own build/release split
 # (crossPlatform.yml vs. release.yml) exactly, including the manual-run-builds-but-does-not-
 # publish behavior below.
 on:
@@ -46,7 +46,7 @@ jobs:
             - name: Build the plugin and add-on
               working-directory: konjugate-logistics
               run: npm run build
-            # Unlike build.yml, this workflow is never triggered by pull_request (only push:tags
+            # This workflow is never triggered by pull_request (only push:tags
             # and workflow_dispatch), so GitHub always makes secrets available here -- no fork-PR
             # exfiltration risk to guard against, so signing runs unconditionally.
             - name: Sign the built packages

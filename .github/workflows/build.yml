@@ -2,18 +2,17 @@
 
 name: Build
 
-# Cheap, broad verification -- every push and PR gets an unsigned build, proving the code and
-# packaging still work. Mirrors Konjugate core's crossPlatform.yml/release.yml split: this is the
-# crossPlatform.yml role (build + test, no signing, no publish); release.yml is the tag-triggered
-# signed-release counterpart to core's release.yml. Building here needs no C++ compilation today
+# An unsigned build on request, proving the code and packaging still work. Mirrors Konjugate
+# core's crossPlatform.yml/release.yml split: this is the crossPlatform.yml role (build + test, no
+# signing, no publish) and, like it, runs only when started by hand (Actions > Build > Run
+# workflow); release.yml is the tag-triggered signed-release counterpart to core's release.yml.
+# Nothing builds on an ordinary push: only a version tag does.
+# Building here needs no C++ compilation today
 # (packages/engine/plugin.json contributes only JSON component templates and example .kjt files,
 # no native provider) -- scripts/build.mjs only imports Konjugate core's pure-JS package/model-
 # encoding modules, so this is a plain Node job on a single platform, not the native build/vcpkg
 # matrix core's own CI needs.
 on:
-    push:
-        branches: [main]
-    pull_request:
     workflow_dispatch:
 
 jobs:
@@ -54,7 +53,7 @@ jobs:
               working-directory: konjugate-logistics
               run: npm run build
             # Deliberately unsigned: signing is release.yml's job, gated to an actual version tag,
-            # not something every push/PR build should do (see docs/registry.md in core -- an
+            # not something this verification build should do (see docs/registry.md in core -- an
             # unsigned package here is no different from one built any other way, so there's
             # nothing this verification build loses by skipping it).
             - name: Package the build output as one zip
