@@ -26,7 +26,7 @@ The toolbox becomes a general supply network modeller. A redesign is acceptable 
 
 ### What a user does
 
-1. **Load a map.** A city or region from a search, as today, but as a light fetch (roads and towns) when the user brings their own sites. Today's discovery (ports, industrial land, warehouses) becomes optional suggestions on the map, not the starting point.
+1. **Load a map.** A city or region from a search, as today, but as a light fetch (roads and towns) when the user brings their own sites. Today's discovery (ports, industrial land, warehouses) becomes optional suggestions on the map, not the starting point: it runs only when the user asks for it, one source at a time, and nothing it finds is kept until the user adopts it.
 2. **Place sites, each with a role.** Pick a role from a palette, click the map, name it:
 
     | Role | Behaviour |
@@ -178,7 +178,7 @@ Every number says whether it is sourced, assumed or synthetic, and every sourced
 Each milestone ends with something that can be shown. Milestones A to H make the general supply network and come first; the numbered milestones after them are the original roadmap, kept for port and infrastructure users and for the twin.
 
 - **A. Sites with roles on a map.** The role palette, placing and moving sites with their forms, a light map fetch, a spreadsheet in and out, discovery as suggestions. *Done when* a user builds a network of three suppliers, two warehouses and twenty stores on a city map in ten minutes, saves it, and reopens it offline.
-- **B. Links and fast routing.** Suggested links, links edited by dragging, incremental routing. *Done when* moving one site re-routes only its links in under a second, and every link says how it was routed.
+- **B. Links and fast routing.** Suggested links, links edited by dragging, incremental routing. *Done when* moving one site re-routes only its links in under a second, and every link says how it was routed. The plan for A and B, file by file, is in [Map first](mapFirst.md).
 - **C. Stock where it is held, by category and vehicle.** Suppliers as sources, stores that hold stock and run out, a handful of product categories with their own suppliers and lead times, and the vehicle catalogue with fleets at sites. *Done when* a store runs out of one category while another stays in stock, a chilled category runs short on a link with too few refrigerated vehicles, and the model still conserves goods and vehicles.
 - **D. Results in business terms.** Stock-out days per store and category, sales lost, service level, delivery time and cost, two runs side by side. *Done when* a supply chain manager reads the comparison without help.
 - **E. Scenarios for a supply network.** A supplier late or short, a site down, a demand peak (one-off, or a holiday from the calendar in F), a road closed, trucks short; most exist and are generalised. *Done when* each runs on a network built in A to C and reports in D's terms.

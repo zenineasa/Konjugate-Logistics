@@ -4,7 +4,7 @@ A logistics extension for [Konjugate](https://github.com/zenineasa/Konjugate), t
 
 ## Status
 
-Early development. What exists today:
+Early development. Where it is going: [docs/direction.md](docs/direction.md) (a general supply network, milestones A to H). Picking up the work: [docs/handover.md](docs/handover.md). What exists today:
 
 - a component library plugin, `konjugate.logistics.engine`, with one example model, verified end to end against a real Konjugate build;
 - the **Logistics Toolbox** add-on (`konjugate.logistics.toolbox`), whose window turns any region's OpenStreetMap data into a runnable model.
