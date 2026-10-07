@@ -31,6 +31,11 @@ export class ModelBuilder {
         return this.nextId++;
     }
 
+    // An empty builder over the same templates: for a draft of a model, built to learn its sizes and thrown away.
+    fresh() {
+        return new ModelBuilder(this.templates, this.helpers);
+    }
+
     template(id, kind) {
         const template = this.templates.get(id);
         if (!template || template.kind !== kind) throw new Error(`No ${kind} template "${id}".`);

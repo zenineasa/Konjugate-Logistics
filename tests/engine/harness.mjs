@@ -1,8 +1,9 @@
 /* Copyright © 2026 Zenin Easa Panthakkalakath */
 
 // Running a built model through the real engine CLI, and the invariants every logistics model keeps:
-// containers conserved, every road lane's trucks conserved (unless a scenario changes the fleets), and each
-// warehouse's on-order count equal to what waits on and travels along its lanes.
+// containers conserved (in the whole model and in each part of it that is joined up, so in each product category on
+// its own), every road lane's trucks conserved (unless a scenario changes the fleets), each warehouse's on-order count
+// equal to what waits on and travels along its lanes, and each supplier's order book equal to what waits on its lanes.
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -84,20 +85,60 @@ export const tolerance = (arrays) => 1e-6 + (useExport ? 1e-9 * arrays.reduce((t
 export const maxDrift = (values) => Math.max(...values.map((value) => Math.abs(value - values[0])));
 export const hour = (days) => Math.round(days * 24);
 
-export function checkInvariants({ name, document, series }, { fleetsChange = false } = {}) {
+export function checkInvariants(result, options = {}) {
+    const goods = checkGoods(result);
+    checkRest(result, options);
+    return goods;
+}
+
+function checkGoods({ name, document, series }) {
     const ofType = (type) => document.nodes.filter((node) => node.type === type).map((node) => node.name);
     const ports = ofType('Port');
     const lanes = ofType('Road lane');
     const warehouses = ofType('Warehouse');
     const towns = ofType('Demand zone');
-    assert.ok(ports.length && lanes.length && warehouses.length && towns.length, `${name}: the model has every kind of node.`);
+    const suppliers = ofType('Supplier');
+    assert.ok((ports.length || suppliers.length) && lanes.length && warehouses.length && towns.length, `${name}: the model has every kind of node.`);
     const loaded = (lane) => sum(['loaded1', 'loaded2', 'loaded3'].map((stage) => series(`${lane}.${stage}`)));
-    const goods = [
-        ...ports.flatMap((port) => [series(`${port}.queue`), series(`${port}.stock`), series(`${port}.arrived`).map((value) => -value)]),
-        ...lanes.map(loaded), ...warehouses.map((warehouse) => series(`${warehouse}.stock`)), ...towns.map((town) => series(`${town}.delivered`))
-    ];
+    const making = (supplier) => sum(['making1', 'making2', 'making3', 'stock'].map((stage) => series(`${supplier}.${stage}`)));
+    // What a node holds of the goods, less what has entered the model through it.
+    const held = new Map([
+        ...ports.map((port) => [port, [series(`${port}.queue`), series(`${port}.stock`), series(`${port}.arrived`).map((value) => -value)]]),
+        ...suppliers.map((supplier) => [supplier, [making(supplier), series(`${supplier}.made`).map((value) => -value)]]),
+        ...lanes.map((lane) => [lane, [loaded(lane)]]), ...warehouses.map((warehouse) => [warehouse, [series(`${warehouse}.stock`)]]),
+        ...towns.map((town) => [town, [series(`${town}.delivered`)]])
+    ]);
+    const goods = [...held.values()].flat();
     const containers = sum(goods);
     assert.ok(maxDrift(containers) < tolerance(goods), `${name}: goods must be conserved (drift ${maxDrift(containers)}).`);
+    // And in each part of the model that is joined up: a product category's goods never become another's.
+    const names = new Map(document.nodes.map((node) => [node.id, node.name]));
+    const group = new Map(document.nodes.map((node) => [node.name, node.name]));
+    const find = (node) => { while (group.get(node) !== node) node = group.get(node); return node; };
+    for (const edge of document.edges) group.set(find(names.get(edge.source.nodeId)), find(names.get(edge.target.nodeId)));
+    const parts = new Map();
+    for (const [node, series] of held) parts.set(find(node), [...(parts.get(find(node)) ?? []), ...series]);
+    for (const [part, its] of parts) {
+        assert.ok(maxDrift(sum(its)) < tolerance(its), `${name}: the goods of the part of the model around ${part} must be conserved (drift ${maxDrift(sum(its))}).`);
+    }
+    // A supplier makes everything ordered from it: what it has still to make is what was ordered less what it has
+    // started, and what waits on its lanes is what it has to make, is making or has ready.
+    for (const supplier of suppliers) {
+        const book = [series(`${supplier}.toMake`), series(`${supplier}.ordered`).map((value) => -value), series(`${supplier}.made`)];
+        assert.ok(maxDrift(sum(book)) < tolerance(book), `${name}: ${supplier}'s orders must be made or waiting (drift ${maxDrift(sum(book))}).`);
+        const itsLanes = [...new Set(document.edges.filter((edge) => names.get(edge.source.nodeId) === supplier && lanes.includes(names.get(edge.target.nodeId))).map((edge) => names.get(edge.target.nodeId)))];
+        const waiting = [series(`${supplier}.toMake`), making(supplier), ...itsLanes.map((lane) => series(`${lane}.requested`).map((value) => -value))];
+        assert.ok(maxDrift(sum(waiting)) < tolerance(waiting), `${name}: what waits on ${supplier}'s lanes must be what it has to make or has ready (drift ${maxDrift(sum(waiting))}).`);
+    }
+    return { parts: parts.size };
+}
+
+function checkRest({ name, document, series }, { fleetsChange = false } = {}) {
+    const ofType = (type) => document.nodes.filter((node) => node.type === type).map((node) => node.name);
+    const lanes = ofType('Road lane');
+    const warehouses = ofType('Warehouse');
+    const towns = ofType('Demand zone');
+    const loaded = (lane) => sum(['loaded1', 'loaded2', 'loaded3'].map((stage) => series(`${lane}.${stage}`)));
     for (const lane of fleetsChange ? [] : lanes) {
         for (const size of ['', '2']) {
             const parts = [series(`${lane}.idleTrucks${size}`), series(`${lane}.returning${size}`), series(`${lane}.loadedTrucks${size}`)];
@@ -126,7 +167,7 @@ export function checkInvariants({ name, document, series }, { fleetsChange = fal
 
 // Every state that is not a running total holds still.
 export function checkSteady({ name, document, series }) {
-    const cumulative = /^(arrived|handled|delivered|ordered|lost|transportCost|fleetCost|holdingCost|backlogCost)$/;
+    const cumulative = /^(arrived|handled|delivered|ordered|made|lost|transportCost|fleetCost|holdingCost|backlogCost)$/;
     for (const node of document.nodes) {
         for (const state of node.states) {
             if (cumulative.test(state.symbol)) continue;

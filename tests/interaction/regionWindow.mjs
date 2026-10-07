@@ -188,11 +188,14 @@ try {
         await toolbox.click('#buildButton');
         await toolbox.waitForSelector('#buildStatus .notice.ok, #buildStatus .notice.error', { timeout: 60000 }).catch(fail);
         const built = await toolbox.textContent('#buildStatus');
-        assert.match(built, /^2 ports, \d+ road lanes?, 3 stores and customer areas served: (\d+) nodes and (\d+) relationships, now in the canvas\./);
+        assert.match(built, /^2 ports, \d+ road lanes?, 3 stores and customer areas served, each in 3 categories \(Ambient, Chilled, Frozen\): (\d+) nodes and (\d+) relationships, now in the canvas\./);
         const [, nodes, edges] = built.match(/(\d+) nodes and (\d+) relationships/).map(Number);
         await window.waitForFunction(([n, e]) => new RegExp(`${n} nodes`).test(document.querySelector('.modelStatus').textContent) && new RegExp(`${e} relationships`).test(document.querySelector('.modelStatus').textContent), [nodes, edges], { timeout: 30000 });
         // Counted in pallets, ten a container.
-        assert.match(await toolbox.textContent('#buildResult'), /Containers handed inland: 1,500\.0 pallets\/day/);
+        // The port's 1,500 pallets a day, shared among the three categories by their usual shares: a copy of the network for each.
+        assert.match(await toolbox.textContent('#buildResult'), /Port Alder: Ambient\s*Containers handed inland: 900\.0 pallets\/day.*Ambient is 60% of what it hands inland/s);
+        assert.match(await toolbox.textContent('#buildResult'), /Port Alder: Chilled\s*Containers handed inland: 375\.0 pallets\/day/);
+        assert.match(await toolbox.textContent('#buildResult'), /heavy trucks \+ \d+ refrigerated trucks/, 'a link\'s vehicles over its categories');
         assert.ok(await toolbox.locator('#map .lane').count() > 0, 'The lanes are drawn on the map.');
 
         // 5. Drag Alder Industrial Park a little north: the model is rebuilt with new distances to it.
@@ -301,14 +304,14 @@ try {
 
         // 5b'. Two settings changed in quick succession, the second while the first is still building: both reach the model.
         // The weight of a TEU starts a build; the assumed volume a port (Birch Harbour, the one not matched) is changed
-        // during it, and must still reach the model.
+        // during it, and must still reach the model: 80 TEU a day, 800 pallets, of which the ambient goods are 480.
         await toolbox.fill('#tonnesPerTeuInput', '12'); await toolbox.dispatchEvent('#tonnesPerTeuInput', 'change');
         await toolbox.waitForFunction(() => /Building the model/.test(document.querySelector('#buildStatus').textContent), null, { timeout: 10000 }).catch(() => {});
         await toolbox.fill('#portVolume', '80'); await toolbox.dispatchEvent('#portVolume', 'change');
-        await toolbox.waitForFunction((volume) => [...document.querySelectorAll('#buildResult details tr')].some((row) => row.cells[0]?.textContent === 'Birch Harbour' && row.cells[1]?.textContent.startsWith(`Containers handed inland: ${volume}`)) && document.querySelector('#buildStatus .notice.ok'), '800.0 pallets', { timeout: 120000 }).catch(fail);
+        await toolbox.waitForFunction((volume) => [...document.querySelectorAll('#buildResult details tr')].some((row) => row.cells[0]?.textContent === 'Birch Harbour: Ambient' && row.cells[1]?.textContent.startsWith(`Containers handed inland: ${volume}`)) && document.querySelector('#buildStatus .notice.ok'), '480.0 pallets', { timeout: 120000 }).catch(fail);
         await toolbox.fill('#tonnesPerTeuInput', '10'); await toolbox.dispatchEvent('#tonnesPerTeuInput', 'change');
         await toolbox.fill('#portVolume', '100'); await toolbox.dispatchEvent('#portVolume', 'change');
-        await toolbox.waitForFunction((volume) => [...document.querySelectorAll('#buildResult details tr')].some((row) => row.cells[0]?.textContent === 'Birch Harbour' && row.cells[1]?.textContent.startsWith(`Containers handed inland: ${volume}`)) && document.querySelector('#buildStatus .notice.ok'), '1,000.0 pallets', { timeout: 120000 }).catch(fail);
+        await toolbox.waitForFunction((volume) => [...document.querySelectorAll('#buildResult details tr')].some((row) => row.cells[0]?.textContent === 'Birch Harbour: Ambient' && row.cells[1]?.textContent.startsWith(`Containers handed inland: ${volume}`)) && document.querySelector('#buildStatus .notice.ok'), '600.0 pallets', { timeout: 120000 }).catch(fail);
 
         // 5c. The network runs on its vehicle types: heavy trucks from the ports (no fleet operator in a network of its own).
         assert.equal(await toolbox.locator('#operatorRow').isVisible(), false);
@@ -390,8 +393,9 @@ try {
         assert.equal(entry.window.pins.filter((pin) => pin.role === 'customerArea').length, 4, 'the three towns and the customer area placed on the map');
         assert.ok(entry.window.pins.some((pin) => pin.name === 'Harbour customers'));
         assert.deepEqual(entry.window.suggestions.sort(), ['ports', 'towns', 'warehouses'], 'and the suggestions asked for');
-        assert.deepEqual(entry.window.vehicles.map((type) => type.id), ['heavyTruck', 'mediumTruck', 'smallTruck', 'miniVan'], 'and the vehicle types');
-        assert.equal(saved.nodes.length, nodes + 1, 'the model with the added customer');
+        assert.deepEqual(entry.window.vehicles.map((type) => type.id), ['heavyTruck', 'mediumTruck', 'smallTruck', 'miniVan', 'refrigeratedTruck'], 'and the vehicle types');
+        assert.deepEqual(entry.window.categories.map((category) => category.id), ['ambient', 'chilled', 'frozen'], 'and the categories');
+        assert.equal(saved.nodes.length, nodes + 3, 'the model with the added customer, in each of the three categories');
         assert.equal(entry.window.scenarioSettings.demand.change, 35, 'and the change shown in Konjugate just before saving');
         await app.close();
         app = null;

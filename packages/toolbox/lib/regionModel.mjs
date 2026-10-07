@@ -21,6 +21,7 @@
 import { laneCorridors } from './corridors.mjs';
 import { toLocal } from './geo.mjs';
 import { allocateFleet, parseOperator } from './operator.mjs';
+import { carriersFor } from './vehicles.mjs';
 import { historyWindow, tonnesPerTeu } from './portwatch.mjs';
 
 export const regionModelDefaults = {
@@ -88,6 +89,12 @@ export const regionModelDefaults = {
     storeLostShare: 0.8,
     darkStoreLostShare: 0.5,
     saleValue: 1000,
+    // The product categories a network placed on the map carries ({ id, name, chilled, share, leadDays, basis }), or
+    // null for goods of one kind. Each category is its own copy of the network, so its goods are conserved on their own.
+    categories: null,
+    // A supplier makes what is ordered from it over this many days unless it, or its category, has a lead time of its
+    // own; and the most it can make a day is `berthHeadroom` times what is ordered from it, unless the user set it.
+    supplierLeadDays: 2,
     days: 90, stepMinutes: 15, outputMinutes: 60
 };
 
@@ -151,8 +158,9 @@ export function roadLaneState(rate, leadTime, fleet, { truckCapacity, loadDays, 
     };
 }
 
-export function buildRegionModel({ builder, selection, route, links = null, options = {} }) {
-    const settings = { ...regionModelDefaults, ...options };
+// One network of goods of one kind: the whole model, or with `scope` ({ category, shares, layout, ... }, see
+// buildRegionModel) one category's copy of it, its nodes named "<site>: <category>".
+function buildScope({ builder, selection, route, links = null, settings, scope = null }) {
     const templates = builder.templates;
     // A network with vehicle types runs on them; the rest of the region on two truck sizes.
     const catalogue = links && settings.vehicles?.length ? settings.vehicles : null;
@@ -180,10 +188,16 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
     const provenance = [];
     const warnings = [];
     if (settings.operator && catalogue) warnings.push('The fleet operator is not used: this network runs on its own vehicle types.');
-    const note = (entity, parameter, value, unit, basis, detail) => provenance.push({ entity, parameter, value, unit, basis, detail });
     const ports = selection.ports ?? [];
     const zones = selection.zones ?? [];
     const towns = selection.towns ?? [];
+    // A category's copy of a site is named after both, as is everything said about it.
+    const label = (name) => (scope && !scope.single ? `${name}: ${scope.category.name}` : name);
+    const siteNames = new Set([...ports, ...zones, ...towns].map((site) => site.name));
+    const note = (entity, parameter, value, unit, basis, detail) => provenance.push({ entity: siteNames.has(entity) ? label(entity) : entity, parameter, value, unit, basis, detail });
+    // The share of a source's supply, or of a store's sales, that is this category, and how to say so.
+    const part = (site) => (scope ? scope.shares.get(site.id) ?? 0 : 1);
+    const partNote = (site) => (scope && !scope.single ? ` ${scope.category.name} is ${number(part(site) * 100, 1)}% of what it ${site.supplier ? 'supplies' : towns.includes(site) ? 'sells or orders' : 'hands inland'} (${scope.mixBasis.get(site.id) === 'user' ? 'your mix' : 'the categories\' usual shares, assumed'}).` : '');
     if (!ports.length) throw new Error(links ? 'Place a supplier or a port: it is where goods enter the network.' : 'Keep at least one port: it is where containers enter the region.');
     if (!zones.length) throw new Error(links ? 'Place a warehouse: stores and customers are served from warehouses.' : 'Keep at least one logistics zone: towns are served from zones.');
     if (!towns.length) throw new Error(links ? 'Place a store, a dark store or a customer area: it is where the demand is.' : 'Keep at least one town or customer: it is where the demand is.');
@@ -198,7 +212,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
     // A port's usual arrivals, in TEU a day, when its history has a break: the level before a fall (or after a rise),
     // so a scenario can tell when the period modelled is already far below it.
     const normals = new Map();
-    const normalOf = (activity) => (activity.shift ? Math.max(activity.shift.before, activity.shift.after) / settings.tonnesPerTeu * settings.inlandShare * perTeu : null);
+    const normalOf = (activity, port) => (activity.shift ? Math.max(activity.shift.before, activity.shift.after) / settings.tonnesPerTeu * settings.inlandShare * perTeu * part(port) : null);
     const secondsPerDay = templateValue(templates, 'port', 'secondsPerDay');
     const sourced = (port) => !port.supplier && !(Number(port.teuPerDay) > 0) && port.activity?.importTonnesPerDay > 0;
     const assumedPorts = ports.filter((port) => !port.supplier && !(Number(port.teuPerDay) > 0) && !sourced(port));
@@ -211,7 +225,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         if (sourced(port)) {
             const activity = port.activity;
             // In the model's unit: TEU, or pallets at `palletsPerTeu` a TEU.
-            const teu = (tonnes) => tonnes / settings.tonnesPerTeu * settings.inlandShare * perTeu;
+            const teu = (tonnes) => tonnes / settings.tonnesPerTeu * settings.inlandShare * perTeu * part(port);
             // The defaults are assumptions; a value the user set is theirs (from a figure they trust, which the model cannot see).
             const weight = settings.tonnesPerTeu === tonnesPerTeu ? `an assumed ${settings.tonnesPerTeu} t a TEU` : `${settings.tonnesPerTeu} t a TEU (yours)`;
             const conversion = `at ${weight}${settings.inlandShare === 1 ? ', counting containers that only change ships there' : `, ${Math.round(settings.inlandShare * 100)}% of them handed inland (yours)`}${perTeu !== 1 ? `, each TEU counted as an assumed ${perTeu} pallets` : ''}`;
@@ -232,9 +246,9 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
                 const to = replay.at(-1)[0];
                 supply.set(port.id, value);
                 histories.set(port.id, { samples, from, to });
-                normals.set(port.id, normalOf(activity));
+                normals.set(port.id, normalOf(activity, port));
                 note(port.name, 'Containers handed inland', value, `${unit}/day`, 'sourced',
-                    `IMF PortWatch (Source: International Monetary Fund), ${activity.name}: the arrivals follow each day's container imports from ${from} (model day 0) to ${to} (${samples.length} days), averaging ${Math.round(value * settings.tonnesPerTeu / settings.inlandShare).toLocaleString('en')} t a day, ${conversion}.${shiftNote}`);
+                    `IMF PortWatch (Source: International Monetary Fund), ${activity.name}: the arrivals follow each day's container imports from ${from} (model day 0) to ${to} (${samples.length} days), averaging ${Math.round(value * settings.tonnesPerTeu / settings.inlandShare / perTeu / part(port)).toLocaleString('en')} t a day, ${conversion}.${shiftNote}${partNote(port)}`);
                 continue;
             }
             // A steady average: over the chosen period when one is given, otherwise over the whole history fetched.
@@ -243,33 +257,34 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
                 : { tonnes: activity.importTonnesPerDay, from: activity.from, to: activity.to, days: activity.days };
             const value = teu(averaged.tonnes);
             supply.set(port.id, value);
-            normals.set(port.id, normalOf(activity));
+            normals.set(port.id, normalOf(activity, port));
             note(port.name, 'Containers handed inland', value, `${unit}/day`, 'sourced',
-                `IMF PortWatch (Source: International Monetary Fund), ${activity.name}: container imports averaging ${Math.round(averaged.tonnes).toLocaleString('en')} t a day over ${averaged.from} to ${averaged.to} (${averaged.days} days), ${conversion}.${shiftNote}`);
+                `IMF PortWatch (Source: International Monetary Fund), ${activity.name}: container imports averaging ${Math.round(averaged.tonnes).toLocaleString('en')} t a day over ${averaged.from} to ${averaged.to} (${averaged.days} days), ${conversion}.${shiftNote}${partNote(port)}`);
             continue;
         }
         const user = Number(port.teuPerDay) > 0;
         if (port.supplier) {
             // A supplier ships what it is set to, whatever is ordered: the user's figure, or the role's default.
-            const value = user ? Number(port.teuPerDay) : 0;
+            const value = (user ? Number(port.teuPerDay) : 0) * part(port);
             supply.set(port.id, value);
             note(port.name, 'Supplied', value, `${unit}/day`, user ? (port.teuPerDayBasis ?? 'user') : 'user',
-                port.teuPerDaySource ?? (user ? 'Your figure.' : 'Set to nothing: it supplies nothing until you give it a figure.'));
+                `${port.teuPerDaySource ?? (user ? 'Your figure.' : 'Set to nothing: it supplies nothing until you give it a figure.')}${partNote(port)} What is ordered from it in the baseline; it makes what is ordered, up to what it can make.`);
             continue;
         }
-        const value = (user ? Number(port.teuPerDay) : settings.portTeuPerDay * assumedPorts.length * portWeight(port) / assumedWeight) * perTeu;
+        const value = (user ? Number(port.teuPerDay) : settings.portTeuPerDay * assumedPorts.length * portWeight(port) / assumedWeight) * perTeu * part(port);
         supply.set(port.id, value);
         const assumption = largestLand > 0 && assumedPorts.length > 1
             ? `Assumed, with no port activity matched: ${settings.portTeuPerDay} TEU/day a port on average, shared by port land (${landOf(port).toFixed(1)} km²${landOf(port) < 0.1 * largestLand ? ', counted as a tenth of the largest' : ''}).`
             : 'Assumed, with no port activity matched.';
         const counted = perTeu !== 1 ? ` Each TEU counted as an assumed ${perTeu} pallets.` : '';
-        note(port.name, 'Containers handed inland', value, `${unit}/day`, user ? (port.teuPerDayBasis ?? 'user') : 'assumed', `${user ? (port.teuPerDaySource ?? 'Your figure.') : assumption}${counted}`);
+        note(port.name, 'Containers handed inland', value, `${unit}/day`, user ? (port.teuPerDayBasis ?? 'user') : 'assumed', `${user ? (port.teuPerDaySource ?? 'Your figure.') : assumption}${counted}${partNote(port)}`);
     }
     const totalSupply = [...supply.values()].reduce((total, value) => total + value, 0);
 
     // ---- demand: fixed where given, the rest split by population
     const fixed = towns.filter((town) => Number(town.teuPerDay) > 0);
-    const fixedTotal = fixed.reduce((total, town) => total + Number(town.teuPerDay), 0);
+    const ownDemand = (town) => Number(town.teuPerDay) * part(town);
+    const fixedTotal = fixed.reduce((total, town) => total + ownDemand(town), 0);
     const weighted = towns.filter((town) => !(Number(town.teuPerDay) > 0));
     let remainder = totalSupply - fixedTotal;
     let fixedScale = 1;
@@ -279,14 +294,14 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         remainder = 0;
         warnings.push(`The customers' own demand (${fixedTotal.toFixed(0)} ${unit}/day) differs from what ${supplied} (${totalSupply.toFixed(0)} ${unit}/day); it was scaled to match so the baseline holds still.`);
     }
-    const weightOf = (town) => Number(town.population) || settings.assumedPopulation;
+    const weightOf = (town) => (Number(town.population) || settings.assumedPopulation) * part(town);
     const weightTotal = weighted.reduce((total, town) => total + weightOf(town), 0);
     const demand = new Map();
     for (const town of fixed) {
-        demand.set(town.id, Number(town.teuPerDay) * fixedScale);
+        demand.set(town.id, ownDemand(town) * fixedScale);
         const assumed = town.teuPerDayBasis === 'assumed';
         const figure = assumed ? `Assumed: the default for a ${town.role === 'darkStore' ? 'dark store' : town.role === 'customerArea' ? 'customer area' : 'store'}, until you set it` : 'Your figure';
-        note(town.name, 'Demand', demand.get(town.id), `${unit}/day`, fixedScale === 1 && !assumed ? 'user' : 'assumed', fixedScale === 1 ? `${figure}.` : `${figure}, scaled by ${fixedScale.toFixed(2)} to match what ${supplied}.`);
+        note(town.name, 'Demand', demand.get(town.id), `${unit}/day`, fixedScale === 1 && !assumed ? 'user' : 'assumed', `${fixedScale === 1 ? `${figure}.` : `${figure}, scaled by ${fixedScale.toFixed(2)} to match what ${supplied}.`}${partNote(town)}`);
     }
     for (const town of weighted) {
         demand.set(town.id, remainder * weightOf(town) / weightTotal);
@@ -295,7 +310,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
                 OpenStreetMap: 'population from OpenStreetMap',
                 user: 'your population figure',
                 shared: `an even share of ${town.city ?? 'the city'}'s population among its suburbs, an assumption`
-            }[town.populationBasis] ?? 'assumed size'}).`);
+            }[town.populationBasis] ?? 'assumed size'}).${partNote(town)}`);
     }
 
     // ---- towns to zones: each town draws on up to zonesPerTown nearby zones, by significance and nearness
@@ -342,7 +357,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
     for (const allocation of allocations) zoneDemand.set(allocation.zone.id, (zoneDemand.get(allocation.zone.id) ?? 0) + allocation.share * demand.get(allocation.town.id));
     const usedZones = zones.filter((zone) => zoneDemand.get(zone.id) > 0);
     const unusedZones = zones.filter((zone) => !(zoneDemand.get(zone.id) > 0));
-    if (unusedZones.length && links) warnings.push(`${unusedZones.map((zone) => zone.name).join(', ')} ${unusedZones.length === 1 ? 'serves' : 'serve'} no store or customer area, so ${unusedZones.length === 1 ? 'it was' : 'they were'} left out of the model.`);
+    if (scope) { /* a warehouse that carries none of one category may carry another: buildRegionModel says which carry none */ } else if (unusedZones.length && links) warnings.push(`${unusedZones.map((zone) => zone.name).join(', ')} ${unusedZones.length === 1 ? 'serves' : 'serve'} no store or customer area, so ${unusedZones.length === 1 ? 'it was' : 'they were'} left out of the model.`);
     else if (unusedZones.length) warnings.push(`${unusedZones.map((zone) => zone.name).join(', ')} ${unusedZones.length === 1 ? 'serves' : 'serve'} none of the kept towns (${unusedZones.length === 1 ? 'it is' : 'they are'} not among the nearest few to any), so ${unusedZones.length === 1 ? 'it was' : 'they were'} left out of the model. Keep a town nearby, or add a customer of your own, to use ${unusedZones.length === 1 ? 'it' : 'them'}.`);
 
     // ---- zones to ports: nearest ports, balanced so every port ships what arrives and every zone gets what it needs
@@ -427,14 +442,12 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         .map((link) => ({ from: portById.get(link.port).name, to: zoneById.get(link.zone).name, why: !(zoneDemand.get(link.zone) > 0) ? 'serves no one' : !(supply.get(link.port) > 0) ? 'supplies nothing' : 'carries too little' }));
 
     // ---- layout: north up, the region spread over about 80 units so names on the canvas stay apart
-    const everything = [...ports, ...usedZones, ...towns];
-    const origin = { lat: everything.reduce((total, item) => total + item.lat, 0) / everything.length, lon: everything.reduce((total, item) => total + item.lon, 0) / everything.length };
-    const local = everything.map((item) => toLocal(item, origin));
-    const extent = Math.max(1, ...local.map((point) => Math.max(Math.abs(point.x), Math.abs(point.y))));
-    const scale = 40 / extent;
+    // A category's copy sits a little below the one before it, so the copies of a site can be told apart.
+    const { origin, scale } = scope?.layout ?? layoutOf([...ports, ...usedZones, ...towns]);
+    const drop = scope ? scope.index * 1.1 : 0;
     const position = (item) => {
         const point = toLocal(item, origin);
-        return [Number((point.x * scale).toFixed(3)), Number((point.y * scale).toFixed(3)), 0];
+        return [Number((point.x * scale).toFixed(3)), Number((point.y * scale - drop).toFixed(3)), 0];
     };
     const between = (a, b, offset = 0) => {
         const p = position(a);
@@ -478,17 +491,43 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
 
     // ---- ports
     const portNodes = new Map();
+    // A supplier's order book: what waits on a lane from it is what it still has to make or has ready.
+    const suppliers = new Map();
+    const handlingDays = templateValue(templates, 'supplier', 'orderHandlingDays');
     for (const port of ports) {
         const arrivals = supply.get(port.id);
+        const portName = label(port.name);
+        if (port.supplier) {
+            // Made to order: every order takes its lead time, and it starts no more a day than it can make.
+            const set = (key) => Number(port[key]) > 0 && port[`${key}Basis`] !== 'assumed';
+            const categoryLead = Number(scope?.category.leadDays) > 0 ? Number(scope.category.leadDays) : null;
+            const wanted = set('leadDays') ? Number(port.leadDays) : categoryLead ?? settings.supplierLeadDays;
+            const leadTime = Math.max(wanted, 6 * settings.stepMinutes / 1440);
+            const capacity = set('makes') ? Number(port.makes) * part(port) : arrivals * settings.berthHeadroom;
+            if (capacity < arrivals - 1e-9) throw new Error(`${port.name} can make ${number(capacity, 1)} ${unit} a day, less than the ${number(arrivals, 1)} ordered from it. Give it more to make, or have it supply less.`);
+            note(port.name, 'Lead time', leadTime, 'day', set('leadDays') ? 'user' : categoryLead !== null && scope.category.basis?.leadDays === 'user' ? 'user' : 'assumed',
+                `${set('leadDays') ? 'Your figure.' : categoryLead !== null ? `The lead time of ${scope.category.name}${scope.category.basis?.leadDays === 'user' ? ' (yours)' : ', assumed until you set it'}.` : 'Assumed, until you set it.'} From an order reaching it to the goods standing ready to load: it makes to order.${leadTime > wanted ? ` Raised to ${number(leadTime * 24, 1)} h, the shortest the model's ${settings.stepMinutes}-minute steps follow faithfully.` : ''}`);
+            note(port.name, 'Most it can make', capacity, `${unit}/day`, set('makes') ? 'user' : 'assumed', set('makes') ? `Your figure.${partNote(port)}` : `${settings.berthHeadroom} times what is ordered from it in the baseline, assumed until you set it.`);
+            portNodes.set(port.id, place('supplier', portName, {
+                name: portName, position: position(port),
+                initialValues: { toMake: arrivals * handlingDays, making1: arrivals * leadTime / 3, making2: arrivals * leadTime / 3, making3: arrivals * leadTime / 3, stock: arrivals * originDrainDays, makeRate: arrivals },
+                shared: { supplierLeadTime: leadTime, supplierCapacity: capacity }
+            }));
+            suppliers.set(port.id, { leadTime, capacity, pipelineDays: handlingDays + leadTime + originDrainDays });
+            // Live, so a scenario can make it late or short: up to four times its lead time and what the network orders.
+            makeLive(portName, 'supplierLeadTime', niceCeiling(Math.max(4 * leadTime, leadTime + 14)));
+            makeLive(portName, 'supplierCapacity', niceCeiling(4 * Math.max(capacity, totalSupply, 1)));
+            continue;
+        }
         const berthCapacity = arrivals * settings.berthHeadroom;
-        note(port.name, port.supplier ? 'Dispatch capacity' : 'Berth capacity', berthCapacity, `${unit}/day`, 'assumed', `${settings.berthHeadroom} times its ${port.supplier ? 'supply' : 'arrivals'}${port.supplier ? ': a supplier is modelled as a port whose berths are its loading bays' : ''}.`);
-        portNodes.set(port.id, place('port', port.name, {
-            name: port.name, position: position(port),
+        note(port.name, 'Berth capacity', berthCapacity, `${unit}/day`, 'assumed', `${settings.berthHeadroom} times its arrivals.`);
+        portNodes.set(port.id, place('port', portName, {
+            name: portName, position: position(port),
             // The wait counts at least a TEU a day of berths, as the template does, so a port with none is not 0/0.
             initialValues: { queue: arrivals * berthingDays, stock: arrivals * 3, waitDays: arrivals * berthingDays / Math.max(berthCapacity, 1) },
             shared: { vesselArrivals: arrivals, berthCapacity, outageCapacity: berthCapacity }
         }));
-        const indexed = parameterIndex.findLast((entry) => entry.entity === port.name && entry.key === 'vesselArrivals');
+        const indexed = parameterIndex.findLast((entry) => entry.entity === portName && entry.key === 'vesselArrivals');
         const shared = builder.sharedParameters.find((item) => item.id === indexed?.sharedParameterId);
         if (!shared) throw new Error(`The arrivals of ${port.name} could not be found.`);
         // Arrivals that follow the port's history: a stored schedule on its own arrivals parameter. The
@@ -502,17 +541,17 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         // slider up to four times the busiest day or the whole region's arrivals, whichever is more: any port may be
         // the one cargo is diverted to.
         const busiest = Math.max(arrivals, ...(history?.samples.map((sample) => sample[1]) ?? []));
-        makeLive(port.name, 'vesselArrivals', niceCeiling(4 * Math.max(busiest, totalSupply)));
+        makeLive(portName, 'vesselArrivals', niceCeiling(4 * Math.max(busiest, totalSupply)));
         // And its berths, so a scenario can let a port take cargo diverted to it: up to four times the region's arrivals.
         const berthMaximum = niceCeiling(4 * Math.max(berthCapacity, totalSupply));
-        makeLive(port.name, 'berthCapacity', berthMaximum);
-        makeLive(port.name, 'outageCapacity', berthMaximum);
+        makeLive(portName, 'berthCapacity', berthMaximum);
+        makeLive(portName, 'outageCapacity', berthMaximum);
     }
 
     // ---- vehicles: each type is one set of shared parameters (capacity, costs, loading time) for every lane and
     // shipment it runs on, so a change to a type reaches every link it carries; each lane keeps its own fleet of it.
     const typeById = new Map((catalogue ?? []).map((type) => [type.id, type]));
-    const typesNoted = new Set();
+    const typesNoted = scope?.typesNoted ?? new Set();
     const noteType = (type) => {
         if (typesNoted.has(type.id)) return;
         typesNoted.add(type.id);
@@ -546,7 +585,14 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
             : catalogue.find((type) => type.id === 'heavyTruck') ?? catalogue[0];
         return usual ? [{ type: usual.id, fleet: null }] : [];
     };
-    const choiceOf = (chosen, kind) => (chosen?.length ? chosen : catalogue ? usualChoice(kind) : null);
+    // A chilled category goes only by the link's refrigerated types, or, when it has none, by the first that may go there.
+    const choiceOf = (chosen, kind, where) => {
+        const usual = chosen?.length ? chosen : catalogue ? usualChoice(kind) : null;
+        if (!usual || !scope?.category.chilled) return usual;
+        const cold = carriersFor(usual, kind, catalogue, true);
+        if (!cold.length) throw new Error(`${where} carries ${scope.category.name}, which needs a refrigerated vehicle, and no vehicle type ${kind === 'store' ? 'that may deliver to stores ' : ''}is refrigerated. Tick Refrigerated on a vehicle type, or add one.`);
+        return cold;
+    };
     // The types a link names, as the catalogue has them.
     const typesOf = (chosen, label) => (chosen ?? []).slice(0, 2).map((item) => {
         const type = typeById.get(item.type);
@@ -604,10 +650,12 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
     // A road lane and the shipment over it, from `origin` to `destination` (nodes), carrying `rate` a day at `share` of
     // what the destination orders. `kind` is 'supply' (from a port or supplier to a warehouse) or 'store' (from a
     // warehouse to a store's stock); `chosen` the link's vehicles ({ type, fleet }), with a catalogue.
-    const placeLane = ({ name, kind, origin, destination, originSite, destinationSite, rate, share, leg, chosen: given = null, standby = false, offset = 0 }) => {
-        const chosen = choiceOf(given, kind);
-        const types = catalogue ? typesOf(chosen, name.replace(/^Road /, '')) : null;
-        if (types && !types.length) throw new Error(`${name.replace(/^Road /, '')} has no vehicles. Choose a vehicle for it.`);
+    const placeLane = ({ name: link, kind, origin, destination, originSite, destinationSite, rate, share, leg, chosen: given = null, standby = false, offset = 0 }) => {
+        const name = label(link);
+        const ends = link.replace(/^Road /, '');
+        const chosen = choiceOf(given, kind, ends);
+        const types = catalogue ? typesOf(chosen, ends) : null;
+        if (types && !types.length) throw new Error(`${ends} has no vehicles. Choose a vehicle for it.`);
         types?.forEach(noteType);
         const { kilometres, slowest, roadHours, gate, leadTime, raised, own, estimated } = laneTiming(leg, types, kind);
         const capacity1 = types ? types[0].capacity : truckCapacity;
@@ -618,17 +666,27 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         const contract = kind === 'supply' ? allocation[`${originSite.name}|${destinationSite.name}`] : null;
         let fleet;
         let fleet2;
+        let needs = null;
         if (contract) [fleet, fleet2] = [contract.counts[0] ?? 0, contract.counts[1] ?? 0];
         else if (types) {
             // Sized as the toolbox sizes a lane, half of what it needs from each type when it has two, unless the user set it.
-            const sized = types.length === 2 ? [Math.ceil(need / 2 / capacity1), Math.ceil(need / 2 / capacity2)] : [Math.ceil(need / capacity1), 0];
-            fleet = chosen[0].fleet ?? sized[0];
-            fleet2 = types.length === 2 ? (chosen[1].fleet ?? sized[1]) : 0;
+            // With categories, the link's vehicles of a type (the user's count, or what its categories need together,
+            // in whole vehicles) are shared among its categories by what each needs: each has its own.
+            const counts = types.map((type, index) => {
+                const typeNeed = need / types.length;
+                const whole = scope?.fleets?.get(`${link}|${type.id}`);
+                if (whole) return whole.need > 0 ? (whole.user ?? Math.ceil(whole.need / type.capacity - 1e-9)) * typeNeed / whole.need : 0;
+                return chosen[index].fleet ?? Math.ceil(typeNeed / type.capacity);
+            });
+            [fleet, fleet2 = 0] = counts;
+            needs = types.map((type, index) => ({ type: type.id, need: need / types.length, user: chosen[index].fleet }));
         } else [fleet, fleet2] = [Math.ceil(need / capacity1), 0];
         const placedAs = types ? vehicleAs(types) : null;
+        // From a supplier, what waits on the lane is what the supplier still has to make or has ready.
+        const maker = kind === 'supply' ? suppliers.get(originSite.id) ?? null : null;
         const node = place('roadLane', name, {
             name, position: between(originSite, destinationSite, offset),
-            initialValues: roadLaneState(rate, leadTime, fleet, { truckCapacity: capacity1, loadDays: laneLoadDays, responseDays, fleet2, truckCapacity2: capacity2 }),
+            initialValues: roadLaneState(rate, leadTime, fleet, { truckCapacity: capacity1, loadDays: laneLoadDays, responseDays: maker ? maker.pipelineDays : responseDays, fleet2, truckCapacity2: capacity2 }),
             shared: { leadTime, distance: kilometres, fleetSize: fleet, fleetSize2: fleet2 }, ...(placedAs ? { as: placedAs.lane } : {})
         });
         // To keep up, a lane needs its loaded and returning vehicles and a loading period's flow idle at the origin.
@@ -640,10 +698,11 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         }
         const ownFleet = types && chosen.some((item, index) => index < types.length && item.fleet !== null);
         if (ownFleet && fleetCapacity < minimum - 1e-9) {
-            warnings.push(`${name.replace(/^Road /, '')} has room for ${fleetCapacity.toFixed(0)} ${unit} in its vehicles, but its flow needs ${minimum.toFixed(0)} (on the road and loading): it will fall behind from the start.`);
+            warnings.push(`${label(ends)} has room for ${fleetCapacity.toFixed(0)} ${unit} in its vehicles, but its flow needs ${minimum.toFixed(0)} (on the road and loading): it will fall behind from the start.`);
         }
-        bundle(kind === 'store' ? 'storeShipment' : 'roadShipment', name, { origin, lane: node, destination }, {
-            shared: { orderShare: share }, ...(placedAs ? { as: placedAs.shipment } : {})
+        bundle(kind === 'store' ? 'storeShipment' : maker ? 'supplierShipment' : 'roadShipment', name, { origin, lane: node, destination }, {
+            // From a supplier: its share of the supplier's ready goods, what it orders of all the supplier makes.
+            shared: { orderShare: share, ...(maker ? { supplyShare: supply.get(originSite.id) > 0 ? rate / supply.get(originSite.id) : 0 } : {}) }, ...(placedAs ? { as: placedAs.shipment } : {})
         });
         // Live, so a scenario can close the road, send vehicles on a detour, move its orders to the destination's
         // other lanes, or change its fleet: up to three times the vehicles it starts with.
@@ -685,17 +744,19 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
             types.forEach((type, index) => {
                 const count = index ? fleet2 : fleet;
                 const own = chosen[index].fleet !== null;
-                note(name, `Fleet of ${type.name.toLowerCase()}s`, count, 'vehicles', own ? 'user' : 'assumed', own ? 'Your figure.' : `Enough for ${types.length === 2 ? 'half of ' : ''}the baseline flow of ${rate.toFixed(1)} ${unit}/day, plus a reserve.`);
+                const whole = scope?.fleets?.get(`${link}|${type.id}`);
+                const shared = whole ? ` ${scope.category.name}'s share of the link's ${number(whole.user ?? Math.ceil(whole.need / type.capacity - 1e-9))}, by what each category needs: a category's goods have vehicles of their own.` : '';
+                note(name, `Fleet of ${type.name.toLowerCase()}s`, count, 'vehicles', own ? 'user' : 'assumed', `${own ? 'Your figure.' : `Enough for ${types.length === 2 ? 'half of ' : ''}the baseline flow of ${rate.toFixed(1)} ${unit}/day, plus a reserve.`}${shared}`);
             });
         } else {
             note(name, 'Fleet', fleet, 'trucks', 'assumed', `Enough for the baseline flow of ${rate.toFixed(1)} ${unit}/day, plus a reserve.`);
         }
         lanes.push({
-            name, kind, from: originSite.name, to: destination.name, site: destinationSite.name, rate, leadTime, kilometres, fleet, fleet2,
+            name, kind, from: origin.name, to: destination.name, site: destinationSite.name, fromSite: originSite.name, link, category: scope?.category.id ?? null, needs, rate, leadTime, kilometres, fleet, fleet2,
             operator: Boolean(contract), standby, basis: leg.basis, timeBasis: own ? 'user' : estimated ? 'estimated' : leg.basis, truckCapacity: capacity1, truckCapacity2: capacity2, loadDays: laneLoadDays,
             ...(types ? { vehicles: types.map((type, index) => ({ type: type.id, name: type.name, fleet: index ? fleet2 : fleet, user: chosen[index].fleet !== null })) } : {})
         });
-        if (kind === 'supply') laneGeometry.push({ name, rate, standby, basis: leg.basis, origin: originSite, destination: destinationSite, path: leg.path ?? null });
+        if (kind === 'supply') laneGeometry.push({ name: link, rate, standby, basis: leg.basis, origin: originSite, destination: destinationSite, path: leg.path ?? null });
         return node;
     };
 
@@ -706,10 +767,12 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         // A figure of the site's own: one the user set (an assumed one is the role's default, which the model has too).
         const own = (key) => Number(site[key]) > 0 && site[`${key}Basis`] !== 'assumed';
         const cover = own('coverDays') ? Number(site.coverDays) : defaultCover;
-        const capacity = own('capacity') ? Number(site.capacity) : storageCapacity;
+        // With categories, each has its share of the site's room, by what the site handles of it.
+        const room = scope?.room?.get(site.id) ?? 1;
+        const capacity = own('capacity') ? Number(site.capacity) * room : storageCapacity;
         const target = total * cover;
         const stock = Math.min(target, capacity);
-        const onOrder = laneSpecs.reduce((sum, lane) => sum + lane.rate * (responseDays + lane.leadTime), 0);
+        const onOrder = laneSpecs.reduce((sum, lane) => sum + lane.rate * ((lane.waitDays ?? responseDays) + lane.leadTime), 0);
         const planningLeadTime = onOrder / total;
         // It must hold what it hands on before its stock runs down: else the baseline cannot hold still.
         const minimum = total * minimumDays;
@@ -734,7 +797,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         });
         note(site.name, 'Planned replenishment time', planningLeadTime, 'day', 'routed', 'Average order-to-arrival time over its lanes.');
         if (own('coverDays') || coverAs) note(site.name, 'Stock cover target', cover, 'day', own('coverDays') ? (site.coverDaysBasis ?? 'user') : 'assumed', own('coverDays') ? 'Your figure.' : `Assumed: the default for a ${what === 'sells' ? 'store' : 'warehouse'}, until you set it.`);
-        if (own('capacity')) note(site.name, 'Storage capacity', capacity, unit, site.capacityBasis ?? 'user', 'Your figure.');
+        if (own('capacity')) note(site.name, 'Storage capacity', capacity, unit, site.capacityBasis ?? 'user', scope ? `${number(room * 100, 1)}% of your ${number(Number(site.capacity), 1)}: ${scope.category.name}'s share of what the site handles. Each category has its own room.` : 'Your figure.');
         if (own('holdingCost')) note(site.name, 'Holding cost', Number(site.holdingCost), `cost/${unit}/day`, site.holdingCostBasis ?? 'user', 'Your figure.');
         return node;
     };
@@ -750,11 +813,11 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
             .map((port) => ({ port, rate: 0, leg: legOf(`${zone.id}|${port.id}`), standby: true, link: null }));
         const laneSpecs = [...zoneFlows, ...standby].map((flow) => {
             // The lane's travel time as placeLane works it out: at least the slowest of its vehicles' speeds allows.
-            const types = catalogue ? typesOf(choiceOf(flow.link?.vehicles, 'supply'), `${flow.port.name} → ${zone.name}`) : null;
-            return { ...flow, leadTime: laneTiming(flow.leg, types, 'supply').leadTime };
+            const types = catalogue ? typesOf(choiceOf(flow.link?.vehicles, 'supply', `${flow.port.name} → ${zone.name}`), `${flow.port.name} → ${zone.name}`) : null;
+            return { ...flow, leadTime: laneTiming(flow.leg, types, 'supply').leadTime, waitDays: suppliers.get(flow.port.id)?.pipelineDays ?? responseDays };
         });
         const warehouse = placeStock({
-            entity: zone.name, site: zone, total, laneSpecs, defaultCover: coverDays, what: 'sends out',
+            entity: label(zone.name), site: zone, total, laneSpecs, defaultCover: coverDays, what: 'sends out',
             minimumDays: deliversTo.has(zone.id) ? drawDownDays : originDrainDays
         });
         for (const [laneIndex, lane] of laneSpecs.entries()) {
@@ -767,10 +830,6 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         warehouses.set(zone.id, warehouse);
     }
 
-    // The roads the lanes run on, simplified as the map simplifies its roads: about half a pixel on a 1000-pixel map.
-    const latitudes = [...ports, ...usedZones].map((item) => item.lat);
-    const corridors = laneCorridors(laneGeometry, { tolerance: Math.max(20, (Math.max(...latitudes) - Math.min(...latitudes)) * 111320 / 2000) });
-
     // ---- towns, each served by its zones: a customer area (or a town) by deliveries; a store or dark store, with a
     // catalogue, from its own stock, restocked by road from its warehouses.
     const serveLinkOf = new Map((links?.serve ?? []).map((link) => [`${link.zone}|${link.town}`, link]));
@@ -779,19 +838,20 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         const townDemand = demand.get(town.id);
         const itsAllocations = allocations.filter((item) => item.town === town);
         const shop = stocked(town);
-        const node = place('demandZone', town.name, {
-            name: town.name, position: position(town),
+        const townName = label(town.name);
+        const node = place('demandZone', townName, {
+            name: townName, position: position(town),
             initialValues: { backlog: townDemand * (shop ? settings.saleDays : responseDays), demandRate: townDemand },
             shared: { baseDemand: townDemand }
         });
         // Live, so a scenario can step demand up: to four times the town's own.
-        makeLive(town.name, 'baseDemand', niceCeiling(4 * townDemand));
+        makeLive(townName, 'baseDemand', niceCeiling(4 * townDemand));
         if (shop) {
-            const stockName = `${town.name} stock`;
+            const stockName = label(`${town.name} stock`);
             const kindName = town.role === 'darkStore' ? 'dark store' : 'store';
             const laneSpecs = itsAllocations.map((item) => {
                 const link = serveLinkOf.get(`${item.zone.id}|${town.id}`);
-                const types = typesOf(choiceOf(link?.vehicles, 'store'), `${item.zone.name} → ${town.name}`);
+                const types = typesOf(choiceOf(link?.vehicles, 'store', `${item.zone.name} → ${town.name}`), `${item.zone.name} → ${town.name}`);
                 if (!types.length) throw new Error(`${item.zone.name} → ${town.name} has no vehicles. Choose a vehicle for it.`);
                 const barred = types.filter((type) => !type.toStores);
                 if (barred.length) throw new Error(`${barred.map((type) => type.name).join(' and ')} may not deliver to ${kindName}s: choose another vehicle for ${item.zone.name} → ${town.name}.`);
@@ -809,7 +869,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
             // user set it, else one for every store (or dark store), so it can be changed for all at once.
             const ownLost = Number.isFinite(town.lostShare) && town.lostShareBasis !== 'assumed';
             const lostShare = ownLost ? town.lostShare : town.role === 'darkStore' ? settings.darkStoreLostShare : settings.storeLostShare;
-            bundle('delivery', `${town.name} sales`, { warehouse: stockNode, zone: node }, {
+            bundle('delivery', label(`${town.name} sales`), { warehouse: stockNode, zone: node }, {
                 shared: { share: 1, demandShare: 1 },
                 as: {
                     responseDays: { symbol: 'saleDays', name: 'Sale time at stores', value: settings.saleDays },
@@ -832,12 +892,12 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
                 });
                 if (laneSpecs.length > 1) note(town.name, `Share ordered from ${zone.name}`, lane.allocation.share * 100, '%', 'assumed', `By the warehouse's size and road access, and ${lane.allocation.leg.hours.toFixed(1)} h by road.`);
             }
-            stores.push({ name: town.name, stock: stockName, role: town.role, demand: townDemand, lostShare, saleValue, saleValueBasis: ownValue ? 'user' : 'assumed' });
+            stores.push({ name: townName, site: town.name, category: scope?.category.id ?? null, stock: stockName, role: town.role, demand: townDemand, lostShare, saleValue, saleValueBasis: ownValue ? 'user' : 'assumed' });
             continue;
         }
         for (const allocation of itsAllocations) {
             const zoneTotal = zoneDemand.get(allocation.zone.id);
-            bundle('delivery', `${town.name} from ${allocation.zone.name}`, { warehouse: warehouses.get(allocation.zone.id), zone: node }, {
+            bundle('delivery', label(`${town.name} from ${allocation.zone.name}`), { warehouse: warehouses.get(allocation.zone.id), zone: node }, {
                 shared: { share: allocation.share * townDemand / zoneTotal, demandShare: allocation.share }
             });
             if (itsAllocations.length > 1) {
@@ -845,7 +905,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
             }
         }
     }
-    if (stores.length) note('Every store', 'Sale time and shelf draw-down time', settings.saleDays, 'day', 'assumed', `A shopper buys what is on the shelf within ${number(settings.saleDays * 24, 1)} hours, and the shelves can be emptied in as long: a store sells what it has; of what it has not, some sales are lost and the rest wait.`);
+    if (stores.length && !scope?.index) note('Every store', 'Sale time and shelf draw-down time', settings.saleDays, 'day', 'assumed', `A shopper buys what is on the shelf within ${number(settings.saleDays * 24, 1)} hours, and the shelves can be emptied in as long: a store sells what it has; of what it has not, some sales are lost and the rest wait.`);
 
     if (operator && lanes.length) {
         const [first, second] = operator.trucks;
@@ -867,10 +927,55 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         if (unmatched.length) warnings.push(`${operator.name}'s contract${unmatched.length === 1 ? '' : 's'} for ${unmatched.map((contract) => `${contract.from} → ${contract.to}`).join(', ')} match${unmatched.length === 1 ? 'es' : ''} no lane in the model.`);
     }
 
+    const category = scope?.category.id ?? null;
+    return {
+        provenance, warnings, parameterIndex, lanes, laneGeometry, stores, unusedLinks, unusedZones,
+        // What each warehouse sends out and each store sells, by site id: what a category's share of a site's room goes by.
+        totals: new Map([...zoneDemand, ...demand]),
+        // Each port's arrivals as built: its average, and the held schedule it follows when it has one -- what a
+        // scenario that changes them starts from. A supplier's: what is ordered from it, the most it can make and its lead time.
+        ports: ports.map((port) => ({
+            name: label(port.name), site: port.name, category, supplier: Boolean(port.supplier), arrivals: supply.get(port.id),
+            berths: suppliers.get(port.id)?.capacity ?? supply.get(port.id) * settings.berthHeadroom, schedule: histories.get(port.id)?.samples ?? null,
+            ...(suppliers.has(port.id) ? { leadDays: suppliers.get(port.id).leadTime } : {}),
+            usual: normals.get(port.id) ?? null, shift: port.activity?.shift ?? null
+        })),
+        // How the toolbox sizes a lane's fleet, for a scenario that hires trucks.
+        trucking: { truckCapacity, loadDays, idleReserve: settings.idleReserve },
+        standbyPorts: standbyPorts.map((port) => port.name),
+        operator: operator ? { name: operator.name, synthetic: operator.synthetic, currency: operator.currency, trucks: operator.trucks, depots: operator.depots, lanes: operatorLanes } : null,
+        // The ports whose arrivals follow their history, and the dates model day 0 and the last day stand for.
+        histories: [...histories].map(([id, history]) => ({ port: ports.find((port) => port.id === id).name, from: history.from, to: history.to, days: history.samples.length })),
+        // Each town's demand as built, what a scenario that steps it up starts from.
+        towns: towns.map((town) => ({ name: label(town.name), site: town.name, category, demand: demand.get(town.id) })),
+        unit, perTeu,
+        vehicles: catalogue ? catalogue.map((type) => ({ id: type.id, name: type.name, capacity: type.capacity, refrigerated: Boolean(type.refrigerated) })) : null,
+        // One entry per town and zone serving it: the zone's share of the town's demand.
+        served: allocations.map((allocation) => ({ town: allocation.town.name, zone: allocation.zone.name, category, share: allocation.share, demand: allocation.share * demand.get(allocation.town.id), hours: allocation.leg.hours })),
+        latitudes: [...ports, ...usedZones].map((item) => item.lat),
+        setByOperator: operator ? ['truckCapacity', 'costPerKm', 'truckDayCost', ...(operator.trucks[1] ? ['truckCapacity2', 'costPerKm2', 'truckDayCost2'] : [])] : []
+    };
+}
+
+// Where the canvas puts a model's sites: north up, spread over about 80 units so names stay apart.
+function layoutOf(everything) {
+    const origin = { lat: everything.reduce((total, item) => total + item.lat, 0) / everything.length, lon: everything.reduce((total, item) => total + item.lon, 0) / everything.length };
+    const local = everything.map((item) => toLocal(item, origin));
+    const extent = Math.max(1, ...local.map((point) => Math.max(Math.abs(point.x), Math.abs(point.y))));
+    return { origin, scale: 40 / extent };
+}
+
+// The model from its parts: one network, or one copy of it per category.
+function assemble(parts, { builder, settings, categories = null }) {
+    const [first] = parts;
+    const all = (key) => parts.flatMap((part) => part[key]);
+    const unique = (items) => [...new Set(items)];
+    const provenance = all('provenance');
     // The model-wide constants every component shares: the component library's defaults unless the operator set them,
     // so every input the model runs on says where it comes from. Seconds per day is a unit, not an input.
+    const templates = builder.templates;
     const projectScope = new Map([...templates.values()].flatMap((template) => (template.sharedParameters ?? []).filter((declared) => declared.scope === 'project').map((declared) => [declared.symbol, declared])));
-    const setByOperator = new Set(operator ? ['truckCapacity', 'costPerKm', 'truckDayCost', ...(operator.trucks[1] ? ['truckCapacity2', 'costPerKm2', 'truckDayCost2'] : [])] : []);
+    const setByOperator = new Set(first.setByOperator);
     const inert = {
         outageStart: 'The berth outage window; no port has an outage unless its outage capacity is lowered.',
         outageEnd: 'The berth outage window; no port has an outage unless its outage capacity is lowered.',
@@ -879,38 +984,110 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
     };
     for (const shared of builder.sharedParameters) {
         if (!projectScope.has(shared.symbol) || shared.symbol === 'secondsPerDay' || setByOperator.has(shared.symbol)) continue;
-        note('Every component', shared.name, shared.value, shared.unit, 'assumed', inert[shared.symbol] ?? 'The component library’s default, shared by every component that uses it.');
+        provenance.push({ entity: 'Every component', parameter: shared.name, value: shared.value, unit: shared.unit, basis: 'assumed', detail: inert[shared.symbol] ?? 'The component library’s default, shared by every component that uses it.' });
     }
-
+    // The roads the lanes run on, simplified as the map simplifies its roads: about half a pixel on a 1000-pixel map.
+    // A link's categories travel the same road: one lane on the map, carrying them all.
+    const geometry = new Map();
+    for (const lane of all('laneGeometry')) {
+        if (geometry.has(lane.name)) geometry.get(lane.name).rate += lane.rate;
+        else geometry.set(lane.name, { ...lane });
+    }
+    const latitudes = all('latitudes');
+    const corridors = laneCorridors([...geometry.values()], { tolerance: Math.max(20, (Math.max(...latitudes) - Math.min(...latitudes)) * 111320 / 2000) });
     const document = builder.document({ days: settings.days, stepDays: settings.stepMinutes / 1440, outputDays: settings.outputMinutes / 1440 });
+    // A warehouse left out: one that serves no one in any category.
+    const unusedZones = first.unusedZones.filter((zone) => parts.every((part) => part.unusedZones.some((other) => other.id === zone.id))).map((zone) => zone.name);
+    const histories = new Map(all('histories').map((item) => [item.port, item]));
+    const unusedLinks = new Map(all('unusedLinks').map((item) => [`${item.from}|${item.to}`, item]));
     return {
-        document, provenance, warnings, parameterIndex, lanes,
-        // Each port's arrivals as built: its average, and the held schedule it follows when it has one -- what a
-        // scenario that changes them starts from. And the run's length in days.
-        ports: ports.map((port) => ({
-            name: port.name, supplier: Boolean(port.supplier), arrivals: supply.get(port.id), berths: supply.get(port.id) * settings.berthHeadroom, schedule: histories.get(port.id)?.samples ?? null,
-            usual: normals.get(port.id) ?? null, shift: port.activity?.shift ?? null
-        })),
-        days: settings.days,
-        // How the toolbox sizes a lane's fleet, for a scenario that hires trucks.
-        trucking: { truckCapacity, loadDays, idleReserve: settings.idleReserve },
-        standbyPorts: standbyPorts.map((port) => port.name),
-        operator: operator ? { name: operator.name, synthetic: operator.synthetic, currency: operator.currency, trucks: operator.trucks, depots: operator.depots, lanes: operatorLanes } : null,
-        // The ports whose arrivals follow their history, and the dates model day 0 and the last day stand for.
-        histories: [...histories].map(([id, history]) => ({ port: ports.find((port) => port.id === id).name, from: history.from, to: history.to, days: history.samples.length })),
-        unusedZones: unusedZones.map((zone) => zone.name),
-        // The supply links the network gave that are not lanes in the model, and why.
-        unusedLinks,
+        document, provenance, warnings: unique(all('warnings')), parameterIndex: all('parameterIndex'),
+        // Every lane, a link's one for each category it carries: { name, link, category, from and to (nodes), fromSite and site, ... }.
+        lanes: all('lanes'), ports: all('ports'), days: settings.days, trucking: first.trucking, standbyPorts: first.standbyPorts, operator: first.operator,
+        histories: [...histories.values()], unusedZones,
+        // The supply links the network gave that are not lanes in the model in some category, and why.
+        unusedLinks: [...unusedLinks.values()],
         // The roads the lanes run on, for the map: [{ points, rate, lanes, basis, standby }].
         corridors,
-        // Each town's demand as built, what a scenario that steps it up starts from.
-        towns: towns.map((town) => ({ name: town.name, demand: demand.get(town.id) })),
-        // The stores and dark stores that hold stock: { name, stock (its stock room's node), role, demand }.
-        stores,
-        // What the model counts, how many of it a TEU is, and the vehicle types its lanes run on (null for two truck sizes).
-        unit, perTeu,
-        vehicles: catalogue ? catalogue.map((type) => ({ id: type.id, name: type.name, capacity: type.capacity })) : null,
-        // One entry per town and zone serving it: the zone's share of the town's demand.
-        served: allocations.map((allocation) => ({ town: allocation.town.name, zone: allocation.zone.name, share: allocation.share, demand: allocation.share * demand.get(allocation.town.id), hours: allocation.leg.hours }))
+        towns: all('towns'),
+        // The stores and dark stores that hold stock, one entry for each category they sell: { name (its shoppers' node),
+        // site, category, stock (its stock room's node), role, demand }.
+        stores: all('stores'),
+        // What the model counts, how many of it a TEU is, the vehicle types its lanes run on (null for two truck sizes)
+        // and the categories it carries (null for goods of one kind).
+        unit: first.unit, perTeu: first.perTeu, vehicles: first.vehicles,
+        categories: categories ? categories.map((category) => ({ id: category.id, name: category.name, chilled: Boolean(category.chilled) })) : null,
+        served: all('served')
     };
+}
+
+// Builds the model. With `options.categories` (a network placed in the window), every category is its own copy of the
+// network: a site's supply or sales are shared among the categories by its own mix (`mix` on its entry: { [category
+// id]: weight }) or else by the categories' usual shares, a supplier may have a lead time for each (`leadDaysBy`), a
+// chilled category goes by refrigerated vehicles only, and a link's vehicles and a site's room are shared among the
+// categories by what each needs. Vehicles are not shared between categories as they run: each has its own on a link.
+export function buildRegionModel({ builder, selection, route, links = null, options = {} }) {
+    const settings = { ...regionModelDefaults, ...options };
+    const categories = links && settings.vehicles?.length && settings.categories?.length ? settings.categories : null;
+    if (!categories) return assemble([buildScope({ builder, selection, route, links, settings })], { builder, settings });
+    const names = categories.map((category) => String(category.name ?? '').trim());
+    if (names.some((name) => !name)) throw new Error('A category has no name. Name it in the Categories list.');
+    if (new Set(names).size !== names.length) throw new Error('Two categories have the same name: give each its own.');
+    const single = categories.length === 1;
+    const sites = [...(selection.ports ?? []), ...(selection.towns ?? [])];
+    // Each site's mix: its own weights, or the categories' usual shares; over the categories there are.
+    const shares = new Map(categories.map((category) => [category.id, new Map()]));
+    const mixBasis = new Map();
+    for (const site of sites) {
+        const own = site.mix && categories.some((category) => site.mix[category.id] !== undefined);
+        const weight = (category) => Math.max(0, Number(own ? site.mix[category.id] ?? 0 : category.share ?? 1) || 0);
+        const total = categories.reduce((sum, category) => sum + weight(category), 0);
+        if (!(total > 0)) throw new Error(`${site.name} ${site.supplier ? 'supplies' : 'carries'} none of the categories. Give it at least one.`);
+        for (const category of categories) shares.get(category.id).set(site.id, weight(category) / total);
+        mixBasis.set(site.id, own ? 'user' : 'assumed');
+    }
+    const everything = [...(selection.ports ?? []), ...(selection.zones ?? []), ...(selection.towns ?? [])];
+    const layout = everything.length ? layoutOf(everything) : null;
+    const scopes = categories.map((category, index) => {
+        const its = shares.get(category.id);
+        const ports = (selection.ports ?? []).filter((port) => its.get(port.id) > 0).map((port) => {
+            const lead = port.leadDaysBy?.[category.id];
+            return Number(lead?.value) > 0 ? { ...port, leadDays: Number(lead.value), leadDaysBasis: lead.basis ?? 'user' } : port;
+        });
+        const towns = (selection.towns ?? []).filter((town) => its.get(town.id) > 0);
+        const kept = new Set([...ports, ...towns].map((site) => site.id));
+        return {
+            category, index, single, shares: its, mixBasis, layout,
+            selection: { ports, zones: selection.zones ?? [], towns },
+            links: { supply: links.supply.filter((link) => kept.has(link.port)), serve: links.serve.filter((link) => kept.has(link.town)) }
+        };
+    });
+    const run = (scope, onto, extra) => {
+        try {
+            return buildScope({ builder: onto, selection: scope.selection, route, links: scope.links, settings, scope: { ...scope, ...extra } });
+        } catch (error) {
+            throw single ? error : new Error(`${scope.category.name}: ${error.message}`);
+        }
+    };
+    // Built once to learn what each category needs on each link and at each site, then for good with the link's
+    // vehicles and the site's room shared by that.
+    const fleets = new Map();
+    const siteTotals = new Map();
+    const drafts = single ? [] : scopes.map((scope) => run(scope, builder.fresh(), { typesNoted: new Set() }));
+    for (const draft of drafts) {
+        for (const lane of draft.lanes) {
+            for (const item of lane.needs ?? []) {
+                const key = `${lane.link}|${item.type}`;
+                const whole = fleets.get(key) ?? { need: 0, user: null };
+                fleets.set(key, { need: whole.need + item.need, user: whole.user ?? item.user });
+            }
+        }
+        for (const [id, total] of draft.totals) siteTotals.set(id, (siteTotals.get(id) ?? 0) + total);
+    }
+    const typesNoted = new Set();
+    const parts = scopes.map((scope, index) => run(scope, builder, single ? { typesNoted } : {
+        typesNoted, fleets,
+        room: new Map([...drafts[index].totals].map(([id, total]) => [id, siteTotals.get(id) > 0 ? total / siteTotals.get(id) : 0]))
+    }));
+    return assemble(parts, { builder, settings, categories });
 }

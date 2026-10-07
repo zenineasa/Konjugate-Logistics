@@ -169,7 +169,10 @@ test('a network with vehicles builds stores that hold stock, restocked over lane
     const { data, document } = result;
     assert.equal(data.unit, 'pallets');
     assert.deepEqual(data.stores.map((item) => item.name).sort(), ['Harbour shop', 'High street', 'Night hub']);
-    assert.deepEqual(data.vehicles.map((type) => type.id), ['heavyTruck', 'mediumTruck', 'smallTruck', 'miniVan']);
+    assert.deepEqual(data.vehicles.map((type) => type.id), ['heavyTruck', 'mediumTruck', 'smallTruck', 'miniVan', 'refrigeratedTruck']);
+    assert.equal(data.categories, null, 'no categories asked for: goods of one kind');
+    // A supplier is made to order: a Supplier node, its lanes Supplier shipments.
+    assert.ok(document.nodes.some((node) => node.type === 'Supplier') && !document.nodes.some((node) => node.type === 'Port'));
     // Supply links on heavy trucks; each store restocked over a lane of its own, the dark store's on mini-vans.
     const supply = data.lanes.filter((lane) => lane.kind === 'supply');
     assert.ok(supply.length && supply.every((lane) => lane.vehicles.map((item) => item.type).join() === 'heavyTruck'));

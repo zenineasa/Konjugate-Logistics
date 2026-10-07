@@ -62,7 +62,10 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 | Give a link's travel time | Its card's travel time; the Travel times list in the Network step; Load your times (CSV) | Its menu, "Type its travel time…"; paste a column from a spreadsheet into the list | `T` (the selected link's time; with none selected, the list), Enter for the next link |
 | Read a link's time off a map | Google ↗ or OSM ↗ on its card or in the list | Its menu, "Check its time in Google Maps" or "on OpenStreetMap" | |
 | Scale the other links by your times | The calibration's tick in the Travel times list | | |
-| Change a vehicle type | Vehicles in the Network step: its name, figures and "May deliver to stores"; Add a vehicle type; ✕ to delete one | | |
+| Change a vehicle type | Vehicles in the Network step: its name, figures, "May deliver to stores" and "Refrigerated"; Add a vehicle type; ✕ to delete one | | |
+| Change a category | Categories in the Network step: its name, usual share, supplier lead time and "Needs refrigerated vehicles"; Add a category; ✕ to delete one | | |
+| Give a site its own mix of categories | The share beside each category on its card (0: it does not carry it); Use the usual shares | | |
+| Give a supplier its own lead time | The days beside each category on its card (empty: the category's) | | |
 | Undo, redo | ↶ ↷ above the map; Undo in the message after a change | | Command+Z; Command+Shift+Z (or Ctrl+Y) |
 | Fit the map | Fit above the map | Map menu | `F` (the selection, or the network), `0` (the region) |
 | Zoom | + and − above the map | Wheel | `+`, `-` |
@@ -76,5 +79,6 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 ## Not yet
 
 - Copy and paste between sessions, and a search to jump to a site by name.
+- A site's mix of categories from its menu or a key, and for several sites selected at once: today it is set on one site's card, as its other figures are.
 - Keyboard focus moving through the sites on the map (Tab), for users who do not use a pointer at all.
 - Touch: a long press for the menu.

@@ -1,7 +1,8 @@
 /* Copyright © 2026 Zenin Easa Panthakkalakath */
 
 // The vehicles a network runs on: a small catalogue of types, each with its capacity in pallets, its costs, its
-// top speed, how long it takes to load and whether it may deliver to stores (city streets), and on every link the
+// top speed, how long it takes to load, whether it may deliver to stores (city streets) and whether it is refrigerated
+// (chilled and frozen goods go by refrigerated vehicles only; other goods by any), and on every link the
 // one or two types that carry it, each with a fleet the toolbox sizes or the user sets.
 //
 // A type's figures start as defaults labelled assumed and become the user's once changed, as a site's do. In the
@@ -21,11 +22,15 @@ export const vehicleFields = [
 
 // The catalogue a new network starts with: assumptions to replace with the user's own fleet's figures. Costs are in
 // the network's cost units, the same for every type.
+// The refrigerated type a catalogue with none is given when its network carries chilled goods (a session from before
+// categories).
+const refrigeratedTruck = { id: 'refrigeratedTruck', name: 'Refrigerated truck', capacity: 10, costPerKm: 1.4, costPerDay: 110, speed: 70, loadingHours: 0.75, toStores: true, refrigerated: true };
 export const defaultVehicles = [
     { id: 'heavyTruck', name: 'Heavy truck', capacity: 30, costPerKm: 1.6, costPerDay: 120, speed: 80, loadingHours: 1, toStores: false },
     { id: 'mediumTruck', name: 'Medium truck', capacity: 12, costPerKm: 1.1, costPerDay: 80, speed: 70, loadingHours: 0.75, toStores: true },
     { id: 'smallTruck', name: 'Small truck', capacity: 6, costPerKm: 0.8, costPerDay: 60, speed: 60, loadingHours: 0.5, toStores: true },
-    { id: 'miniVan', name: 'Mini-van', capacity: 2, costPerKm: 0.5, costPerDay: 40, speed: 50, loadingHours: 0.25, toStores: true }
+    { id: 'miniVan', name: 'Mini-van', capacity: 2, costPerKm: 0.5, costPerDay: 40, speed: 50, loadingHours: 0.25, toStores: true },
+    refrigeratedTruck
 ];
 
 // A link's vehicles, by what it joins: heavy trucks from sources to warehouses, medium trucks to stores, mini-vans to
@@ -37,7 +42,7 @@ export const typesPerLink = 2;
 const asField = (value) => ({ value, basis: 'assumed' });
 
 // A type from its figures: `fields` given are the user's; the rest start as assumed defaults (a medium truck's).
-export function createVehicle({ id, name, toStores = true, basis = 'user', ...given } = {}, others = []) {
+export function createVehicle({ id, name, toStores = true, refrigerated = false, basis = 'user', ...given } = {}, others = []) {
     const template = defaultVehicles.find((type) => type.id === id) ?? defaultVehicles[1];
     const fields = {};
     for (const field of vehicleFields) {
@@ -46,7 +51,7 @@ export function createVehicle({ id, name, toStores = true, basis = 'user', ...gi
             ? (typeof value === 'object' ? value : { value: Number(value), basis })
             : asField(template[field.key]);
     }
-    return { id: id ?? newVehicleId(others), name: name || nextVehicleName(others), toStores: Boolean(toStores), fields };
+    return { id: id ?? newVehicleId(others), name: name || nextVehicleName(others), toStores: Boolean(toStores), refrigerated: Boolean(refrigerated), fields };
 }
 
 export function newVehicleId(others = []) {
@@ -62,7 +67,7 @@ function nextVehicleName(others) {
 // The default catalogue, every figure assumed.
 export function defaultCatalogue() {
     return defaultVehicles.map((type) => ({
-        id: type.id, name: type.name, toStores: type.toStores,
+        id: type.id, name: type.name, toStores: type.toStores, refrigerated: Boolean(type.refrigerated),
         fields: Object.fromEntries(vehicleFields.map((field) => [field.key, asField(type[field.key])]))
     }));
 }
@@ -110,6 +115,18 @@ export function vehiclesOf(link, kind, catalogue) {
     return [{ type: preferred.id, fleet: null }];
 }
 
+// The vehicles that carry a chilled category on a link: its refrigerated ones, or, when it has none, the first
+// refrigerated type that may go there ([] when the catalogue has none). Other goods go by all of the link's vehicles.
+// `catalogue` is the window's or the model builder's: only a type's id, `refrigerated` and `toStores` are read.
+export function carriersFor(vehicles, kind, catalogue, chilled) {
+    if (!chilled) return vehicles;
+    const typeOf = (item) => catalogue.find((type) => type.id === item.type);
+    const cold = vehicles.filter((item) => typeOf(item)?.refrigerated);
+    if (cold.length) return cold;
+    const fallback = catalogue.find((type) => type.refrigerated && (kind === 'supply' || type.toStores));
+    return fallback ? [{ type: fallback.id, fleet: null }] : [];
+}
+
 // Why a link's vehicles cannot carry it, if they cannot: a type that may not deliver to stores on a link to one.
 export function linkVehicleProblem(vehicles, kind, catalogue, { from = 'the warehouse', to = 'the store' } = {}) {
     if (kind !== 'store' && kind !== 'darkStore') return null;
@@ -121,18 +138,25 @@ export function linkVehicleProblem(vehicles, kind, catalogue, { from = 'the ware
 // The catalogue as the model builder reads it: plain numbers, each with where it came from.
 export function catalogueForModel(catalogue) {
     return catalogue.map((type) => ({
-        id: type.id, name: type.name, toStores: type.toStores,
+        id: type.id, name: type.name, toStores: type.toStores, refrigerated: Boolean(type.refrigerated),
         ...Object.fromEntries(vehicleFields.map((field) => [field.key, Number(type.fields[field.key].value)])),
         basis: Object.fromEntries(vehicleFields.map((field) => [field.key, type.fields[field.key].basis]))
     }));
 }
 
 // A session's catalogue made whole: every default field present, unknown fields dropped; the default catalogue for
-// none.
-export function completeCatalogue(saved) {
+// none. `refrigerated`: one from before categories, which has no refrigerated type, is given the default one, so its
+// chilled goods have something to go by.
+export function completeCatalogue(saved, { refrigerated = false } = {}) {
     if (!Array.isArray(saved) || !saved.length) return defaultCatalogue();
+    const whole = completeSaved(saved);
+    if (refrigerated && !whole.some((type) => type.refrigerated)) whole.push(defaultCatalogue().find((type) => type.id === refrigeratedTruck.id));
+    return whole;
+}
+
+function completeSaved(saved) {
     return saved.filter((type) => type?.id).map((type) => createVehicle({
-        id: type.id, name: type.name, toStores: type.toStores !== false,
+        id: type.id, name: type.name, toStores: type.toStores !== false, refrigerated: type.refrigerated === true,
         ...Object.fromEntries(vehicleFields.map((field) => [field.key, type.fields?.[field.key] ?? null]))
     }, saved));
 }

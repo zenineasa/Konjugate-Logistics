@@ -84,13 +84,14 @@ export function closurePlan({ lanes, closed, mode = 'wait', open = 0, detourHour
 }
 
 // The fleet on some lanes changed by `change` (-0.3 for 30% fewer trucks, 0.2 for a fifth more) from `start`, for
-// `duration` or for the rest of the run. Each size changes on its own, rounded to whole trucks. Trucks are hired or
+// `duration` or for the rest of the run. Each size changes on its own, rounded to whole trucks (a category's share of a
+// link's vehicles, which is not a whole number, is scaled as it is). Trucks are hired or
 // released over the lane's hiring time, and only idle ones are released. `lanes` are the build's lanes
 // ({ name, fleet, fleet2 }).
 export function fleetPlan({ lanes, change, start, duration = null, forkAt, runTime }) {
     if (!lanes.length) throw new Error('Choose at least one lane whose fleet changes.');
     if (!(change >= -1 && change !== 0)) throw new Error('Change the fleet by more than -100% and other than 0%.');
-    const scaled = (count) => Math.max(0, Math.round(count * (1 + change)));
+    const scaled = (count) => Math.max(0, Number.isInteger(count) ? Math.round(count * (1 + change)) : count * (1 + change));
     const sizes = { fleetSize: 'fleet', fleetSize2: 'fleet2' };
     const supplied = {};
     for (const [key, field] of Object.entries(sizes)) {

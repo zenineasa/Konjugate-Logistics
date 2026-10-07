@@ -12,6 +12,8 @@ Commands: `npm test` (unit), `npm run test:engine` (conservation, needs Konjugat
 Conventions:
 
 - The owner commits; propose a one-sentence commit message describing the change in behaviour.
+- GitHub builds only for a version: a `v*` tag runs `release.yml`; `build.yml` runs only when started by hand. Run `npm test` before tagging.
+- A release needs a Konjugate release with every feature in `packages/toolbox/addon.json`'s `requires` (today 1.1.9 or later, for `fetchCache`, `keepSession` and `openLink`): when the toolbox needs something new from Konjugate, release Konjugate first.
 - No em dashes and no Oxford commas in docs, UI text or comments.
 - Every input is labelled with where it came from; results compare choices, never forecast; never tune a scenario to look better; state limits and bugs plainly.
 - Every fix comes with a test that would have caught it. Keep `ReadMe.md` and `docs/direction.md` current.

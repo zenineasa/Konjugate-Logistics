@@ -15,7 +15,8 @@
 // link that would carry next to nothing, and says so; links the user drew are built as drawn.
 
 import { groupOfRole, roleNames } from './sites.mjs';
-import { catalogueForModel, linkKind, linkVehicleProblem, vehicleProblem, vehiclesOf } from './vehicles.mjs';
+import { categoriesForModel, categoriesProblem, hasMix, mixForModel } from './categories.mjs';
+import { carriersFor, catalogueForModel, linkKind, linkVehicleProblem, vehicleProblem, vehiclesOf } from './vehicles.mjs';
 
 // The network counts goods in pallets: a site's figures, a vehicle's capacity and the model's stocks and flows. A port's
 // volume is in containers (TEU), counted as `palletsPerTeu` pallets each.
@@ -32,7 +33,10 @@ const saleValueField = () => ({ key: 'saleValue', label: 'Value of a pallet sold
 export const roles = {
     supplier: {
         label: 'Supplier', kind: 'source',
-        fields: [{ key: 'supply', label: 'Supplies', unit: 'pallets a day', value: 50, detail: 'What it ships, whatever is ordered: a steady source until ordering from suppliers comes.' }]
+        fields: [
+            { key: 'supply', label: 'Supplies', unit: 'pallets a day', value: 50, detail: 'What is ordered from it in a normal week. It makes what is ordered, each order taking its lead time.' },
+            { key: 'makes', label: 'Can make at most', unit: 'pallets a day', value: null, positive: true, detail: 'The most it starts a day; orders beyond that wait, and arrive late. Empty: half as much again as it supplies.' }
+        ]
     },
     port: {
         label: 'Port', kind: 'source',
@@ -206,8 +210,8 @@ export function routeLinks(pins, links, router) {
 }
 
 // What stops the network from being built (errors) and what the user should know (warnings), each naming its pins.
-// `catalogue`: the vehicle types, when the network runs on them.
-export function networkProblems(pins, links, catalogue = null) {
+// `catalogue`: the vehicle types, when the network runs on them; `categories`: the product categories it carries.
+export function networkProblems(pins, links, catalogue = null, categories = null) {
     const problems = [];
     const byId = new Map(pins.map((pin) => [pin.id, pin]));
     const add = (level, text, ids = []) => problems.push({ level, text, pins: ids });
@@ -232,6 +236,19 @@ export function networkProblems(pins, links, catalogue = null) {
         const issue = vehicleProblem(type);
         if (issue) add('error', issue);
     }
+    if (categories) {
+        const issue = categoriesProblem(categories);
+        if (issue) add('error', issue);
+        // Chilled goods go by refrigerated vehicles: with none that may go where they must, the model cannot be built.
+        const chilled = categories.filter((category) => category.chilled);
+        if (catalogue && chilled.length) {
+            for (const kind of ['supply', 'store']) {
+                if (carriersFor([], kind, catalogue, true).length) continue;
+                add('error', `${chilled.map((category) => category.name).join(' and ')} ${chilled.length === 1 ? 'needs' : 'need'} a refrigerated vehicle${kind === 'store' ? ' that may deliver to stores' : ''}, and no vehicle type is one. Tick Refrigerated on a vehicle type, or add one.`);
+                break;
+            }
+        }
+    }
     const into = (pin) => links.filter((link) => link.to === pin.id && byId.has(link.from));
     const outOf = (pin) => links.filter((link) => link.from === pin.id && byId.has(link.to));
     for (const pin of of('demand')) if (!into(pin).length) add('error', `${pin.name} has no warehouse linked to it. Drag a link from a warehouse to it.`, [pin.id]);
@@ -250,7 +267,7 @@ export function networkProblems(pins, links, catalogue = null) {
 // so the importer reads its sourced data again), the links with their legs and vehicles, and the vehicle catalogue.
 // `paths: false` leaves the supply links' roads out, when they would be more than the host accepts in one request: the
 // lanes are then drawn straight. With no `catalogue`, links carry no vehicles and the model runs on two truck sizes.
-export function networkSelection(pins, links, { paths = true, catalogue = null } = {}) {
+export function networkSelection(pins, links, { paths = true, catalogue = null, categories = null } = {}) {
     const selection = { ports: [], zones: [], towns: [] };
     const byId = new Map(pins.map((pin) => [pin.id, pin]));
     const siteId = (pin) => pin.candidate?.id ?? pin.id;
@@ -259,7 +276,12 @@ export function networkSelection(pins, links, { paths = true, catalogue = null }
         const field = (key) => pin.fields?.[key];
         // A figure set, with where it came from: `name` and `nameBasis` on the entry.
         const carry = (key, name) => { if (field(key)?.value > 0) Object.assign(entry, { [name]: field(key).value, [`${name}Basis`]: field(key).basis }); };
-        if (pin.role === 'supplier') Object.assign(entry, { supplier: true, teuPerDay: field('supply').value, teuPerDayBasis: field('supply').basis });
+        if (pin.role === 'supplier') {
+            Object.assign(entry, { supplier: true, teuPerDay: field('supply').value, teuPerDayBasis: field('supply').basis });
+            carry('makes', 'makes');
+        }
+        // Its own mix of categories, and a supplier's own lead times: nothing when it takes the usual.
+        if (categories && hasMix(pin.role)) Object.assign(entry, mixForModel(pin, categories));
         if (pin.role === 'port') carry('teuPerDay', 'teuPerDay');
         if (pin.role === 'warehouse') {
             if (field('floorArea')?.value > 0) Object.assign(entry, { floorAreaSquareMetres: field('floorArea').value, floorAreaBasis: field('floorArea').basis });
@@ -299,7 +321,8 @@ export function networkSelection(pins, links, { paths = true, catalogue = null }
             supply: usable.filter((link) => kindOf(byId.get(link.from).role) === 'source').map((link) => ({ port: siteId(byId.get(link.from)), zone: siteId(byId.get(link.to)), leg: leg(link, true), ...(link.basis === 'user' ? { user: true } : {}), ...vehicles(link) })),
             serve: usable.filter((link) => kindOf(byId.get(link.from).role) === 'warehouse').map((link) => ({ zone: siteId(byId.get(link.from)), town: siteId(byId.get(link.to)), leg: leg(link, false), ...vehicles(link) }))
         },
-        ...(catalogue ? { vehicles: catalogueForModel(catalogue), unit } : {})
+        ...(catalogue ? { vehicles: catalogueForModel(catalogue), unit } : {}),
+        ...(catalogue && categories ? { categories: categoriesForModel(categories) } : {})
     };
 }
 

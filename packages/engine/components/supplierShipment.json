@@ -1,0 +1,524 @@
+{
+    "copyright": "Copyright © 2026 Zenin Easa Panthakkalakath",
+    "id": "supplierShipment",
+    "kind": "bundle",
+    "name": "Supplier shipment",
+    "domains": [
+        "logistics"
+    ],
+    "description": "Orders goods from a supplier and brings them to a warehouse through a road lane: a Road shipment whose origin is a Supplier, which also hands the warehouse's orders to the supplier to make. The warehouse's orders, times its order share for this lane, queue on the lane and reach the supplier at once; the supplier makes them over its lead time, and the lane ships its share of what stands ready (the share of the supplier's goods this warehouse orders), limited by its loading capacity (idle vehicles times their capacity per turnaround). So what waits on the lane is what the supplier still has to make or has ready, and the warehouse counts it as on order until it arrives. Each shipment takes idle vehicles of either size in proportion to their idle capacity; they return empty after delivering. Matched edges keep goods, vehicles and the order books conserved. Select the supplier, the lane and the warehouse, then click this bundle.",
+    "color": "#6f9a63",
+    "endpoints": [
+        {
+            "id": "origin",
+            "label": "Supplier"
+        },
+        {
+            "id": "lane",
+            "label": "Road lane"
+        },
+        {
+            "id": "destination",
+            "label": "Destination warehouse"
+        }
+    ],
+    "sharedParameters": [
+        {
+            "key": "orderShare",
+            "name": "Order share",
+            "symbol": "orderShare",
+            "value": 1,
+            "unit": "",
+            "scope": "instance"
+        },
+        {
+            "key": "supplyShare",
+            "name": "Share of the supplier's ready goods",
+            "symbol": "supplyShare",
+            "value": 1,
+            "unit": "",
+            "scope": "instance"
+        },
+        {
+            "key": "responseDays",
+            "name": "Order response time",
+            "symbol": "responseDays",
+            "value": 0.5,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
+            "key": "originDrainDays",
+            "name": "Origin draw-down time",
+            "symbol": "originDrainDays",
+            "value": 0.5,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
+            "key": "truckCapacity",
+            "name": "Truck capacity",
+            "symbol": "truckCapacity",
+            "value": 2,
+            "unit": "TEU/truck",
+            "scope": "project"
+        },
+        {
+            "key": "truckCapacity2",
+            "name": "Truck capacity, second size",
+            "symbol": "truckCapacity2",
+            "value": 1,
+            "unit": "TEU/truck",
+            "scope": "project"
+        },
+        {
+            "key": "secondsPerDay",
+            "name": "Seconds per day",
+            "symbol": "secondsPerDay",
+            "value": 86400,
+            "unit": "s/day",
+            "scope": "project"
+        }
+    ],
+    "edges": [
+        {
+            "name": "Order",
+            "from": "destination",
+            "to": "lane",
+            "ports": {
+                "source": "orderRate",
+                "target": "requested"
+            },
+            "output": {
+                "role": "target",
+                "state": "requested"
+            },
+            "latex": "\\frac{\\mathrm{orderShare} \\cdot \\mathrm{sourceOrderRate}}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Order share",
+                    "symbol": "orderShare",
+                    "shared": "orderShare"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Place order",
+            "from": "lane",
+            "to": "destination",
+            "ports": {
+                "source": "requested",
+                "target": [
+                    "onOrder",
+                    "orderRate"
+                ]
+            },
+            "output": {
+                "role": "target",
+                "state": "onOrder"
+            },
+            "latex": "\\frac{\\mathrm{orderShare} \\cdot \\mathrm{targetOrderRate}}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Order share",
+                    "symbol": "orderShare",
+                    "shared": "orderShare"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Dispatch",
+            "from": "origin",
+            "to": "lane",
+            "bidirectional": true,
+            "ports": {
+                "source": "stock",
+                "target": [
+                    "loaded1",
+                    "requested",
+                    "canLoad",
+                    "idleTrucks"
+                ]
+            },
+            "output": {
+                "role": "target",
+                "state": "loaded1"
+            },
+            "latex": "\\frac{\\min(\\frac{\\mathrm{targetRequested}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{supplyShare} \\cdot \\mathrm{sourceStock}}{\\mathrm{originDrainDays}}))}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Share of the supplier's ready goods",
+                    "symbol": "supplyShare",
+                    "shared": "supplyShare"
+                },
+                {
+                    "name": "Order response time",
+                    "symbol": "responseDays",
+                    "shared": "responseDays"
+                },
+                {
+                    "name": "Origin draw-down time",
+                    "symbol": "originDrainDays",
+                    "shared": "originDrainDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Clear orders",
+            "from": "origin",
+            "to": "lane",
+            "ports": {
+                "source": "stock",
+                "target": [
+                    "requested",
+                    "canLoad",
+                    "idleTrucks"
+                ]
+            },
+            "output": {
+                "role": "target",
+                "state": "requested"
+            },
+            "latex": "-\\frac{\\min(\\frac{\\mathrm{targetRequested}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{supplyShare} \\cdot \\mathrm{sourceStock}}{\\mathrm{originDrainDays}}))}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Share of the supplier's ready goods",
+                    "symbol": "supplyShare",
+                    "shared": "supplyShare"
+                },
+                {
+                    "name": "Order response time",
+                    "symbol": "responseDays",
+                    "shared": "responseDays"
+                },
+                {
+                    "name": "Origin draw-down time",
+                    "symbol": "originDrainDays",
+                    "shared": "originDrainDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Take trucks",
+            "from": "origin",
+            "to": "lane",
+            "ports": {
+                "source": "stock",
+                "target": [
+                    "requested",
+                    "canLoad",
+                    "idleTrucks",
+                    "idleTrucks2"
+                ]
+            },
+            "output": {
+                "role": "target",
+                "state": "idleTrucks"
+            },
+            "latex": "-\\frac{\\min(\\frac{\\mathrm{targetRequested}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{supplyShare} \\cdot \\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot (1 - \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases})}{\\mathrm{truckCapacity} \\cdot \\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Share of the supplier's ready goods",
+                    "symbol": "supplyShare",
+                    "shared": "supplyShare"
+                },
+                {
+                    "name": "Order response time",
+                    "symbol": "responseDays",
+                    "shared": "responseDays"
+                },
+                {
+                    "name": "Origin draw-down time",
+                    "symbol": "originDrainDays",
+                    "shared": "originDrainDays"
+                },
+                {
+                    "name": "Truck capacity",
+                    "symbol": "truckCapacity",
+                    "shared": "truckCapacity"
+                },
+                {
+                    "name": "Truck capacity, second size",
+                    "symbol": "truckCapacity2",
+                    "shared": "truckCapacity2"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Load trucks",
+            "from": "origin",
+            "to": "lane",
+            "ports": {
+                "source": "stock",
+                "target": [
+                    "requested",
+                    "canLoad",
+                    "idleTrucks",
+                    "idleTrucks2"
+                ]
+            },
+            "output": {
+                "role": "target",
+                "state": "loadedTrucks"
+            },
+            "latex": "\\frac{\\min(\\frac{\\mathrm{targetRequested}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{supplyShare} \\cdot \\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot (1 - \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases})}{\\mathrm{truckCapacity} \\cdot \\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Share of the supplier's ready goods",
+                    "symbol": "supplyShare",
+                    "shared": "supplyShare"
+                },
+                {
+                    "name": "Order response time",
+                    "symbol": "responseDays",
+                    "shared": "responseDays"
+                },
+                {
+                    "name": "Origin draw-down time",
+                    "symbol": "originDrainDays",
+                    "shared": "originDrainDays"
+                },
+                {
+                    "name": "Truck capacity",
+                    "symbol": "truckCapacity",
+                    "shared": "truckCapacity"
+                },
+                {
+                    "name": "Truck capacity, second size",
+                    "symbol": "truckCapacity2",
+                    "shared": "truckCapacity2"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Take trucks, second size",
+            "from": "origin",
+            "to": "lane",
+            "ports": {
+                "source": "stock",
+                "target": [
+                    "requested",
+                    "canLoad",
+                    "idleTrucks",
+                    "idleTrucks2"
+                ]
+            },
+            "output": {
+                "role": "target",
+                "state": "idleTrucks2"
+            },
+            "latex": "-\\frac{\\min(\\frac{\\mathrm{targetRequested}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{supplyShare} \\cdot \\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases}}{\\mathrm{truckCapacity2} \\cdot \\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Share of the supplier's ready goods",
+                    "symbol": "supplyShare",
+                    "shared": "supplyShare"
+                },
+                {
+                    "name": "Order response time",
+                    "symbol": "responseDays",
+                    "shared": "responseDays"
+                },
+                {
+                    "name": "Origin draw-down time",
+                    "symbol": "originDrainDays",
+                    "shared": "originDrainDays"
+                },
+                {
+                    "name": "Truck capacity",
+                    "symbol": "truckCapacity",
+                    "shared": "truckCapacity"
+                },
+                {
+                    "name": "Truck capacity, second size",
+                    "symbol": "truckCapacity2",
+                    "shared": "truckCapacity2"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Load trucks, second size",
+            "from": "origin",
+            "to": "lane",
+            "ports": {
+                "source": "stock",
+                "target": [
+                    "requested",
+                    "canLoad",
+                    "idleTrucks",
+                    "idleTrucks2"
+                ]
+            },
+            "output": {
+                "role": "target",
+                "state": "loadedTrucks2"
+            },
+            "latex": "\\frac{\\min(\\frac{\\mathrm{targetRequested}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{supplyShare} \\cdot \\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases}}{\\mathrm{truckCapacity2} \\cdot \\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Share of the supplier's ready goods",
+                    "symbol": "supplyShare",
+                    "shared": "supplyShare"
+                },
+                {
+                    "name": "Order response time",
+                    "symbol": "responseDays",
+                    "shared": "responseDays"
+                },
+                {
+                    "name": "Origin draw-down time",
+                    "symbol": "originDrainDays",
+                    "shared": "originDrainDays"
+                },
+                {
+                    "name": "Truck capacity",
+                    "symbol": "truckCapacity",
+                    "shared": "truckCapacity"
+                },
+                {
+                    "name": "Truck capacity, second size",
+                    "symbol": "truckCapacity2",
+                    "shared": "truckCapacity2"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Arrive",
+            "from": "lane",
+            "to": "destination",
+            "bidirectional": true,
+            "ports": {
+                "source": [
+                    "loaded3",
+                    "arriving"
+                ],
+                "target": "stock"
+            },
+            "output": {
+                "role": "target",
+                "state": "stock"
+            },
+            "latex": "\\frac{\\mathrm{sourceArriving}}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Receive",
+            "from": "lane",
+            "to": "destination",
+            "ports": {
+                "source": "arriving",
+                "target": "onOrder"
+            },
+            "output": {
+                "role": "target",
+                "state": "onOrder"
+            },
+            "latex": "-\\frac{\\mathrm{sourceArriving}}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Order to make",
+            "from": "destination",
+            "to": "origin",
+            "ports": {
+                "source": "orderRate",
+                "target": "toMake"
+            },
+            "output": {
+                "role": "target",
+                "state": "toMake"
+            },
+            "latex": "\\frac{\\mathrm{orderShare} \\cdot \\mathrm{sourceOrderRate}}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Order share",
+                    "symbol": "orderShare",
+                    "shared": "orderShare"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Count order",
+            "from": "destination",
+            "to": "origin",
+            "ports": {
+                "source": "orderRate",
+                "target": "ordered"
+            },
+            "output": {
+                "role": "target",
+                "state": "ordered"
+            },
+            "latex": "\\frac{\\mathrm{orderShare} \\cdot \\mathrm{sourceOrderRate}}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Order share",
+                    "symbol": "orderShare",
+                    "shared": "orderShare"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        }
+    ]
+}

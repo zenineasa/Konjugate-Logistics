@@ -1,0 +1,201 @@
+{
+    "copyright": "Copyright © 2026 Zenin Easa Panthakkalakath",
+    "id": "supplier",
+    "kind": "node",
+    "name": "Supplier",
+    "domains": [
+        "logistics"
+    ],
+    "description": "A supplier or factory that makes what is ordered from it. Orders reach it through Supplier shipment bundles and wait to be made; it starts them within the order handling time, at most what it can make a day, and each takes its lead time (in three stages, an Erlang-3 time, so what was ordered together comes ready spread out) before it stands ready to dispatch. Road shipments take what is ready. Nothing ordered is dropped: what it cannot start yet waits, so a supplier short of capacity delivers late, not never. Ordered and made are running totals: orders to make always equal their starting value plus ordered minus made, and what it has made is in production, ready, or shipped. Time t is in seconds, so every per-day rate is divided by the shared Seconds per day.",
+    "shape": "box",
+    "color": "#4f7f5a",
+    "states": [
+        {
+            "symbol": "toMake",
+            "label": "Orders to make",
+            "initialValue": 12.5,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "making1",
+            "label": "In production, stage 1",
+            "initialValue": 33.333333333333336,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "making2",
+            "label": "In production, stage 2",
+            "initialValue": 33.333333333333336,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "making3",
+            "label": "In production, stage 3",
+            "initialValue": 33.333333333333336,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "stock",
+            "label": "Ready to dispatch",
+            "initialValue": 25,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "ordered",
+            "label": "Ordered (cumulative)",
+            "initialValue": 0,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "made",
+            "label": "Made (cumulative)",
+            "initialValue": 0,
+            "unit": "TEU"
+        },
+        {
+            "symbol": "makeRate",
+            "label": "Making",
+            "initialValue": 50,
+            "unit": "TEU/day"
+        }
+    ],
+    "sharedParameters": [
+        {
+            "key": "supplierLeadTime",
+            "name": "Lead time",
+            "symbol": "supplierLeadTime",
+            "value": 2,
+            "unit": "day",
+            "scope": "instance"
+        },
+        {
+            "key": "supplierCapacity",
+            "name": "Most it can make",
+            "symbol": "supplierCapacity",
+            "value": 75,
+            "unit": "TEU/day",
+            "scope": "instance"
+        },
+        {
+            "key": "orderHandlingDays",
+            "name": "Order handling time",
+            "symbol": "orderHandlingDays",
+            "value": 0.25,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
+            "key": "secondsPerDay",
+            "name": "Seconds per day",
+            "symbol": "secondsPerDay",
+            "value": 86400,
+            "unit": "s/day",
+            "scope": "project"
+        }
+    ],
+    "sourceTerms": [
+        {
+            "state": "makeRate",
+            "expression": "\\min(\\frac{\\mathrm{toMake}}{\\mathrm{orderHandlingDays}}, \\mathrm{supplierCapacity})",
+            "parameters": [
+                {
+                    "name": "Order handling time",
+                    "symbol": "orderHandlingDays",
+                    "shared": "orderHandlingDays"
+                },
+                {
+                    "name": "Most it can make",
+                    "symbol": "supplierCapacity",
+                    "shared": "supplierCapacity"
+                }
+            ],
+            "setsValue": true
+        },
+        {
+            "state": "toMake",
+            "expression": "-\\frac{\\mathrm{makeRate}}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "making1",
+            "expression": "\\frac{\\mathrm{makeRate}}{\\mathrm{secondsPerDay}} - \\frac{3}{\\mathrm{supplierLeadTime} \\cdot \\mathrm{secondsPerDay}} \\cdot \\mathrm{making1}",
+            "parameters": [
+                {
+                    "name": "Lead time",
+                    "symbol": "supplierLeadTime",
+                    "shared": "supplierLeadTime"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "making2",
+            "expression": "\\frac{3}{\\mathrm{supplierLeadTime} \\cdot \\mathrm{secondsPerDay}} \\cdot (\\mathrm{making1} - \\mathrm{making2})",
+            "parameters": [
+                {
+                    "name": "Lead time",
+                    "symbol": "supplierLeadTime",
+                    "shared": "supplierLeadTime"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "making3",
+            "expression": "\\frac{3}{\\mathrm{supplierLeadTime} \\cdot \\mathrm{secondsPerDay}} \\cdot (\\mathrm{making2} - \\mathrm{making3})",
+            "parameters": [
+                {
+                    "name": "Lead time",
+                    "symbol": "supplierLeadTime",
+                    "shared": "supplierLeadTime"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "stock",
+            "expression": "\\frac{3}{\\mathrm{supplierLeadTime} \\cdot \\mathrm{secondsPerDay}} \\cdot \\mathrm{making3}",
+            "parameters": [
+                {
+                    "name": "Lead time",
+                    "symbol": "supplierLeadTime",
+                    "shared": "supplierLeadTime"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "made",
+            "expression": "\\frac{\\mathrm{makeRate}}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        }
+    ]
+}

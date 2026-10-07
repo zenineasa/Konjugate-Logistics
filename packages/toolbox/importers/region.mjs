@@ -33,7 +33,7 @@ import { parseSites } from '../lib/sites.mjs';
 export const osmRoles = ['ports', 'logistics', 'roads', 'rail', 'places'];
 // IMF PortWatch: the ports around the region, and the history of each matched port.
 export const portwatchRoles = ['portwatchPorts', 'portwatchActivity'];
-export const templateIds = ['port', 'roadLane', 'railLane', 'warehouse', 'demandZone', 'roadShipment', 'railShipment', 'delivery', 'storeShipment'];
+export const templateIds = ['port', 'roadLane', 'railLane', 'warehouse', 'demandZone', 'roadShipment', 'railShipment', 'delivery', 'storeShipment', 'supplier', 'supplierShipment'];
 const kinds = { ports: 'port', zones: 'zone', towns: 'town' };
 // The suggestions the user can ask for: the OpenStreetMap answers each reads (beside the roads and place names every
 // step reads), and the group of candidates it shows.
@@ -70,6 +70,12 @@ function resolvePin(entry, known, kind) {
     for (const key of ['name', 'lat', 'lon']) site[key] = entry[key];
     if (entry.role) site.role = entry.role;
     if (entry.supplier) site.supplier = true;
+    // A supplier's: the most it can make a day, and its own lead times by category; and any site's own mix of categories.
+    if (Number(entry.makes) > 0) Object.assign(site, { makes: Number(entry.makes), makesBasis: entry.makesBasis === 'assumed' ? 'assumed' : 'user' });
+    if (entry.mix && typeof entry.mix === 'object') site.mix = Object.fromEntries(Object.entries(entry.mix).map(([id, weight]) => [id, Math.max(0, Number(weight) || 0)]));
+    if (entry.leadDaysBy && typeof entry.leadDaysBy === 'object') {
+        site.leadDaysBy = Object.fromEntries(Object.entries(entry.leadDaysBy).filter(([, lead]) => Number(lead?.value) > 0).map(([id, lead]) => [id, { value: Number(lead.value), basis: 'user' }]));
+    }
     const ours = (basis) => basis === 'user' || !base;
     if (Number(entry.teuPerDay) > 0 && ours(entry.teuPerDayBasis)) {
         Object.assign(site, {
@@ -100,9 +106,23 @@ function checkedVehicles(types) {
         if (!type?.id || !String(type.name ?? '').trim()) throw new Error('A vehicle type has no name. Name it in the Vehicles list.');
         for (const key of vehicleKeys) if (!(Number(type[key]) > 0)) throw new Error(`${type.name}: its ${key.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`)} must be more than nothing.`);
         return {
-            id: String(type.id), name: String(type.name).trim(), toStores: type.toStores !== false,
+            id: String(type.id), name: String(type.name).trim(), toStores: type.toStores !== false, refrigerated: type.refrigerated === true,
             ...Object.fromEntries(vehicleKeys.map((key) => [key, Number(type[key])])),
             basis: Object.fromEntries(vehicleKeys.map((key) => [key, type.basis?.[key] === 'user' ? 'user' : 'assumed']))
+        };
+    });
+}
+
+// A network's product categories as the window sends them, checked: each with a name, a share and a lead time.
+function checkedCategories(categories) {
+    if (!Array.isArray(categories) || !categories.length) return null;
+    return categories.map((category) => {
+        if (!category?.id || !String(category.name ?? '').trim()) throw new Error('A category has no name. Name it in the Categories list.');
+        if (!(Number(category.share) > 0)) throw new Error(`${category.name}: its usual share must be more than nothing.`);
+        if (!(Number(category.leadDays) > 0)) throw new Error(`${category.name}: its supplier lead time must be more than nothing.`);
+        return {
+            id: String(category.id), name: String(category.name).trim(), chilled: category.chilled === true, share: Number(category.share), leadDays: Number(category.leadDays),
+            basis: { share: category.basis?.share === 'user' ? 'user' : 'assumed', leadDays: category.basis?.leadDays === 'user' ? 'user' : 'assumed' }
         };
     });
 }
@@ -123,6 +143,8 @@ function buildSettings(options) {
     const vehicles = checkedVehicles(options.network?.vehicles);
     if (vehicles) settings.vehicles = vehicles;
     if (options.network?.unit === 'pallets') settings.unit = 'pallets';
+    const categories = checkedCategories(options.network?.categories);
+    if (categories) settings.categories = categories;
     // The user's times on some links, scaling the estimates on the rest (travelTimes.mjs): a factor within reason.
     const factor = Number(options.settings?.timeFactor?.factor);
     if (factor >= 0.1 && factor <= 10) settings.timeFactor = { factor, count: Math.max(0, Math.round(Number(options.settings.timeFactor.count) || 0)) };
@@ -261,9 +283,12 @@ async function finishBuild({ templates, helpers, selection, route, links, option
     const built = buildWith(settings);
     const townsServed = new Set(built.served.map((item) => item.town)).size;
     const sources = selection.ports.filter((port) => port.supplier).length;
+    // A link is one road lane to the user, however many categories it carries.
+    const roadLanes = new Set(built.lanes.map((lane) => lane.link ?? lane.name)).size;
+    const kinds = built.categories?.length > 1 ? `, each in ${built.categories.length} categories (${built.categories.map((category) => category.name).join(', ')})` : '';
     const what = step === 'buildNetwork'
-        ? `${sources ? `${sources} supplier${sources === 1 ? '' : 's'}, ` : ''}${selection.ports.length - sources ? `${selection.ports.length - sources} port${selection.ports.length - sources === 1 ? '' : 's'}, ` : ''}${built.lanes.length} road lane${built.lanes.length === 1 ? '' : 's'}, ${townsServed} store${townsServed === 1 ? '' : 's'} and customer area${townsServed === 1 ? '' : 's'} served`
-        : `${selection.ports.length} port${selection.ports.length === 1 ? '' : 's'}, ${built.lanes.length} road lane${built.lanes.length === 1 ? '' : 's'}, ${townsServed} town${townsServed === 1 ? '' : 's'} served`;
+        ? `${sources ? `${sources} supplier${sources === 1 ? '' : 's'}, ` : ''}${selection.ports.length - sources ? `${selection.ports.length - sources} port${selection.ports.length - sources === 1 ? '' : 's'}, ` : ''}${roadLanes} road lane${roadLanes === 1 ? '' : 's'}, ${townsServed} store${townsServed === 1 ? '' : 's'} and customer area${townsServed === 1 ? '' : 's'} served${kinds}`
+        : `${selection.ports.length} port${selection.ports.length === 1 ? '' : 's'}, ${roadLanes} road lane${roadLanes === 1 ? '' : 's'}, ${townsServed} town${townsServed === 1 ? '' : 's'} served`;
     const lanesByBasis = built.lanes.reduce((counts, lane) => ({ ...counts, [lane.basis]: (counts[lane.basis] ?? 0) + 1 }), {});
     return {
         ok: true,
@@ -271,7 +296,7 @@ async function finishBuild({ templates, helpers, selection, route, links, option
         parameterIndex: built.parameterIndex,
         data: {
             step, lanes: built.lanes, served: built.served, provenance: built.provenance, warnings: built.warnings, histories: built.histories, ports: built.ports, days: built.days,
-            operator: built.operator, towns: built.towns, stores: built.stores, unit: built.unit, perTeu: built.perTeu, vehicles: built.vehicles, trucking: built.trucking, standbyPorts: built.standbyPorts, corridors: built.corridors,
+            operator: built.operator, towns: built.towns, stores: built.stores, unit: built.unit, perTeu: built.perTeu, vehicles: built.vehicles, categories: built.categories, trucking: built.trucking, standbyPorts: built.standbyPorts, corridors: built.corridors,
             unusedZones: built.unusedZones, unusedLinks: built.unusedLinks, nodes: built.document.nodes.length, edges: built.document.edges.length, lanesByBasis
         },
         report: {

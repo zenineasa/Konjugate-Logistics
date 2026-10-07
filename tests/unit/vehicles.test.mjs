@@ -7,11 +7,12 @@ import {
     catalogueForModel, completeCatalogue, createVehicle, defaultCatalogue, linkKind, linkVehicleProblem, setVehicleField, vehicleProblem, vehiclesOf
 } from '../../packages/toolbox/lib/vehicles.mjs';
 
-test('the default catalogue has four types, every figure assumed, heavy trucks kept off store deliveries', () => {
+test('the default catalogue has five types, one refrigerated, every figure assumed, heavy trucks kept off store deliveries', () => {
     const catalogue = defaultCatalogue();
-    assert.deepEqual(catalogue.map((type) => type.id), ['heavyTruck', 'mediumTruck', 'smallTruck', 'miniVan']);
+    assert.deepEqual(catalogue.map((type) => type.id), ['heavyTruck', 'mediumTruck', 'smallTruck', 'miniVan', 'refrigeratedTruck']);
+    assert.deepEqual(catalogue.map((type) => type.refrigerated), [false, false, false, false, true]);
     assert.ok(catalogue.every((type) => Object.values(type.fields).every((field) => field.basis === 'assumed' && field.value > 0)));
-    assert.deepEqual(catalogue.map((type) => type.toStores), [false, true, true, true]);
+    assert.deepEqual(catalogue.map((type) => type.toStores), [false, true, true, true, true]);
     assert.ok(catalogue.every((type) => vehicleProblem(type) === null));
 });
 
@@ -59,8 +60,14 @@ test('the catalogue the model builder reads is plain numbers with where each cam
     const catalogue = defaultCatalogue();
     setVehicleField(catalogue[3], 'capacity', '2.5');
     const model = catalogueForModel(catalogue);
-    assert.deepEqual(model[3], { id: 'miniVan', name: 'Mini-van', toStores: true, capacity: 2.5, costPerKm: 0.5, costPerDay: 40, speed: 50, loadingHours: 0.25, basis: { capacity: 'user', costPerKm: 'assumed', costPerDay: 'assumed', speed: 'assumed', loadingHours: 'assumed' } });
-    assert.deepEqual(completeCatalogue(undefined).map((type) => type.id), ['heavyTruck', 'mediumTruck', 'smallTruck', 'miniVan']);
+    assert.deepEqual(model[3], { id: 'miniVan', name: 'Mini-van', toStores: true, refrigerated: false, capacity: 2.5, costPerKm: 0.5, costPerDay: 40, speed: 50, loadingHours: 0.25, basis: { capacity: 'user', costPerKm: 'assumed', costPerDay: 'assumed', speed: 'assumed', loadingHours: 'assumed' } });
+    assert.deepEqual(completeCatalogue(undefined).map((type) => type.id), ['heavyTruck', 'mediumTruck', 'smallTruck', 'miniVan', 'refrigeratedTruck']);
+    // A catalogue saved before categories has no refrigerated type: it is given the default one, once, so chilled goods can go.
+    const before = structuredClone(catalogue).filter((type) => !type.refrigerated).map(({ refrigerated, ...type }) => type);
+    assert.deepEqual(completeCatalogue(before).map((type) => type.id), ['heavyTruck', 'mediumTruck', 'smallTruck', 'miniVan']);
+    const given = completeCatalogue(before, { refrigerated: true });
+    assert.deepEqual(given.map((type) => [type.id, type.refrigerated]).at(-1), ['refrigeratedTruck', true]);
+    assert.equal(completeCatalogue(given, { refrigerated: true }).length, 5, 'not given a second one');
     // A saved type keeps its figures, and gets any field it lacks.
     const saved = structuredClone(catalogue);
     delete saved[3].fields.speed;

@@ -354,16 +354,16 @@ try {
     assert.deepEqual(await stateOf(() => window.logisticsToolboxState.pins[2].fields.capacity), { value: 400, basis: 'user' });
     assert.deepEqual(await stateOf(() => window.logisticsToolboxState.pins[2].fields.cover), { value: 3, basis: 'assumed' });
     await page.click('#vehicles summary');
-    assert.deepEqual(await page.$$eval('#vehicleList [data-vehicle-name]', (inputs) => inputs.map((input) => input.value)), ['Heavy truck', 'Medium truck', 'Small truck', 'Mini-van']);
+    assert.deepEqual(await page.$$eval('#vehicleList [data-vehicle-name]', (inputs) => inputs.map((input) => input.value)), ['Heavy truck', 'Medium truck', 'Small truck', 'Mini-van', 'Refrigerated truck']);
     const vanCapacity = '#vehicleList [data-type="miniVan"] [data-vehicle-field="capacity"]';
     await page.fill(vanCapacity, '2.5');
     await page.dispatchEvent(vanCapacity, 'change');
     assert.deepEqual(await stateOf(() => window.logisticsToolboxState.vehicles.find((type) => type.id === 'miniVan').fields.capacity), { value: 2.5, basis: 'user' });
     assert.equal(await page.textContent('#vehicleList [data-type="miniVan"] .field .basis'), 'yours');
     await page.click('#addVehicleButton');
-    assert.deepEqual(await stateOf(() => window.logisticsToolboxState.vehicles.map((type) => type.name)), ['Heavy truck', 'Medium truck', 'Small truck', 'Mini-van', 'Vehicle 1']);
+    assert.deepEqual(await stateOf(() => window.logisticsToolboxState.vehicles.map((type) => type.name)), ['Heavy truck', 'Medium truck', 'Small truck', 'Mini-van', 'Refrigerated truck', 'Vehicle 1']);
     await page.click('#undoButtonTool');
-    assert.equal(await stateOf(() => window.logisticsToolboxState.vehicles.length), 4, 'adding a type undone');
+    assert.equal(await stateOf(() => window.logisticsToolboxState.vehicles.length), 5, 'adding a type undone');
     // Harbour shop's link, from its card: medium trucks until another is chosen; heavy trucks may not go to a store.
     const harbourLink = (await links()).find((link) => link.to === placed[4].id);
     await clickAt(placements[4][1]);
@@ -398,6 +398,9 @@ try {
     assert.deepEqual(await harbourVehicles(), [{ type: 'miniVan', fleet: null }]);
     // With V: the next type that may take it, round the catalogue.
     await page.keyboard.press('v');
+    assert.deepEqual(await harbourVehicles(), [{ type: 'refrigeratedTruck', fleet: null }]);
+    assert.match(await page.textContent('#undoText'), /carried by refrigerated trucks/);
+    await page.keyboard.press('v');
     assert.deepEqual(await harbourVehicles(), [{ type: 'mediumTruck', fleet: null }]);
     assert.match(await page.textContent('#undoText'), /carried by medium trucks/);
     // Medium trucks kept off stores: the link to Harbour shop cannot be built, and says why.
@@ -406,12 +409,68 @@ try {
     assert.equal(await page.isDisabled('#buildButton'), true);
     await page.click('#undoButtonTool');
     assert.ok(!/may not deliver/.test(await page.textContent('#networkStatus')));
-    // Undo, step by step: V, the menu, the type taken off, the fleet, the type added, the type chosen.
-    for (let step = 0; step < 6; step += 1) await page.click('#undoButtonTool');
+    // Undo, step by step: V twice, the menu, the type taken off, the fleet, the type added, the type chosen.
+    for (let step = 0; step < 7; step += 1) await page.click('#undoButtonTool');
     assert.equal(await harbourVehicles(), undefined, 'back to its kind\'s vehicles');
     await page.click('#redoButtonTool');
     assert.deepEqual(await harbourVehicles(), [{ type: 'smallTruck', fleet: null }]);
     await page.keyboard.press('Escape');
+    noErrors();
+
+    // 6b2. Product categories: the three a network starts with, in the list and on a site's card. A store given a mix of
+    // its own and back to the usual shares, a supplier a lead time for one category, a category's figure changed and a
+    // category added, each undone as a step; and with no refrigerated vehicle type, the chilled goods cannot go, said so.
+    await page.click('#categories summary');
+    assert.deepEqual(await page.$$eval('#categoryList [data-category-name]', (inputs) => inputs.map((input) => input.value)), ['Ambient', 'Chilled', 'Frozen']);
+    assert.equal(await page.textContent('#categoriesSummary'), 'Ambient, Chilled, Frozen');
+    assert.deepEqual(await page.$$eval('#categoryList [data-category-chilled]', (boxes) => boxes.map((box) => box.checked)), [false, true, true]);
+    const change = async (selector, value) => { await page.fill(selector, value); await page.dispatchEvent(selector, 'change'); };
+    const mixOfPin = (index) => page.evaluate((at) => window.logisticsToolboxState.pins[at].mix ?? null, index);
+    await clickAt(placements[4][1]);
+    await page.waitForSelector('#selectionCard:not([hidden]) .mix');
+    assert.match(await page.textContent('#selectionCard .mix'), /Of what it sells\s+usual shares, assumed/);
+    assert.deepEqual([await page.inputValue('#mix-ambient'), await page.inputValue('#mix-chilled'), await page.inputValue('#mix-frozen')], ['60', '25', '15']);
+    assert.equal(await page.locator('#selectionCard [data-lead]').count(), 0, 'a store has no lead times');
+    await change('#mix-frozen', '0');
+    assert.deepEqual(await mixOfPin(4), { ambient: 60, chilled: 25, frozen: 0 });
+    assert.match(await page.textContent('#selectionCard .mix'), /your mix/);
+    await page.click('#selectionCard #clearMix');
+    assert.equal(await mixOfPin(4), null, 'back to the usual shares');
+    await page.click('#undoButtonTool');
+    assert.deepEqual(await mixOfPin(4), { ambient: 60, chilled: 25, frozen: 0 }, 'the usual shares undone');
+    await page.click('#undoButtonTool');
+    assert.equal(await mixOfPin(4), null, 'the mix undone');
+    // A site carries at least one category: the last one cannot be taken off.
+    await clickAt(placements[4][1]);
+    await page.waitForSelector('#selectionCard:not([hidden]) #mix-ambient');
+    await change('#mix-ambient', '0');
+    await change('#mix-chilled', '0');
+    await change('#mix-frozen', '0');
+    assert.deepEqual(await mixOfPin(4), { ambient: 0, chilled: 0, frozen: 15 }, 'the last category stays');
+    for (let step = 0; step < 3 && await mixOfPin(4); step += 1) await page.click('#undoButtonTool');
+    assert.equal(await mixOfPin(4), null);
+    // A supplier's lead time for one category: its own; the others take their category's.
+    await clickAt(placements[0][1]);
+    await page.waitForSelector('#selectionCard:not([hidden]) [data-lead="chilled"]');
+    assert.equal(await page.getAttribute('#selectionCard [data-lead="chilled"]', 'placeholder'), '1');
+    await change('#selectionCard [data-lead="chilled"]', '0.5');
+    assert.deepEqual(await stateOf(() => window.logisticsToolboxState.pins[0].leadDays), { chilled: 0.5 });
+    await page.click('#undoButtonTool');
+    assert.equal(await stateOf(() => window.logisticsToolboxState.pins[0].leadDays ?? null), null, 'the lead time undone');
+    await page.keyboard.press('Escape');
+    // In the list: a figure changed is yours; a category added, and undone.
+    await change('#categoryList [data-category="frozen"] [data-category-field="leadDays"]', '7');
+    assert.deepEqual(await stateOf(() => window.logisticsToolboxState.categories[2].fields.leadDays), { value: 7, basis: 'user' });
+    await page.click('#addCategoryButton');
+    assert.deepEqual(await stateOf(() => window.logisticsToolboxState.categories.map((category) => category.name)), ['Ambient', 'Chilled', 'Frozen', 'Category 1']);
+    await page.click('#undoButtonTool');
+    assert.equal(await stateOf(() => window.logisticsToolboxState.categories.length), 3, 'adding a category undone');
+    // No refrigerated vehicle: the chilled and frozen goods have nothing to go by.
+    await page.uncheck('#vehicleList [data-type="refrigeratedTruck"] [data-vehicle-cold]');
+    assert.match(await page.textContent('#networkStatus'), /Chilled and Frozen need a refrigerated vehicle, and no vehicle type is one\. Tick Refrigerated on a vehicle type, or add one\./);
+    assert.equal(await page.isDisabled('#buildButton'), true);
+    await page.click('#undoButtonTool');
+    assert.ok(!/refrigerated/.test(await page.textContent('#networkStatus')));
     noErrors();
 
     // 6c. Travel times of the user's own: typed in the list (Enter to the next row), when it holds, read off Google Maps
@@ -508,29 +567,36 @@ try {
     await page.click('#buildButton');
     await page.waitForSelector('#buildStatus .notice.ok, #buildStatus .notice.error', { timeout: 60000 }).catch(fail);
     const built = await page.textContent('#buildStatus');
-    assert.match(built, /^2 suppliers, \d+ road lanes?, 6 stores and customer areas served: \d+ nodes and \d+ relationships, now in the canvas\./, built);
+    assert.match(built, /^2 suppliers, \d+ road lanes?, 6 stores and customer areas served, each in 3 categories \(Ambient, Chilled, Frozen\): \d+ nodes and \d+ relationships, now in the canvas\./, built);
     const lanes = await page.evaluate(() => document.querySelector('#buildResult table').tBodies[0].rows.length);
-    const supplyLanes = await stateOf(() => window.logisticsToolboxState.built.lanes.filter((lane) => lane.kind === 'supply').length);
+    // A link is a lane in the model for each category it carries, and one row in the table.
+    const linksOf = (kind) => page.evaluate((wanted) => [...new Set(window.logisticsToolboxState.built.lanes.filter((lane) => lane.kind === wanted).map((lane) => lane.link))].length, kind);
+    const supplyLanes = await linksOf('supply');
     const unusedLinks = await stateOf(() => window.logisticsToolboxState.built.unusedLinks.length);
     assert.equal(supplyLanes + unusedLinks, 4, 'a lane for each supply link, or the link said to be left out');
     // And one to each store and dark store from each of its warehouses: they hold stock, restocked by road.
     const stocked = placements.filter(([role]) => role === 'store' || role === 'darkStore').length;
     const storeLanes = await stateOf(() => window.logisticsToolboxState.built.lanes.filter((lane) => lane.kind === 'store'));
     assert.equal(new Set(storeLanes.map((lane) => lane.site)).size, stocked, 'a lane to every store and dark store');
-    assert.equal(lanes, supplyLanes + storeLanes.length, 'every lane in the table');
+    assert.equal(lanes, supplyLanes + await linksOf('store'), 'every link in the table');
+    assert.deepEqual(await stateOf(() => window.logisticsToolboxState.built.categories.map((category) => category.name)), ['Ambient', 'Chilled', 'Frozen']);
+    assert.equal(storeLanes.filter((lane) => lane.site === 'Harbour shop').length, 3, 'Harbour shop\'s link is a lane for each category');
     assert.match(await page.textContent('#buildResult'), /Harbour shop/);
     assert.ok(host.session?.version === 2 && host.session.pins.length === placements.length, 'the session went with the model');
     assert.match(await page.textContent('#buildResult'), /pallets\/day.*vehicles/s);
-    assert.ok(storeLanes.some((lane) => lane.site === 'Harbour shop' && lane.vehicles[0].type === 'smallTruck'), 'Harbour shop restocked by small trucks');
+    assert.ok(storeLanes.some((lane) => lane.site === 'Harbour shop' && lane.category === 'ambient' && lane.vehicles[0].type === 'smallTruck'), 'Harbour shop restocked by small trucks');
+    assert.ok(storeLanes.some((lane) => lane.site === 'Harbour shop' && lane.category === 'chilled' && lane.vehicles[0].type === 'refrigeratedTruck'), 'and its chilled goods by refrigerated trucks');
     // Its time is yours, door to door; a lane without one is the route's estimate scaled by your times.
     const harbourBuilt = storeLanes.find((lane) => lane.site === 'Harbour shop');
     assert.equal(harbourBuilt.timeBasis, 'user');
     assert.ok(Math.abs(harbourBuilt.leadTime * 24 - 2) < 0.01, `2 h door to door (${harbourBuilt.leadTime * 24})`);
     assert.ok(storeLanes.some((lane) => lane.timeBasis === 'estimated'), 'the others scaled by your times');
-    const provenanceOf = await stateOf(() => window.logisticsToolboxState.built.provenance.find((entry) => entry.entity === 'Road Warehouse 1 → Harbour shop' && entry.parameter === 'Travel time'));
+    const provenanceOf = await stateOf(() => window.logisticsToolboxState.built.provenance.find((entry) => entry.entity === 'Road Warehouse 1 → Harbour shop: Ambient' && entry.parameter === 'Travel time'));
     assert.match(provenanceOf.detail, /^Your time at the morning or evening peak, door to door: 2 h\./);
     assert.deepEqual(host.session.links.find((link) => link.id === harbourLink.id).time, { hours: 2, when: 'peak', how: 'yours' });
     assert.deepEqual(host.session.vehicles.find((type) => type.id === 'miniVan').fields.capacity, { value: 2.5, basis: 'user' });
+    assert.deepEqual(host.session.categories.find((category) => category.id === 'frozen').fields.leadDays, { value: 7, basis: 'user' });
+    assert.equal(await stateOf(() => window.logisticsToolboxState.built.ports.find((port) => port.name === 'Supplier 1: Frozen').leadDays), 7, 'the frozen goods\' suppliers take the lead time given');
     assert.deepEqual(host.session.links.find((link) => link.id === harbourLink.id).vehicles, [{ type: 'smallTruck', fleet: null }]);
     noErrors();
 
@@ -540,7 +606,7 @@ try {
     assert.equal(await marks('planned'), 0, 'no X before a road is chosen to close');
     await page.click('#scenarioTabs [data-scenario="roadClosure"]');
     const harbourLane = storeLanes.find((lane) => lane.site === 'Harbour shop');
-    await page.selectOption('#closureLaneSelect', harbourLane.name);
+    await page.selectOption('#closureLaneSelect', harbourLane.link);
     assert.equal(await marks('planned'), 1);
     assert.match(await page.textContent('#map .roadMark.planned title'), /^Warehouse 1 → Harbour shop: to be closed when the scenario runs$/);
     assert.equal(await page.isVisible('#legendClosed'), true);
@@ -572,7 +638,9 @@ try {
         await page.fill('#startInput', '5');
         await page.fill('#durationInput', '10');
         await page.click('#runScenarioButton');
-        await page.waitForSelector('#scenarioResult table', { timeout: 120000 }).catch(fail);
+        // A run that is refused says why at once, instead of the test waiting two minutes for a result that will not come.
+        await page.waitForSelector('#scenarioResult table, #scenarioStatus .notice.error', { timeout: 120000 }).catch(fail);
+        assert.equal(await page.locator('#scenarioStatus .notice.error').count(), 0, await page.textContent('#scenarioStatus'));
         const result = await page.textContent('#scenarioResult');
         assert.match(result.trim(), /^Warehouse 1 → Harbour shop closed from day 5 for 10 days: [\d.]+ pallets a day it no longer carries, its orders waiting for the road to reopen\./, result);
         const row = await page.evaluate(() => [...document.querySelectorAll('#scenarioResult table')].find((table) => /Store/.test(table.tHead.textContent))
@@ -583,7 +651,14 @@ try {
         assert.match(result, /fullest/, 'a warehouse with room for 400 pallets says how full it got');
         // In business terms first: one sentence, then demand met, sales lost and running costs; the rest under Details.
         const headline = await page.textContent('#scenarioResult .headline');
-        assert.match(headline, /^Harbour shop ran out for [\d.]+ days, losing [\d,.]+ pallets of sales, worth [\d,]+; running costs (up|down) [\d,]+ \([\d.]+%\) against the baseline\.$|^Harbour shop ran out for [\d.]+ days, losing [\d,.]+ pallets of sales, worth [\d,]+; running costs as in the baseline\.$/, headline);
+        assert.match(headline, /^Harbour shop ran out of Ambient and Chilled and Frozen for [\d.]+ days, losing [\d,.]+ pallets of sales, worth [\d,]+; running costs ((up|down) [\d,]+ \([\d.]+%\) against|as in) the baseline\.$/, headline);
+        // By category: the closed road carried all three, so one store ran out of each, and the sales lost add up.
+        const byCategory = await stateOf(() => window.logisticsToolboxState.scenario.byCategory);
+        assert.deepEqual(byCategory.map((item) => [item.name, item.storesOut]), [['Ambient', 1], ['Chilled', 1], ['Frozen', 1]]);
+        const allLost = await stateOf(() => window.logisticsToolboxState.scenario.totals.lost.scenario);
+        assert.ok(Math.abs(byCategory.reduce((sum, item) => sum + item.lost.scenario, 0) - allLost) < 1e-6, 'the categories\' lost sales are the total\'s');
+        assert.match(await page.textContent('#scenarioResult #byCategory'), /Category.*Ambient.*Chilled.*Frozen/s);
+        assert.match(await page.textContent('#scenarioResult table.business:not(#byCategory) .basis'), /^Ambient: out [\d.]+ days, [\d.]+ lost; Chilled: out/);
         const lost = await stateOf(() => window.logisticsToolboxState.scenario.stores.find((item) => item.name === 'Harbour shop'));
         assert.ok(lost.lost.scenario > 0 && lost.lost.baseline === 0 && Math.abs(lost.lostValue.scenario - 1000 * lost.lost.scenario) < 1e-6, `four in five of the sales it could not make are lost, at 1,000 a pallet (${JSON.stringify(lost.lost)})`);
         assert.equal(await page.isVisible('#scenarioResult details.resultDetails table'), false, 'the details start folded');
@@ -804,7 +879,7 @@ try {
     await macPage.close();
     noErrors();
 
-    console.log(`✓ logistics network window: the sample region loads its roads alone; ${placements.length} pins placed from the palette are linked and routed as suggested; every action works from a button or menu, a drag or a right click, and the keyboard, and undoes; a moved store re-routes its one link in ${routing.milliseconds < 1 ? 'under a millisecond' : `${routing.milliseconds.toFixed(0)} ms`}; links are drawn, refused with a reason, deleted and not suggested again; the model is built from the pins and links (${built.match(/\d+ nodes/)[0]}), its stores holding stock and its links on the vehicles chosen on their cards, from their menus and with V;${process.env.KONJUGATE_ENGINE === 'export' ? ' a store whose road closes runs out of stock;' : ''} ports and towns are suggested only when asked for and adopted; the network saves as a CSV and loads back; the session restores it, and an earlier session is migrated; shortcuts behave and read as Windows and Linux users and Mac users expect; a network is kept with the project before any build; an area loaded is kept on the computer and loads again with nothing fetched, fresh on request, and the cache clears; a searched region fetches its roads and place names alone, and ports only when asked for.`);
+    console.log(`✓ logistics network window: the sample region loads its roads alone; ${placements.length} pins placed from the palette are linked and routed as suggested; every action works from a button or menu, a drag or a right click, and the keyboard, and undoes; a moved store re-routes its one link in ${routing.milliseconds < 1 ? 'under a millisecond' : `${routing.milliseconds.toFixed(0)} ms`}; links are drawn, refused with a reason, deleted and not suggested again; the model is built from the pins and links, a copy for each of its three categories (${built.match(/\d+ nodes/)[0]}), its stores holding stock and its links on the vehicles chosen on their cards, from their menus and with V;${process.env.KONJUGATE_ENGINE === 'export' ? ' a store whose road closes runs out of stock;' : ''} ports and towns are suggested only when asked for and adopted; the network saves as a CSV and loads back; the session restores it, and an earlier session is migrated; shortcuts behave and read as Windows and Linux users and Mac users expect; a network is kept with the project before any build; an area loaded is kept on the computer and loads again with nothing fetched, fresh on request, and the cache clears; a searched region fetches its roads and place names alone, and ports only when asked for.`);
 } finally {
     await browser.close();
     await rm(scratch, { recursive: true, force: true });
