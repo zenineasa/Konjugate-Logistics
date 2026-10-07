@@ -6,8 +6,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-    categoriesForModel, categoriesProblem, clearMix, completeCategories, createCategory, defaultCategoryCatalogue, mixForModel, mixOf, mostCategories,
-    setCategoryField, setLeadDays, setMix
+    categoriesForModel, categoriesProblem, clearMix, completeCategories, createCategory, defaultCategoryCatalogue, listed, lostSalesOf, mixForModel, mixOf,
+    mostCategories, setCategoryField, setLeadDays, setMix
 } from '../../packages/toolbox/lib/categories.mjs';
 import { affectedAcross, closureAcross, mergeSeries, mergeSupplied, siteView } from '../../packages/toolbox/lib/builtView.mjs';
 import { createPin, networkProblems, networkSelection, routeLinks, suggestLinks } from '../../packages/toolbox/lib/network.mjs';
@@ -164,6 +164,28 @@ test('a network with categories is a copy of itself for each: named after both, 
     // Model-wide constants are said once, and a vehicle type's figures once.
     assert.equal(built.provenance.filter((entry) => entry.entity === 'Refrigerated truck' && entry.parameter === 'Capacity').length, 1);
     assert.equal(built.provenance.filter((entry) => entry.entity === 'Every component' && entry.parameter === 'Order handling time').length, 1);
+});
+
+test('names are listed as a sentence does, and a run names the categories it lost sales of when it was not all of them', () => {
+    assert.deepEqual([[], ['Ambient'], ['Ambient', 'Chilled'], ['Ambient', 'Chilled', 'Frozen'], ['A', 'B', 'C', 'D']].map(listed), ['', 'Ambient', 'Ambient and Chilled', 'Ambient, Chilled and Frozen', 'A, B, C and D']);
+    const run = (...lost) => ['Ambient', 'Chilled', 'Frozen'].map((name, index) => ({ name, lost: { baseline: 1, scenario: 1 + lost[index] } }));
+    assert.equal(lostSalesOf(run(0, 36, 0)), 'Chilled');
+    assert.equal(lostSalesOf(run(0, 36, 2)), 'Chilled and Frozen');
+    // All of them, none of them (what the baseline loses too is not the scenario's) or no categories: "sales" alone says it.
+    assert.deepEqual([lostSalesOf(run(5, 36, 2)), lostSalesOf(run(0, 0.01, 0)), lostSalesOf(undefined), lostSalesOf(run(4).slice(0, 1))], ['', '', '', '']);
+});
+
+test('where the stores\' own sales differ from what is supplied, each category says so for itself, with figures that show the difference', () => {
+    const { built } = placed({ change: ({ pins }) => { pins[2].fields.demand = { value: 30.5, basis: 'user' }; } });
+    const scaled = built.warnings.filter((text) => /scaled/.test(text));
+    assert.deepEqual(scaled, [
+        'Ambient: the customers\' own demand (24.3 pallets/day) differs from what the suppliers and ports supply (24 pallets/day); it was scaled by 0.988 to match so the baseline holds still.',
+        'Chilled: the customers\' own demand (10.1 pallets/day) differs from what the suppliers and ports supply (10 pallets/day); it was scaled by 0.988 to match so the baseline holds still.',
+        'Frozen: the customers\' own demand (6.1 pallets/day) differs from what the suppliers and ports supply (6 pallets/day); it was scaled by 0.988 to match so the baseline holds still.'
+    ]);
+    // One category alone is the network itself, and says it as before.
+    const single = placed({ change: ({ pins, categories }) => { pins[2].fields.demand = { value: 30.5, basis: 'user' }; categories.splice(1); } });
+    assert.match(single.built.warnings.find((text) => /scaled/.test(text)), /^The customers' own demand \(40\.5 pallets\/day\) differs/);
 });
 
 test('each category\'s copy of the network has its own place on the canvas, clear of the others, laid out alike', () => {

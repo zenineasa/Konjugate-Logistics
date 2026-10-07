@@ -19,7 +19,7 @@ import { completeFields, createPin, isCandidate, kindOf, openNetwork, linkId, li
 import { calibration, calibrationAdvised, calibrationMinimum, formatDuration, googleMapsUrl, howLabels, modelHours, openStreetMapUrl, parseTravelTimes, suspectTime, timeFrom, whenLabels, writeTravelTimes } from './lib/travelTimes.mjs';
 import { affectedAcross, closureAcross, diversionAcross, mergeSeries, siteView } from './lib/builtView.mjs';
 import { calendarKinds, calendarOf, dayNames, describeCalendar, kindsFor, setHours, wholeCalendar } from './lib/calendars.mjs';
-import { categoryFields, clearMix, completeCategories, createCategory, defaultCategoryCatalogue, hasMix, mixOf, mostCategories, setCategoryField, setLeadDays, setMix } from './lib/categories.mjs';
+import { categoryFields, clearMix, completeCategories, createCategory, defaultCategoryCatalogue, hasMix, listed, lostSalesOf, mixOf, mostCategories, setCategoryField, setLeadDays, setMix } from './lib/categories.mjs';
 import { anyVehicle, carriersFor, carriesVehicles, completeCatalogue, createVehicle, defaultCatalogue, linkKind, setVehicleField, setVehicleHours, typesPerLink, vehicleFields, vehiclesOf } from './lib/vehicles.mjs';
 import { writeSites } from './lib/sites.mjs';
 import { addsToSelection, commandHeld, platformKeys } from './lib/platform.mjs';
@@ -1855,9 +1855,9 @@ function renderLinkVehicles(link) {
     const chilled = state.categories.filter((category) => category.chilled);
     const cold = chilled.length ? carriersFor(carried, kind, state.vehicles, true) : [];
     const coldNote = !chilled.length ? ''
-        : !cold.length ? `<div class="detail">${escape(chilled.map((category) => category.name).join(' and '))} ${chilled.length === 1 ? 'needs' : 'need'} a refrigerated vehicle, and no vehicle type that may go here is one.</div>`
+        : !cold.length ? `<div class="detail">${escape(listed(chilled.map((category) => category.name)))} ${chilled.length === 1 ? 'needs' : 'need'} a refrigerated vehicle, and no vehicle type that may go here is one.</div>`
             : carried.some((item) => item.type === cold[0].type) ? ''
-                : `<div class="detail">${escape(chilled.map((category) => category.name).join(' and '))} ${chilled.length === 1 ? 'goes' : 'go'} by ${escape(typeNamed(cold[0].type)?.name.toLowerCase() ?? 'refrigerated vehicle')}, as many as ${chilled.length === 1 ? 'it needs' : 'they need'}: none of the vehicles chosen here is refrigerated.</div>`;
+                : `<div class="detail">${escape(listed(chilled.map((category) => category.name)))} ${chilled.length === 1 ? 'goes' : 'go'} by ${escape(typeNamed(cold[0].type)?.name.toLowerCase() ?? 'refrigerated vehicle')}, as many as ${chilled.length === 1 ? 'it needs' : 'they need'}: none of the vehicles chosen here is refrigerated.</div>`;
     const row = (item, index) => `<div class="field vehicleChoice">
             <select data-link-vehicle="${index}" aria-label="${index ? 'Second vehicle type' : 'Vehicle type'}" title="V gives it the next type">${state.vehicles.map((type) => `<option value="${escape(type.id)}" ${type.id === item.type ? 'selected' : ''} ${typeAllowed(type, link) ? '' : 'disabled'}>${escape(type.name)}${typeAllowed(type, link) ? '' : ' (not to stores)'}</option>`).join('')}</select>
             <span><input type="number" min="0" step="1" data-link-fleet="${index}" value="${item.fleet ?? ''}" placeholder="${escape(sized(index))}" aria-label="How many"> <span class="muted">vehicles</span></span>
@@ -2945,7 +2945,7 @@ function renderRanking() {
         <p class="headline">${escape(rankingHeadline(ranking, harmless.length))}</p>
         ${stale ? notice('warning', 'The network has been built again since these were run: run them again to rank it as it is now.') : ''}
         <table class="business" id="rankingTable"><thead><tr><th></th><th>If, from day ${number(ranking.start)} for ${number(ranking.days)} days</th>${head}<th></th></tr></thead>
-            <tbody>${ranking.rows.map((row, index) => `<tr><td class="number">${index + 1}</td><td>${escape(row.what)}${row.of?.length ? `<div class="basis">out of ${escape(row.of.join(' and '))}</div>` : ''}</td>${cells(row)}<td><button class="link" type="button" data-run-failure="${index}" title="Run this one alone, for its map and details">Run it</button></td></tr>`).join('')}</tbody></table>
+            <tbody>${ranking.rows.map((row, index) => `<tr><td class="number">${index + 1}</td><td>${escape(row.what)}${row.of?.length ? `<div class="basis">out of ${escape(listed(row.of))}</div>` : ''}</td>${cells(row)}<td><button class="link" type="button" data-run-failure="${index}" title="Run this one alone, for its map and details">Run it</button></td></tr>`).join('')}</tbody></table>
         <p class="muted small">Each failure was run on its own, with nothing done about it: no one orders elsewhere. Values are in the model's cost units, beyond the baseline's.</p>`;
     panel.querySelectorAll('[data-run-failure]').forEach((button) => button.addEventListener('click', () => runFailureAlone(ranking.rows[Number(button.dataset.runFailure)])));
 }
@@ -3167,8 +3167,8 @@ function renderSupplierHint(settings) {
     const raw = state.built.lanes;
     const from = new Set(copies.map((copy) => copy.name));
     const alone = [...new Set(raw.filter((lane) => from.has(lane.from) && lane.rate > 0 && !raw.some((other) => other.to === lane.to && !from.has(other.from) && other.rate > 0)).map((lane) => lane.site ?? lane.to))];
-    const others = settings.short > 0 ? (alone.length ? ` ${alone.join(' and ')} ${alone.length === 1 ? 'orders' : 'order'} ${settings.goods === 'all' ? 'these goods' : 'them'} from ${names.length === 1 ? 'it' : 'them'} alone${settings.mode === 'otherSuppliers' ? ', so can only wait' : ''}.` : ' Every warehouse it supplies has another supplier of the same goods.') : '';
-    $('#supplierHint').textContent = parts.length ? `${parts.join(' and ')}.${others}` : 'Neither short nor late: give it a share it does not make, or days its orders take longer.';
+    const others = settings.short > 0 ? (alone.length ? ` ${listed(alone)} ${alone.length === 1 ? 'orders' : 'order'} ${settings.goods === 'all' ? 'these goods' : 'them'} from ${names.length === 1 ? 'it' : 'them'} alone${settings.mode === 'otherSuppliers' ? ', so can only wait' : ''}.` : ' Every warehouse it supplies has another supplier of the same goods.') : '';
+    $('#supplierHint').textContent = parts.length ? `${listed(parts)}.${others}` : 'Neither short nor late: give it a share it does not make, or days its orders take longer.';
 }
 // What a site going down comes to: what a warehouse no longer sends out and who has no other warehouse, or what a
 // closed store no longer sells and how much of it is lost.
@@ -3187,8 +3187,8 @@ function renderDownHint(settings) {
     const areas = [...new Set(state.built.deliveries.filter((delivery) => down.has(delivery.from)).map((delivery) => delivery.site))];
     const restocked = new Set(out.map((lane) => lane.site ?? lane.to)).size;
     $('#downHint').textContent = `${site.name} restocks ${restocked} site${restocked === 1 ? '' : 's'} with ${number(out.reduce((sum, lane) => sum + lane.rate, 0), 1)} ${goods()} a day`
-        + `${areas.length ? ` and delivers to ${areas.join(' and ')}, whose orders wait` : ''}.`
-        + `${alone.length && restocked ? ` ${alone.length === restocked ? (restocked === 1 ? 'It has' : 'None of them has') : `${alone.join(' and ')} ${alone.length === 1 ? 'has' : 'have'}`} no other warehouse${settings.mode === 'otherWarehouses' ? ', so can only wait' : ''}.` : restocked ? ' Each has another warehouse.' : ''}`;
+        + `${areas.length ? ` and delivers to ${listed(areas)}, whose orders wait` : ''}.`
+        + `${alone.length && restocked ? ` ${alone.length === restocked ? (restocked === 1 ? 'It has' : 'None of them has') : `${listed(alone)} ${alone.length === 1 ? 'has' : 'have'}`} no other warehouse${settings.mode === 'otherWarehouses' ? ', so can only wait' : ''}.` : restocked ? ' Each has another warehouse.' : ''}`;
 }
 for (const selector of ['#downSiteSelect', '#downModeSelect']) $(selector).addEventListener('change', () => { renderScenarioHints(); renderMarks(); });
 $('#supplierSelect').addEventListener('change', () => { renderSupplierGoods(); renderScenarioHints(); renderMarks(); });
@@ -3298,7 +3298,7 @@ function scenarioRun(id, start, runTime, status) {
         const lane = view().lanes.find((item) => item.name === settings.closure.lane);
         const what = mode === 'detour'
             ? `on a detour ${days}: ${number(plan.detour.hours, 1)} h and ${number(plan.detour.kilometres)} km more each way`
-            : `${open > 0 ? `restricted to ${settings.closure.open}% of its loads` : 'closed'} ${days}: ${number(plan.teuPerDay, 1)} ${goods()} a day it no longer carries${plan.reroutedTo.length ? `, ordered from ${view().lanes.filter((item) => plan.reroutedTo.includes(item.name)).map((item) => item.from).join(' and ')} instead` : ', its orders waiting for the road to reopen'}`;
+            : `${open > 0 ? `restricted to ${settings.closure.open}% of its loads` : 'closed'} ${days}: ${number(plan.teuPerDay, 1)} ${goods()} a day it no longer carries${plan.reroutedTo.length ? `, ordered from ${listed(view().lanes.filter((item) => plan.reroutedTo.includes(item.name)).map((item) => item.from))} instead` : ', its orders waiting for the road to reopen'}`;
         return {
             supplied: { byParameter: plan.supplied }, lanes: [...new Set(plan.supplied.orderShare.entities.map(view().siteOf))], describe: `${laneEnds(lane)} ${what}.`,
             // For the map's X on the closed road.
@@ -3324,7 +3324,7 @@ function scenarioRun(id, start, runTime, status) {
         const elsewhere = [...new Set(plan.reroutedTo.map((lane) => view().lanes.find((item) => item.name === view().siteOf(lane))?.site).filter(Boolean))];
         const waiting = [...new Set(plan.waiting.map(siteNamed))];
         const meanwhile = !warehouse ? ''
-            : settings.down.mode === 'otherWarehouses' && elsewhere.length ? `; ${elsewhere.join(' and ')} ${elsewhere.length === 1 ? 'orders' : 'order'} from ${elsewhere.length === 1 ? 'its' : 'their'} other warehouse${waiting.length ? `, and ${waiting.join(' and ')} ${waiting.length === 1 ? 'has' : 'have'} none and ${waiting.length === 1 ? 'waits' : 'wait'}` : ''}`
+            : settings.down.mode === 'otherWarehouses' && elsewhere.length ? `; ${listed(elsewhere)} ${elsewhere.length === 1 ? 'orders' : 'order'} from ${elsewhere.length === 1 ? 'its' : 'their'} other warehouse${waiting.length ? `, and ${listed(waiting)} ${waiting.length === 1 ? 'has' : 'have'} none and ${waiting.length === 1 ? 'waits' : 'wait'}` : ''}`
                 : settings.down.mode === 'otherWarehouses' ? '; none of the sites it restocks has another warehouse, so they wait' : '; the sites it restocks wait for it';
         return {
             supplied: { byParameter: plan.supplied }, lanes: [...new Set(plan.lanes.map(view().siteOf))],
@@ -3349,10 +3349,10 @@ function scenarioRun(id, start, runTime, status) {
         const elsewhere = [...new Set(plan.reroutedTo.map((lane) => view().siteOf(lane)))].map((link) => view().lanes.find((lane) => lane.name === link)?.from).filter(Boolean);
         const waiting = [...new Set(plan.waiting.map(view().siteOf))];
         const meanwhile = chosen.short > 0 && chosen.mode === 'otherSuppliers'
-            ? (elsewhere.length ? `; its warehouses order what it cannot make from ${[...new Set(elsewhere)].join(' and ')}${waiting.length ? `, but ${waiting.join(' and ')} ${waiting.length === 1 ? 'has' : 'have'} no other supplier of it and ${waiting.length === 1 ? 'waits' : 'wait'}` : ''}` : '; none of its warehouses has another supplier of the same goods, so they wait')
+            ? (elsewhere.length ? `; its warehouses order what it cannot make from ${listed([...new Set(elsewhere)])}${waiting.length ? `, but ${listed(waiting)} ${waiting.length === 1 ? 'has' : 'have'} no other supplier of it and ${waiting.length === 1 ? 'waits' : 'wait'}` : ''}` : '; none of its warehouses has another supplier of the same goods, so they wait')
             : '; its warehouses wait for it';
         return {
-            supplied: { byParameter: plan.supplied }, lanes: [...new Set(plan.lanes.map(view().siteOf))], describe: `${names.join(' and ')} ${what} ${days}${meanwhile}.`,
+            supplied: { byParameter: plan.supplied }, lanes: [...new Set(plan.lanes.map(view().siteOf))], describe: `${listed(names)} ${what} ${days}${meanwhile}.`,
             // For the ring round the supplier on the map, and its row in the details.
             extra: { supplierTrouble: { suppliers: names, short: chosen.short, late: chosen.late, startDay: Number($('#startInput').value), days: Number($('#durationInput').value) } }
         };
@@ -3384,7 +3384,7 @@ $('#runScenarioButton').addEventListener('click', async () => {
         const needsStandby = divertTo.filter((port) => !state.built.standbyPorts?.includes(port));
         if (needsStandby.length || !state.imported) {
             for (const port of needsStandby) state.standby.add(port);
-            status.innerHTML = notice('', needsStandby.length ? `Adding standby lanes from ${needsStandby.join(' and ')} to the model…` : 'Building the model from the session kept with this project…');
+            status.innerHTML = notice('', needsStandby.length ? `Adding standby lanes from ${listed(needsStandby)} to the model…` : 'Building the model from the session kept with this project…');
             // A build already under way (Keep the canvas in step, after the last change) would make this one wait its
             // turn and return at once, before the standby lanes exist: let it finish, then build, and once more if a
             // change queued another build in between.
@@ -3694,14 +3694,16 @@ function scenarioHeadline(result) {
     const stores = result.stores ?? [];
     if (stores.length) {
         // Of what, when it sells several categories: those it ran out of.
-        const ofWhat = (item) => (item.categories ?? []).filter((each) => each.emptyDays.scenario - each.emptyDays.baseline > outNoise).map((each) => each.name).join(' and ');
+        const ofWhat = (item) => listed((item.categories ?? []).filter((each) => each.emptyDays.scenario - each.emptyDays.baseline > outNoise).map((each) => each.name));
         const out = stores.map((item) => ({ name: item.name, days: item.emptyDays.scenario - item.emptyDays.baseline, of: ofWhat(item) })).filter((item) => item.days > outNoise).sort((a, b) => b.days - a.days);
         if (!out.length) parts.push('No store ran out');
         else if (out.length === 1) parts.push(`${out[0].name} ran out${out[0].of ? ` of ${out[0].of}` : ''} for ${number(out[0].days, 1)} days`);
         else parts.push(`${out.length} stores ran out, ${out[0].name} longest at ${number(out[0].days, 1)} days${out[0].of ? ` (of ${out[0].of})` : ''}`);
         const lost = totals.lost ? totals.lost.scenario - totals.lost.baseline : 0;
         const value = totals.lostValue ? totals.lostValue.scenario - totals.lostValue.baseline : 0;
-        const amount = `${number(lost, lost < 10 ? 1 : 0)} ${goods()} of sales`;
+        // Of what, when the sales lost were of some categories and not of all.
+        const lostOf = lostSalesOf(result.byCategory);
+        const amount = `${number(lost, lost < 10 ? 1 : 0)} ${goods()} of ${lostOf ? `${lostOf} ` : ''}sales`;
         const worth = value > 0.5 ? `, worth ${number(value)}` : '';
         if (lost > 0.05) parts.push(out.length ? `losing ${amount}${worth}` : `but ${amount} were lost${worth}`);
         else if (totals.lost) parts.push(out.length ? 'but shoppers waited and no sales were lost' : 'and no sales were lost');

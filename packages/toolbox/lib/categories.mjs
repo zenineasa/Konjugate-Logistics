@@ -161,3 +161,13 @@ export function mixForModel(pin, catalogue) {
     if (pin.role === 'supplier' && lead.length) entry.leadDaysBy = Object.fromEntries(lead.map(([id, value]) => [id, { value: Number(value), basis: 'user' }]));
     return entry;
 }
+
+// Names as a list in a sentence: "A", "A and B", "A, B and C".
+export const listed = (items) => (items.length <= 2 ? items.join(' and ') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
+
+// Which categories a run lost sales of beyond its baseline, as a sentence names them: listed when it was some of them,
+// and '' when it was all of them, none of them or there is one category alone (then "sales" says it).
+export function lostSalesOf(byCategory, noise = 0.05) {
+    const lost = (byCategory ?? []).filter((item) => item.lost.scenario - item.lost.baseline > noise).map((item) => item.name);
+    return lost.length && lost.length < byCategory.length ? listed(lost) : '';
+}

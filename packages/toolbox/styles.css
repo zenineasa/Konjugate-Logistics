@@ -161,9 +161,11 @@ details summary:hover { text-decoration: underline; }
 #map .lane.rose { stroke: var(--warn); }
 #map .serve { stroke: var(--town); stroke-opacity: 0.65; stroke-dasharray: 3 3; fill: none; }
 
-.legend { display: flex; gap: 14px; align-items: center; padding: 6px 12px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); background: var(--surface); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; padding: 6px 12px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); background: var(--surface); }
 .legend > span { white-space: nowrap; }
-.legend .attribution { margin-left: auto; white-space: normal; flex: 1 1 auto; min-width: 0; text-align: right; }
+/* The credit keeps a line's width of its own: beside a long legend it goes to the next row, and is not squeezed into a
+   column that makes the legend tall and the map short. */
+.legend .attribution { margin-left: auto; white-space: normal; flex: 1 1 260px; min-width: 260px; text-align: right; }
 .swatch { display: inline-block; width: 9px; height: 9px; margin-right: 5px; vertical-align: -1px; }
 .swatch.port { background: var(--port); }
 .swatch.zone { background: var(--zone); transform: rotate(45deg); }

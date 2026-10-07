@@ -71,7 +71,8 @@ The window computes, for each parameter a scenario changes, a held path of value
 - Categories: a category's idle vehicles on a link do not carry another's goods, and its share of a site's room does not hold another's; a category has no stock cover of its own; the sites CSV names categories, so a file made for one network's categories says which it lacks when loaded into another.
 - A supplier asked for more than it can make (orders moved to it when another road closes) delivers late, and the warehouse counts those orders as on their way meanwhile.
 - A fleet operator's file is not yet read into the vehicle catalogue (its truck sizes as types, its contracts as fleets on links).
-- City streets for a large city may come close to what the window may receive; not yet tried on real data.
+- A large city comes close to what the window may receive. Tried once on real data (Bangalore, 8 October 2026, in the real app): its major roads within 25 km (85 × 84 km) took 212 seconds to load and came to 8,013 KB of the 8 MB an importer may return; 18 sites of three categories built in 2.4 seconds (134 nodes, 708 relationships), a run as planned took 13 seconds and a ranking of five failures 83. Its city streets have not been tried, and a wider radius of major roads would be refused.
+- The interaction test's fork step (`tests/interaction/run.mjs`) has intermittently found "Fork here" hidden after a run that reports "Result · 0 s"; the engine does write its checkpoints, and the cause is not found. The test reports the app's state when it happens.
 
 ## How the owner works
 

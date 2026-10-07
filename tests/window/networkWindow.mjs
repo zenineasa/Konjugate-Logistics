@@ -886,7 +886,7 @@ try {
         assert.match(result, /fullest/, 'a warehouse with room for 400 pallets says how full it got');
         // In business terms first: one sentence, then demand met, sales lost and running costs; the rest under Details.
         const headline = await page.textContent('#scenarioResult .headline');
-        assert.match(headline, /^Harbour shop ran out of Ambient and Chilled and Frozen for [\d.]+ days, losing [\d,.]+ pallets of sales, worth [\d,]+; running costs ((up|down) [\d,]+ \([\d.]+%\) against|as in) the baseline\.$/, headline);
+        assert.match(headline, /^Harbour shop ran out of Ambient, Chilled and Frozen for [\d.]+ days, losing [\d,.]+ pallets of sales, worth [\d,]+; running costs ((up|down) [\d,]+ \([\d.]+%\) against|as in) the baseline\.$/, headline);
         // By category: the closed road carried all three, so one store ran out of each, and the sales lost add up.
         const byCategory = await stateOf(() => window.logisticsToolboxState.scenario.byCategory);
         assert.deepEqual(byCategory.map((item) => [item.name, item.storesOut]), [['Ambient', 1], ['Chilled', 1], ['Frozen', 1]]);
@@ -944,6 +944,15 @@ try {
         assert.equal(await page.locator('#map .siteMark.supplier').count(), 1);
         assert.match(await page.textContent('#map .siteMark.supplier title'), /^Supplier 2: makes 80% less and takes 2 days longer from day 5 for 10 days$/);
         assert.equal(await page.isVisible('#legendSupplier'), true);
+        // A long legend wraps: the map's credit keeps a line's width and the legend stays a few rows high, the map its height.
+        await page.setViewportSize({ width: 1000, height: 950 });
+        const legend = await page.evaluate(() => ({
+            credit: document.querySelector('.legend .attribution').getBoundingClientRect().width,
+            height: document.querySelector('.legend').getBoundingClientRect().height,
+            map: document.querySelector('#map').getBoundingClientRect().height
+        }));
+        await page.setViewportSize({ width: 1500, height: 950 });
+        assert.ok(legend.credit >= 260 && legend.height < 60 && legend.map > 680, `the legend takes two rows and the credit a line's width (${JSON.stringify(legend)})`);
         assert.equal(await marks('closed'), 0, 'the closed road\'s X goes with its scenario');
         await page.click('#flowView [data-flows="baseline"]');
         assert.equal(await page.locator('#map .siteMark.supplier').count(), 0, 'no ring on the baseline');

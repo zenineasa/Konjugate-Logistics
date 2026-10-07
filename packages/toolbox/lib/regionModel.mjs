@@ -297,7 +297,9 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
     if (remainder < 0 || (remainder > 0 && !weighted.length)) {
         fixedScale = totalSupply / fixedTotal;
         remainder = 0;
-        warnings.push(`The customers' own demand (${fixedTotal.toFixed(0)} ${unit}/day) differs from what ${supplied} (${totalSupply.toFixed(0)} ${unit}/day); it was scaled to match so the baseline holds still.`);
+        // Said for the category it is about, to a decimal: 25.3 against 25.0 is a difference, 25 against 25 reads as none.
+        const whose = scope && !scope.single ? `${scope.category.name}: the` : 'The';
+        warnings.push(`${whose} customers' own demand (${number(fixedTotal, 1)} ${unit}/day) differs from what ${supplied} (${number(totalSupply, 1)} ${unit}/day); it was scaled by ${number(fixedScale, 3)} to match so the baseline holds still.`);
     }
     const weightOf = (town) => (Number(town.population) || settings.assumedPopulation) * part(town);
     const weightTotal = weighted.reduce((total, town) => total + weightOf(town), 0);
