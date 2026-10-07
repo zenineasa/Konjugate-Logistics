@@ -19,6 +19,7 @@
 import { groupOfRole, roleNames } from './sites.mjs';
 import { calendarOf, calendarProblem, hoursForModel, kindsFor } from './calendars.mjs';
 import { categoriesForModel, categoriesProblem, hasMix, mixForModel } from './categories.mjs';
+import { holidayProblem, holidaysForModel } from './holidays.mjs';
 import { carriersFor, catalogueForModel, linkKind, linkVehicleProblem, vehicleProblem, vehiclesOf } from './vehicles.mjs';
 
 // The network counts goods in pallets: a site's figures, a vehicle's capacity and the model's stocks and flows. A port's
@@ -230,8 +231,12 @@ export function routeLinks(pins, links, router) {
 
 // What stops the network from being built (errors) and what the user should know (warnings), each naming its pins.
 // `catalogue`: the vehicle types, when the network runs on them; `categories`: the product categories it carries.
-export function networkProblems(allPins, allLinks, catalogue = null, categories = null) {
+export function networkProblems(allPins, allLinks, catalogue = null, categories = null, holidays = null) {
     const problems = [];
+    for (const event of holidays ?? []) {
+        const issue = holidayProblem(event);
+        if (issue) problems.push({ level: 'error', text: issue, pins: [] });
+    }
     // The network as it is: its candidates are judged apart, below, as they would be once open.
     const { pins, links } = openNetwork(allPins, allLinks);
     for (const candidate of allPins.filter(isCandidate)) {
@@ -306,7 +311,7 @@ export function networkProblems(allPins, allLinks, catalogue = null, categories 
 // so the importer reads its sourced data again), the links with their legs and vehicles, and the vehicle catalogue.
 // `paths: false` leaves the supply links' roads out, when they would be more than the host accepts in one request: the
 // lanes are then drawn straight. With no `catalogue`, links carry no vehicles and the model runs on two truck sizes.
-export function networkSelection(allPins, allLinks, { paths = true, catalogue = null, categories = null, open = [] } = {}) {
+export function networkSelection(allPins, allLinks, { paths = true, catalogue = null, categories = null, open = [], holidays = null } = {}) {
     // Candidates are left out, and their links with them, but those opened for a comparison (`open`, by pin id).
     const { pins, links } = openNetwork(allPins, allLinks, open);
     const selection = { ports: [], zones: [], towns: [] };
@@ -371,7 +376,8 @@ export function networkSelection(allPins, allLinks, { paths = true, catalogue = 
             }))
         },
         ...(catalogue ? { vehicles: catalogueForModel(catalogue), unit } : {}),
-        ...(catalogue && categories ? { categories: categoriesForModel(categories) } : {})
+        ...(catalogue && categories ? { categories: categoriesForModel(categories) } : {}),
+        ...(holidays?.length ? { holidays: holidaysForModel(holidays) } : {})
     };
 }
 

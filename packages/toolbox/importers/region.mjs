@@ -18,6 +18,7 @@
 //     sites, with any changes the user made) and returns the model, linked by gravity.
 
 import { discoverRegion, parsePopulation } from '../lib/discovery.mjs';
+import { holidaysForModel } from '../lib/holidays.mjs';
 import { portwatchAttribution } from '../lib/portwatch.mjs';
 import { tilesFor } from '../lib/geography.mjs';
 import { geographyAttribution, geographyLayers, mapLayers } from '../lib/mapData.mjs';
@@ -159,6 +160,9 @@ function buildSettings(options) {
     if (options.network?.unit === 'pallets') settings.unit = 'pallets';
     const categories = checkedCategories(options.network?.categories);
     if (categories) settings.categories = categories;
+    // The network's holidays and peaks, checked as the window checks them.
+    const holidays = holidaysForModel(Array.isArray(options.network?.holidays) ? options.network.holidays : []);
+    if (holidays.length) settings.holidays = holidays;
     // The user's times on some links, scaling the estimates on the rest (travelTimes.mjs): a factor within reason.
     const factor = Number(options.settings?.timeFactor?.factor);
     if (factor >= 0.1 && factor <= 10) settings.timeFactor = { factor, count: Math.max(0, Math.round(Number(options.settings.timeFactor.count) || 0)) };

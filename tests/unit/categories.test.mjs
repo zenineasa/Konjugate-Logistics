@@ -522,3 +522,49 @@ test('a site\'s hours reach the model as one stored schedule each, whatever the 
     // With no hours, no schedule: the model is as it was.
     assert.ok(!placed().document.sharedParameters.some((shared) => shared.schedule));
 });
+
+test('holidays and peaks: an event\'s effect on a category\'s demand as a schedule, the days suppliers are closed, and what is wrong with one', async () => {
+    const { closeDuring, createHoliday, demandChange, describeHoliday, holidayProblem, holidaysForModel, seasonSamples, supplierClosures } = await import('../../packages/toolbox/lib/holidays.mjs');
+    const first = createHoliday([]);
+    assert.deepEqual([first.name, first.day, first.days, first.demand, first.suppliersClosed, holidayProblem(first)], ['Holiday 1', 14, 1, {}, false, null]);
+    assert.equal(createHoliday([first]).name, 'Holiday 2');
+    const festival = { name: 'Festival', day: 12, days: 3, demand: { all: 80, chilled: 150 }, beforeDays: 3, beforePercent: 30, afterDays: 2, afterPercent: -20, suppliersClosed: true };
+    // A category's own change, else the one for all goods; days before and after; 1 on an ordinary day.
+    assert.deepEqual([demandChange(festival, 'chilled'), demandChange(festival, 'ambient'), demandChange(festival, null)], [150, 80, 80]);
+    assert.deepEqual(seasonSamples([festival], 'ambient', 28), [[0, 1], [9 * 86400, 1.3], [12 * 86400, 1.8], [15 * 86400, 0.8], [17 * 86400, 1]]);
+    assert.deepEqual(seasonSamples([festival], 'chilled', 28)[2], [12 * 86400, 2.5]);
+    assert.equal(seasonSamples([{ ...festival, demand: {}, beforePercent: 0, afterPercent: 0 }], 'ambient', 28), null, 'an event that changes no demand is no schedule');
+    assert.equal(seasonSamples([], 'ambient', 28), null);
+    // Everything closed: nothing sold. Two events on the same day multiply.
+    assert.deepEqual(seasonSamples([{ name: 'Closed', day: 3, days: 1, demand: { all: -100 } }], null, 7), [[0, 1], [3 * 86400, 0], [4 * 86400, 1]]);
+    assert.deepEqual(seasonSamples([{ name: 'A', day: 2, days: 2, demand: { all: 50 } }, { name: 'B', day: 3, days: 1, demand: { all: 100 } }], null, 7).map(([, value]) => value), [1, 1.5, 3, 1]);
+    // The days suppliers do not dispatch, merged where they touch, and a schedule closed over them.
+    assert.deepEqual(supplierClosures([festival, { name: 'Bridge', day: 15, days: 1, suppliersClosed: true }, { name: 'Open', day: 20, days: 2 }], 28), [{ from: 12 * 86400, to: 16 * 86400 }]);
+    assert.deepEqual(closeDuring(null, [{ from: 86400, to: 2 * 86400 }]), [[0, 1], [86400, 0], [2 * 86400, 1]]);
+    assert.deepEqual(closeDuring([[0, 0], [8 * 3600, 3], [16 * 3600, 0], [32 * 3600, 3], [40 * 3600, 0]], [{ from: 86400, to: 2 * 86400 }]), [[0, 0], [8 * 3600, 3], [16 * 3600, 0]], 'a day shift, with the second day closed');
+    assert.deepEqual(closeDuring([[0, 1]], []), [[0, 1]]);
+    assert.equal(describeHoliday(festival, 'chilled', 'Chilled'), 'Festival (day 12 for 3 days): Chilled demand +150%; the 3 days before +30%; the 2 days after -20%; suppliers do not dispatch');
+    // What is wrong, said; and only sound events reach the model.
+    assert.equal(holidayProblem({ ...festival, name: ' ' }), 'A holiday or peak needs a name.');
+    assert.equal(holidayProblem({ ...festival, days: 0 }), 'Festival: it lasts a day or more.');
+    assert.equal(holidayProblem({ ...festival, day: 1 }), 'Festival: its 3 days of stocking up would start before the run does. Start it later, or stock up for fewer days.');
+    assert.equal(holidayProblem({ ...festival, demand: { all: -120 } }), 'Festival: demand cannot fall by more than 100%.');
+    assert.equal(holidayProblem(festival, 10), 'Festival: it starts on day 12, after the run\'s 10 days.');
+    assert.deepEqual(holidaysForModel([festival, { ...festival, days: 0 }]).map((event) => [event.name, event.demand, event.suppliersClosed]), [['Festival', { all: 80, chilled: 150 }, true]]);
+    assert.deepEqual(networkProblems([], [], null, null, [{ ...festival, days: 0 }]).filter((problem) => /lasts a day/.test(problem.text)).map((problem) => problem.level), ['error']);
+});
+
+test('a holiday reaches the model as one schedule for each category\'s demand, and closes the suppliers\' dispatching', async () => {
+    const festival = [{ name: 'Festival', day: 12, days: 3, demand: { chilled: 150 }, beforeDays: 0, beforePercent: 0, afterDays: 0, afterPercent: 0, suppliersClosed: true }];
+    const { pins, links } = placed();
+    const network = networkSelection(pins, links, { catalogue: defaultCatalogue(), categories: defaultCategoryCatalogue(), holidays: festival });
+    assert.deepEqual(network.holidays.map((event) => event.name), ['Festival']);
+    const kinds = { ports: 'port', zones: 'zone', towns: 'town' };
+    const selection = Object.fromEntries(Object.entries(network.selection).map(([group, entries]) => [group, entries.map((entry) => ({ ...entry, kind: kinds[group], user: true }))]));
+    const built = buildRegionModel({ builder: new ModelBuilder(templates), selection, route: router.route, links: network.links, options: { vehicles: network.vehicles, unit: network.unit, categories: network.categories, holidays: network.holidays } });
+    const scheduled = built.document.sharedParameters.filter((shared) => shared.schedule).map((shared) => [shared.name, shared.schedule.samples]);
+    // Chilled alone has a pattern: the festival changes nothing else. The supplier is closed in every category, by one parameter.
+    assert.deepEqual(scheduled, [['Supplier 1 dispatches', [[0, 1], [12 * 86400, 0], [15 * 86400, 1]]], ['Holidays and peaks: Chilled', [[0, 1], [12 * 86400, 2.5], [15 * 86400, 1]]]]);
+    assert.ok(built.provenance.some((entry) => entry.entity === 'Holidays and peaks: Chilled' && entry.parameter === 'Festival' && entry.basis === 'user'));
+    assert.ok(built.provenance.some((entry) => entry.entity === 'Supplier 1' && entry.parameter === 'Closed for holidays' && entry.value === 3));
+});

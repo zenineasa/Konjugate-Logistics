@@ -22,6 +22,7 @@ import { laneCorridors } from './corridors.mjs';
 import { toLocal } from './geo.mjs';
 import { allocateFleet, parseOperator } from './operator.mjs';
 import { calendarSamples, describeCalendar, laneGates, weeklyHours } from './calendars.mjs';
+import { closeDuring, describeHoliday, seasonSamples, supplierClosures } from './holidays.mjs';
 import { carriersFor } from './vehicles.mjs';
 import { historyWindow, tonnesPerTeu } from './portwatch.mjs';
 
@@ -96,6 +97,9 @@ export const regionModelDefaults = {
     // A supplier makes what is ordered from it over this many days unless it, or its category, has a lead time of its
     // own; and the most it can make a day is `berthHeadroom` times what is ordered from it, unless the user set it.
     supplierLeadDays: 2,
+    // The network's holidays and peaks (holidays.mjs): dated events with their effect on demand, by category, and on
+    // the suppliers' dispatching. Part of the calendar: in the baseline as in every scenario.
+    holidays: null,
     days: 90, stepMinutes: 15, outputMinutes: 60
 };
 
@@ -596,21 +600,37 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
     // it dispatches. Day 0 is a Monday.
     const calendarSymbols = (builder.calendarSymbols ??= new Map());
     const calendarWords = { open: ['is open', 'Opening hours', 'Its shoppers buy in these hours: nothing while it is closed and more while it is open, so a week\'s sales are what they would be.'], receive: ['receives', 'Receiving hours', 'Loaded vehicles wait at its door outside these hours, and unload when it receives.'], dispatch: ['dispatches', 'Dispatch hours', 'Nothing is loaded for its lanes outside these hours.'] };
+    // Holidays: each category's demand follows them, and a supplier does not dispatch on the days they close it.
+    const holidays = settings.holidays ?? [];
+    const closures = supplierClosures(holidays, settings.days);
+    const season = seasonSamples(holidays, scope?.category.id ?? null, settings.days);
+    const seasonName = `Holidays and peaks${scope && !scope.single ? `: ${scope.category.name}` : ''}`;
+    const seasonAs = season ? { symbol: `holidayDemand${scope && !scope.single ? scope.index + 1 : ''}`, name: seasonName, unit: '', value: 1 } : null;
+    const scheduleSeason = () => {
+        const shared = season && builder.sharedParameters.find((item) => item.symbol === seasonAs.symbol);
+        if (!shared || shared.schedule) return;
+        shared.schedule = { interpolation: 'hold', samples: season };
+        for (const event of holidays) provenance.push({ entity: seasonName, parameter: event.name, value: event.days, unit: 'day', basis: 'user', detail: `Yours: ${describeHoliday(event, scope?.category.id ?? null, scope && !scope.single ? scope.category.name : null)}. Every store's and customer area's demand follows it, in the baseline and in every scenario.` });
+    };
+    const keepsHours = (site, kind) => Boolean(site?.hours?.[kind]) || (kind === 'dispatch' && Boolean(site?.supplier) && closures.length > 0);
     const calendarAs = (site, kind) => {
-        if (!site?.hours?.[kind]) return null;
+        if (!keepsHours(site, kind)) return null;
         const key = `${kind}|${site.id}`;
         if (!calendarSymbols.has(key)) calendarSymbols.set(key, `${kind}Hours${calendarSymbols.size + 1}`);
         return { symbol: calendarSymbols.get(key), name: `${site.name} ${calendarWords[kind][0]}`, unit: '', value: 1 };
     };
     // Once a placement has made the parameter, it is given its schedule, and said.
     const scheduleCalendar = (site, kind) => {
-        const calendar = site?.hours?.[kind];
-        const shared = calendar && builder.sharedParameters.find((item) => item.symbol === calendarSymbols.get(`${kind}|${site.id}`));
+        const calendar = site?.hours?.[kind] ?? null;
+        const shared = keepsHours(site, kind) && builder.sharedParameters.find((item) => item.symbol === calendarSymbols.get(`${kind}|${site.id}`));
         if (!shared || shared.schedule) return;
         // Nothing outside its hours, and within them as much more as they are short of the whole week: a week's sales in
         // the hours it is open, a day's orders loaded in the hours it dispatches, what waits at the door unloaded promptly.
-        shared.schedule = { interpolation: 'hold', samples: calendarSamples(calendar, settings.days, { average: true }) };
-        provenance.push({ entity: site.name, parameter: calendarWords[kind][1], value: weeklyHours(calendar), unit: 'h/week', basis: 'user', detail: `Yours: ${describeCalendar(calendar)}. ${calendarWords[kind][2]} Day 0 of a run is a Monday.` });
+        // And a supplier loads nothing on the days a holiday closes it.
+        const closed = kind === 'dispatch' && site.supplier ? closures : [];
+        shared.schedule = { interpolation: 'hold', samples: closeDuring(calendarSamples(calendar, settings.days, { average: true }), closed) };
+        if (closed.length) provenance.push({ entity: site.name, parameter: 'Closed for holidays', value: closed.reduce((sum, span) => sum + (span.to - span.from) / 86400, 0), unit: 'day', basis: 'user', detail: `Yours: it does not dispatch on ${holidays.filter((event) => event.suppliersClosed).map((event) => `${event.name} (day ${event.day} for ${event.days})`).join(', ')}. Orders placed then are loaded when it is back.` });
+        if (calendar) provenance.push({ entity: site.name, parameter: calendarWords[kind][1], value: weeklyHours(calendar), unit: 'h/week', basis: 'user', detail: `Yours: ${describeCalendar(calendar)}. ${calendarWords[kind][2]} Day 0 of a run is a Monday.` });
     };
 
     // ---- vehicles: each type is one set of shared parameters (capacity, costs, loading time) for every lane and
@@ -952,9 +972,10 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         const node = place('demandZone', townName, {
             name: townName, position: position(town),
             initialValues: { backlog: townDemand * (shop ? settings.saleDays : responseDays), demandRate: townDemand },
-            shared: { baseDemand: townDemand }, as: calendarAs(town, 'open') ? { demandPattern: calendarAs(town, 'open') } : {}
+            shared: { baseDemand: townDemand }, as: { ...(calendarAs(town, 'open') ? { demandPattern: calendarAs(town, 'open') } : {}), ...(seasonAs ? { seasonFactor: seasonAs } : {}) }
         });
         scheduleCalendar(town, 'open');
+        scheduleSeason();
         // Live, so a scenario can step demand up: to four times the town's own.
         makeLive(townName, 'baseDemand', niceCeiling(4 * townDemand));
         if (shop) {

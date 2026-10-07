@@ -83,6 +83,12 @@
                         <ul class="vehicles" id="categoryList"></ul>
                         <button class="button small" type="button" id="addCategoryButton">Add a category</button>
                     </details>
+                    <details id="holidays">
+                        <summary>Holidays and peaks <span class="muted small" id="holidaysSummary"></span></summary>
+                        <p class="muted small">The network's calendar of dated events: a public holiday, a festival, a seasonal peak. Each changes what every store and customer area sells while it lasts, by category, and in the days before it (people stock up) and after it; and the suppliers may not dispatch while it lasts. The days are days of the run (day 0 is a Monday), and every size is yours: nothing published says how much a festival moves your sales. An event is part of the plan, so it is in the baseline as in every scenario: run the network As planned to see what it does, and again with more stock cover to see what holding more saves.</p>
+                        <ul class="vehicles" id="holidayList"></ul>
+                        <button class="button small" type="button" id="addHolidayButton">Add a holiday or peak</button>
+                    </details>
                     <details id="travelTimes">
                         <summary>Travel times <span class="muted small" id="travelSummary"></span></summary>
                         <p class="muted small">The time each link takes door to door (loading, the drive and unloading), where you know it better than the route: type it here or on the link's card (T), paste a column from a spreadsheet, load a file, or read it off Google Maps or OpenStreetMap and type it back. A time of yours replaces the route's estimate in the model. Say when it holds: a road at the morning peak is not the road at night.</p>
@@ -166,6 +172,7 @@
                 <div class="stepContent">
                     <p class="muted small">Each scenario forks the model on the day it starts and runs beside the baseline.</p>
                     <div class="tabs" role="tablist" id="scenarioTabs">
+                        <button type="button" role="tab" data-scenario="asPlanned" hidden>As planned</button>
                         <button type="button" role="tab" data-scenario="chokepointDisruption" class="active">Chokepoint</button>
                         <button type="button" role="tab" data-scenario="roadClosure">Road closure</button>
                         <button type="button" role="tab" data-scenario="fleetChange">Fleet</button>
@@ -203,6 +210,10 @@
                             <label>Demand while the cut lasts <input type="number" id="demandDuringInput" min="-90" max="100" step="10" value="0"> %</label>
                         </div>
                         <table class="dependence" id="dependenceTable"></table>
+                    </div>
+                    <div class="scenarioPanel" data-panel="asPlanned" hidden>
+                        <p class="muted small">The network as it is planned, with no disruption: its sites' hours and its holidays and peaks. What runs out, what is lost and wasted and what it costs, counted from the day below to the end of the run (the days it lasts are not used). Run it, change a stock cover, a shift or a fleet, run it again, and the two are set side by side.</p>
+                        <div class="muted small" id="plannedHint"></div>
                     </div>
                     <div class="scenarioPanel" data-panel="roadClosure" hidden>
                         <p class="muted small">A road closed, or restricted, for a while. Vehicles already on it finish their trips.</p>

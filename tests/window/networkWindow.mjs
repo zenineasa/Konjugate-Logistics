@@ -550,6 +550,32 @@ try {
     await page.keyboard.press('Escape');
     noErrors();
 
+    // 6b5. Holidays and peaks, in their list: an event added, named, dated and given its effect on a category's demand,
+    // its suppliers closed; one that cannot be stops the build with the reason; and undone, the calendar is empty.
+    await page.click('#holidays summary');
+    assert.equal(await page.textContent('#holidaysSummary'), 'none');
+    await page.click('#addHolidayButton');
+    const event = () => stateOf(() => window.logisticsToolboxState.holidays[0] ?? null);
+    assert.deepEqual([(await event()).name, (await event()).day, (await event()).days], ['Holiday 1', 14, 1]);
+    await change('#holidayList [data-holiday-field="day"]', '20');
+    await change('#holidayList [data-holiday-field="days"]', '3');
+    await change('#holidayList [data-holiday-demand="chilled"]', '100');
+    await change('#holidayList [data-holiday-field="beforeDays"]', '2');
+    await change('#holidayList [data-holiday-field="beforePercent"]', '30');
+    await page.check('#holidayList [data-holiday-suppliers]');
+    const made = await event();
+    assert.deepEqual([made.day, made.days, made.demand, made.beforeDays, made.beforePercent, made.suppliersClosed], [20, 3, { chilled: 100 }, 2, 30, true]);
+    assert.equal(await page.textContent('#holidayList .detail'), 'Holiday 1 (day 20 for 3 days): the 2 days before +30%; suppliers do not dispatch');
+    assert.equal(await page.textContent('#holidaysSummary'), 'Holiday 1');
+    await change('#holidayList [data-holiday-field="days"]', '0');
+    assert.match(await page.textContent('#networkStatus'), /Holiday 1: it lasts a day or more\./);
+    assert.match(await page.textContent('#holidayList .notice.error'), /it lasts a day or more/);
+    assert.equal(await page.isDisabled('#buildButton'), true);
+    for (let step = 0; step < 10 && await event(); step += 1) await page.click('#undoButtonTool');
+    assert.equal(await event(), null, 'the holiday undone');
+    assert.ok(!/Holiday/.test(await page.textContent('#networkStatus')));
+    noErrors();
+
     // 6c. Travel times of the user's own: typed in the list (Enter to the next row), when it holds, read off Google Maps
     // (opened in the browser through the host), on the link's card with T, from its menu, a column pasted from a
     // spreadsheet, a time that looks wrong flagged, a calibration from them, and a file saved and loaded.
@@ -953,6 +979,31 @@ try {
         const alone = await stateOf(() => window.logisticsToolboxState.scenario.totals.lostValue);
         assert.ok(Math.abs(alone.scenario - alone.baseline - worst.lostValue) < 0.01 * worst.lostValue + 1, `run alone, it loses what it lost in the ranking (${alone.scenario - alone.baseline} against ${worst.lostValue})`);
         assert.deepEqual(await stateOf(() => window.logisticsToolboxState.runs.map((run) => run.number)), [1, 2, 3, 4, 5]);
+        // As planned, with a festival in the calendar: three days from day 20 on which twice the chilled goods are wanted.
+        // There is no disruption and nothing to set it against: one column, and what the plan itself loses.
+        await page.evaluate(() => { document.querySelector('#holidays').open = true; });
+        await page.click('#addHolidayButton');
+        await change('#holidayList [data-holiday-field="day"]', '20');
+        await change('#holidayList [data-holiday-field="days"]', '3');
+        await change('#holidayList [data-holiday-demand="chilled"]', '100');
+        await page.click('#buildButton');
+        await page.waitForFunction(() => document.querySelector('#buildStatus .notice.ok') && !window.logisticsToolboxState.busy, null, { timeout: 60000 }).catch(fail);
+        assert.ok(await stateOf(() => window.logisticsToolboxState.built.provenance.some((entry) => entry.entity === 'Holidays and peaks: Chilled')), 'the festival is in the model');
+        await page.click('#scenarioTabs [data-scenario="asPlanned"]');
+        assert.equal(await page.textContent('#runScenarioButton'), 'Run it as planned');
+        assert.match(await page.textContent('#plannedHint'), /^1 holiday or peak in the calendar: Holiday 1 \(day 20\); no site keeps hours\.$/);
+        await page.click('#runScenarioButton');
+        await page.waitForFunction(() => /^The network as planned/.test(document.querySelector('#scenarioResult p')?.textContent ?? '') || document.querySelector('#scenarioStatus .notice.error'), null, { timeout: 120000 }).catch(fail);
+        assert.equal(await page.locator('#scenarioStatus .notice.error').count(), 0, await page.textContent('#scenarioStatus'));
+        const planned = await stateOf(() => window.logisticsToolboxState.scenario);
+        assert.equal(planned.absolute, true);
+        assert.equal(planned.id, 'asPlanned');
+        assert.match(planned.describe, /^The network as planned, counted from day 5: Holiday 1 \(day 20 for 3 days\); no disruption\.$/);
+        assert.equal(planned.totals.lost.baseline, 0, 'what the plan loses is its own: set against nothing');
+        const chilledLost = planned.byCategory.find((item) => item.name === 'Chilled').lost.scenario;
+        assert.ok(chilledLost > 0.1 && planned.byCategory.find((item) => item.name === 'Ambient').lost.scenario < 1e-6, `the festival loses sales of chilled goods alone (${chilledLost})`);
+        assert.match(await page.textContent('#scenarioResult .headline'), /running costs of [\d,]+ since day 5\.$/);
+        assert.deepEqual(await page.$$eval('#scenarioResult table.business thead', (heads) => [...heads[0].querySelectorAll('th')].map((cell) => cell.textContent)), ['Since day 5', 'As planned']);
         // A new site: the network as it is and the network with Warehouse 3 open, each built and run with the road to
         // Harbour shop closed for the ten days. With the candidate, which also restocks Harbour shop, the closure costs
         // less; it is dearer to run by its fixed cost, and the verdict says how often such a closure must come to pay.
@@ -972,13 +1023,13 @@ try {
         assert.match(await page.textContent('#siteTable tbody tr:nth-child(2)'), /^With Warehouse 3Dearer to run by/);
         // The network on the map is the one built again: the candidate is out of the model, and the runs are as they were.
         assert.ok(!(await stateOf(() => window.logisticsToolboxState.built.lanes.some((lane) => lane.fromSite === 'Warehouse 3'))));
-        assert.deepEqual(await stateOf(() => window.logisticsToolboxState.runs.map((run) => run.number)), [1, 2, 3, 4, 5]);
+        assert.deepEqual(await stateOf(() => window.logisticsToolboxState.runs.map((run) => run.number)), [1, 2, 3, 4, 5, 6]);
         await page.click('#scenarioTabs [data-scenario="roadClosure"]');
         noErrors();
     }
 
     // The candidate undone, step by step, the network is the ten sites it was.
-    for (let step = 0; step < 12 && await stateOf(() => window.logisticsToolboxState.pins.length) > placements.length; step += 1) await page.click('#undoButtonTool');
+    for (let step = 0; step < 20 && await stateOf(() => window.logisticsToolboxState.pins.length) > placements.length; step += 1) await page.click('#undoButtonTool');
     assert.equal(await stateOf(() => window.logisticsToolboxState.pins.length), placements.length);
     assert.equal(await page.locator('#map .site.candidate').count(), 0);
 

@@ -7,6 +7,9 @@
 //   - a store that receives only from 6 to 9 in the morning, restocked from a warehouse that dispatches from 9 to 17:
 //     its goods reach its door after it has stopped receiving and wait there until the next morning, so with little
 //     room for stock it runs short; a warehouse that dispatches from 2 to 6 at night reaches it in time
+//   - a festival in the network's calendar: three days of demand up by four fifths, the three days before by a third,
+//     the supplier not dispatching while it lasts. The store loses sales over it; with room and cover for more stock
+//     it loses far fewer
 // All must conserve goods, vehicles and the order books.
 //
 // Usage: node tests/engine/calendarNetwork.mjs [path/to/konjugateEngine]
@@ -33,7 +36,7 @@ const catalogue = defaultCatalogue();
 const days = 28;
 
 // The network, its hours set by `keep(pins)`: { supplier, warehouse, store }.
-function network(keep = () => {}) {
+function network(keep = () => {}, holidays = null) {
     const pins = [];
     const add = (role, point, options = {}) => { const pin = createPin(role, point, { pins, ...options }); pins.push(pin); return pin; };
     const supplier = add('supplier', grid.at(2, 2), { name: 'Mill', fields: { supply: 20 } });
@@ -45,11 +48,11 @@ function network(keep = () => {}) {
     const links = [link(supplier, warehouse), link(warehouse, store)];
     routeLinks(pins, links, router);
     assert.deepEqual(networkProblems(pins, links, catalogue).filter((problem) => problem.level === 'error'), []);
-    const chosen = networkSelection(pins, links, { catalogue });
+    const chosen = networkSelection(pins, links, { catalogue, holidays });
     const kinds = { ports: 'port', zones: 'zone', towns: 'town' };
     const selection = Object.fromEntries(Object.entries(chosen.selection).map(([group, entries]) => [group, entries.map((entry) => ({ ...entry, kind: kinds[group], user: true }))]));
     const builder = new ModelBuilder(templates);
-    const built = buildRegionModel({ builder, selection, route: router.route, links: chosen.links, options: { vehicles: chosen.vehicles, unit: chosen.unit, days } });
+    const built = buildRegionModel({ builder, selection, route: router.route, links: chosen.links, options: { vehicles: chosen.vehicles, unit: chosen.unit, days, holidays: chosen.holidays ?? null } });
     return { built, document: builder.document({ days, stepDays: 15 / 1440, outputDays: 1 / 24 }) };
 }
 const total = (result, key, from = 0) => result.series(key).at(-1) - result.series(key)[hour(from)];
@@ -98,7 +101,28 @@ try {
     assert.ok(lost(dayRun) > 1 && lowest(dayRun) < 0.1 * 20, `day shift: the store runs short and loses sales (${lost(dayRun).toFixed(1)} pallets lost, ${lowest(dayRun).toFixed(1)} at its lowest).`);
     assert.ok(lost(nightRun) < 0.05 && lowest(nightRun) > lowest(dayRun) + 5, `night shift: it is restocked in time and loses none (${lost(nightRun).toFixed(2)} lost, ${lowest(nightRun).toFixed(1)} at its lowest).`);
 
-    console.log(`✓ network with hours: with none kept the baseline holds still; a store open 8 to 22, Monday to Saturday, sells nothing while closed and ${ordered.toFixed(0)} pallets in four weeks, as round the clock; a store that receives from 6 to 9 loses ${lost(dayRun).toFixed(1)} pallets of sales when its warehouse dispatches by day, its goods waiting at the door (stock down to ${lowest(dayRun).toFixed(1)}), and none when it dispatches at night (${lowest(nightRun).toFixed(1)}); goods, vehicles and orders conserved.`);
+    // ---- a festival: days 12 to 14 at 180% of demand, days 9 to 11 at 130%, the supplier closed while it lasts. It is in
+    // the calendar, so in the baseline: there is no scenario here, only the network as it is planned.
+    const festival = [{ name: 'Festival', day: 12, days: 3, demand: { all: 80 }, beforeDays: 3, beforePercent: 30, afterDays: 0, afterPercent: 0, suppliersClosed: true }];
+    const asItIs = network(() => {}, festival);
+    const season = asItIs.document.sharedParameters.find((shared) => shared.name === 'Holidays and peaks');
+    assert.deepEqual(season.schedule, { interpolation: 'hold', samples: [[0, 1], [9 * day, 1.3], [12 * day, 1.8], [15 * day, 1]] });
+    assert.deepEqual(asItIs.document.sharedParameters.find((shared) => shared.name === 'Mill dispatches').schedule.samples, [[0, 1], [12 * day, 0], [15 * day, 1]], 'the supplier loads nothing over the festival');
+    assert.ok(asItIs.built.provenance.some((entry) => entry.entity === 'Holidays and peaks' && entry.parameter === 'Festival' && /demand \+80%; the 3 days before \+30%; suppliers do not dispatch/.test(entry.detail) && entry.basis === 'user'));
+    const festivalRun = await runDocument(directory, 'calendar-festival', asItIs.document, days);
+    checkInvariants(festivalRun);
+    const demandOn = (dayIndex) => Number(festivalRun.series('Shop.demandRate')[hour(dayIndex) + 12].toFixed(6));
+    assert.deepEqual([demandOn(5), demandOn(10), demandOn(13), demandOn(16)], [20, 26, 36, 20]);
+    assert.ok(Math.max(...festivalRun.series('Road Mill → Depot.canLoad').slice(hour(12) + 1, hour(15))) < 1e-9, 'nothing is loaded at the supplier over the festival');
+    const lostOver = (result) => total(result, 'Shop.lost');
+    assert.ok(lostOver(festivalRun) > 5, `with room for a day and a quarter of ordinary sales, the store loses sales over the festival (${lostOver(festivalRun).toFixed(1)} pallets).`);
+    // The same festival with room for more: four days of cover at the store.
+    const stocked = network(({ store }) => { store.fields.capacity = { value: 100, basis: 'user' }; store.fields.cover = { value: 4, basis: 'user' }; }, festival);
+    const stockedRun = await runDocument(directory, 'calendar-festival-stocked', stocked.document, days);
+    checkInvariants(stockedRun);
+    assert.ok(lostOver(stockedRun) < 0.3 * lostOver(festivalRun), `holding more, it loses far fewer (${lostOver(stockedRun).toFixed(1)} against ${lostOver(festivalRun).toFixed(1)} pallets).`);
+
+    console.log(`✓ network with hours: with none kept the baseline holds still; a store open 8 to 22, Monday to Saturday, sells nothing while closed and ${ordered.toFixed(0)} pallets in four weeks, as round the clock; a store that receives from 6 to 9 loses ${lost(dayRun).toFixed(1)} pallets of sales when its warehouse dispatches by day, its goods waiting at the door (stock down to ${lowest(dayRun).toFixed(1)}), and none when it dispatches at night (${lowest(nightRun).toFixed(1)}); over a three-day festival at 180% of demand, the supplier closed, the store loses ${lostOver(festivalRun).toFixed(1)} pallets of sales with room for a day and a quarter and ${lostOver(stockedRun).toFixed(1)} with four days of cover; goods, vehicles and orders conserved.`);
 } finally {
     await rm(directory, { recursive: true, force: true });
 }

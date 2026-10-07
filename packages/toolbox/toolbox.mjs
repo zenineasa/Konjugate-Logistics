@@ -14,6 +14,7 @@ import { portwatchActivityUrl, portwatchPortsUrl } from './lib/portwatch.mjs';
 import { closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan, mostLateDays, siteDownPlan, supplierPlan } from './lib/scenarios.mjs';
 import { createNetworkRouter } from './lib/routing.mjs';
 import { compareSites } from './lib/siteComparison.mjs';
+import { createHoliday, describeHoliday, holidayProblem } from './lib/holidays.mjs';
 import { completeFields, createPin, isCandidate, kindOf, openNetwork, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
 import { calibration, calibrationAdvised, calibrationMinimum, formatDuration, googleMapsUrl, howLabels, modelHours, openStreetMapUrl, parseTravelTimes, suspectTime, timeFrom, whenLabels, writeTravelTimes } from './lib/travelTimes.mjs';
 import { affectedAcross, closureAcross, diversionAcross, mergeSeries, siteView } from './lib/builtView.mjs';
@@ -45,7 +46,7 @@ const state = {
     roads: null, router: null,
     // The user's network: pins and links, the suggested links the user deleted and what is selected; and the vehicle
     // types its links run on.
-    pins: [], links: [], dismissed: new Set(), selection: [], selected: null, listRole: 'all', vehicles: defaultCatalogue(), categories: defaultCategoryCatalogue(),
+    pins: [], links: [], dismissed: new Set(), selection: [], selected: null, listRole: 'all', vehicles: defaultCatalogue(), categories: defaultCategoryCatalogue(), holidays: [],
     // Suggestions from public data, by source, once asked for; the roles whose answers the host holds.
     suggestions: {}, available: new Set(), sourceTab: null,
     // When the data in hand was fetched, by kind ({ at, cached }), and whether this area was loaded fresh.
@@ -114,7 +115,7 @@ const selectedLinks = () => state.selection.filter((item) => item.kind === 'link
 // kept. Changes of one kind in quick succession (a pin nudged with the arrow keys, a figure typed) are one step.
 const history = { past: [], future: [], lastLabel: null, lastTime: 0 };
 const copyLink = (link) => ({ ...link, ...(link.vehicles ? { vehicles: link.vehicles.map((item) => ({ ...item })) } : {}) });
-const snapshot = () => ({ pins: structuredClone(state.pins), links: state.links.map(copyLink), dismissed: [...state.dismissed], selection: [...state.selection], vehicles: structuredClone(state.vehicles), categories: structuredClone(state.categories), useCalibration: Boolean(state.useCalibration) });
+const snapshot = () => ({ pins: structuredClone(state.pins), links: state.links.map(copyLink), dismissed: [...state.dismissed], selection: [...state.selection], vehicles: structuredClone(state.vehicles), categories: structuredClone(state.categories), holidays: structuredClone(state.holidays), useCalibration: Boolean(state.useCalibration) });
 function checkpoint(label, { merge = false } = {}) {
     const now = performance.now();
     if (merge && label === history.lastLabel && now - history.lastTime < 1500) { history.lastTime = now; return; }
@@ -131,6 +132,8 @@ function restore(network) {
     state.dismissed = new Set(network.dismissed);
     state.vehicles = structuredClone(network.vehicles);
     state.categories = structuredClone(network.categories ?? state.categories);
+    state.holidays = structuredClone(network.holidays ?? state.holidays);
+    renderHolidays();
     state.useCalibration = Boolean(network.useCalibration);
     renderVehicles();
     renderCategories();
@@ -578,7 +581,7 @@ function networkChanged({ rebuild = true } = {}) {
     renderNetwork();
     updateStepSummaries();
     keepSessionSoon();
-    const errors = networkProblems(state.pins, state.links, state.vehicles, state.categories).filter((problem) => problem.level === 'error');
+    const errors = networkProblems(state.pins, state.links, state.vehicles, state.categories, state.holidays).filter((problem) => problem.level === 'error');
     $('#buildButton').disabled = state.busy || errors.length > 0 || !state.pins.length;
     $('#buildStatus').innerHTML = errors.length && state.pins.length ? notice('warning', 'Resolve what Network lists to build a model.') : '';
     if (state.built) {
@@ -595,7 +598,7 @@ function networkChanged({ rebuild = true } = {}) {
 const legHow = (leg) => ({ routed: 'over the roads', local: 'by local streets (the sites are close)', 'straight-line': 'as a straight-line estimate (no road route found)' })[leg.basis] ?? '';
 
 function renderNetwork() {
-    const problems = networkProblems(state.pins, state.links, state.vehicles, state.categories);
+    const problems = networkProblems(state.pins, state.links, state.vehicles, state.categories, state.holidays);
     const troubled = new Set(problems.filter((problem) => problem.level === 'error').flatMap((problem) => problem.pins));
     const adopted = new Set(state.pins.map((pin) => pin.candidate?.id).filter(Boolean));
     const roleOfGroup = { ports: 'port', zones: 'warehouse', towns: 'customerArea' };
@@ -1087,6 +1090,70 @@ function deleteVehicle(type) {
 }
 $('#addVehicleButton').addEventListener('click', addVehicle);
 renderVehicles();
+
+// ---- holidays and peaks ------------------------------------------------------------------------------------------------
+// The network's calendar of dated events (lib/holidays.mjs): a list to add to, change and delete from, as the vehicle
+// types and the categories are. Every figure is the user's.
+function renderHolidays() {
+    const panel = $('#holidayList');
+    if (!panel) return;
+    if (panel.contains(document.activeElement) && document.activeElement.tagName === 'INPUT' && document.activeElement.type !== 'checkbox') return;
+    $('#holidaysSummary').textContent = state.holidays.length ? state.holidays.map((event) => event.name).join(', ') : 'none';
+    const field = (event, key, label, unit, value, extra = '') => `<span class="holidayField"><label for="holiday-${escape(event.id)}-${key}">${label}</label> <input type="number" step="any" id="holiday-${escape(event.id)}-${key}" data-holiday-field="${key}" value="${value ?? ''}" ${extra}> <span class="muted">${unit}</span></span>`;
+    panel.innerHTML = state.holidays.map((event) => {
+        const issue = holidayProblem(event);
+        return `<li class="vehicle holiday" data-holiday="${escape(event.id)}">
+            <div class="row"><input type="text" data-holiday-name value="${escape(event.name)}" aria-label="Name of the holiday or peak"><span class="basis user">yours</span>
+                <button class="link remove" type="button" data-holiday-delete title="Delete this event" aria-label="Delete ${escape(event.name)}">✕</button></div>
+            <div class="row small">${field(event, 'day', 'From day', '', event.day, 'min="0" step="1"')}${field(event, 'days', 'for', 'days', event.days, 'min="1" step="1"')}</div>
+            <div class="row small" title="The change in what every store and customer area sells while it lasts: +80 for four fifths more, -100 for nothing (everything is closed). Empty: no change.">Demand while it lasts: ${state.categories.map((category) => `<span class="holidayField"><label for="holiday-${escape(event.id)}-demand-${escape(category.id)}">${escape(category.name)}</label> <input type="number" step="any" min="-100" id="holiday-${escape(event.id)}-demand-${escape(category.id)}" data-holiday-demand="${escape(category.id)}" value="${event.demand?.[category.id] ?? ''}" placeholder="0"> <span class="muted">%</span></span>`).join('')}</div>
+            <div class="row small" title="People stock up before it, and buy less after">${field(event, 'beforeDays', 'The', 'days before:', event.beforeDays || '', 'min="0" step="1" placeholder="0"')}${field(event, 'beforePercent', '', '%', event.beforePercent || '', 'min="-100" placeholder="0" aria-label="Change in demand in the days before"')}</div>
+            <div class="row small">${field(event, 'afterDays', 'The', 'days after:', event.afterDays || '', 'min="0" step="1" placeholder="0"')}${field(event, 'afterPercent', '', '%', event.afterPercent || '', 'min="-100" placeholder="0" aria-label="Change in demand in the days after"')}</div>
+            <label class="row small"><input type="checkbox" data-holiday-suppliers ${event.suppliersClosed ? 'checked' : ''}> Suppliers do not dispatch while it lasts</label>
+            ${issue ? `<div class="notice error">${escape(issue)}</div>` : `<div class="detail">${escape(describeHoliday(event))}</div>`}
+        </li>`;
+    }).join('');
+    panel.querySelectorAll('[data-holiday]').forEach((row) => {
+        const event = state.holidays.find((item) => item.id === row.dataset.holiday);
+        const changed = (label, change) => { checkpoint(label, { merge: true }); change(); holidaysChanged(); };
+        row.querySelector('[data-holiday-name]').addEventListener('change', (input) => {
+            const name = input.target.value.trim();
+            if (!name || name === event.name) { input.target.value = event.name; return; }
+            changed(`renaming ${event.name}`, () => { event.name = name; });
+        });
+        row.querySelectorAll('[data-holiday-field]').forEach((input) => input.addEventListener('change', () => {
+            changed(`changing ${event.name}`, () => { event[input.dataset.holidayField] = input.value === '' ? 0 : Number(input.value); });
+            input.blur();
+        }));
+        row.querySelectorAll('[data-holiday-demand]').forEach((input) => input.addEventListener('change', () => {
+            changed(`changing demand over ${event.name}`, () => {
+                event.demand = { ...(event.demand ?? {}) };
+                if (input.value === '' || !Number(input.value)) delete event.demand[input.dataset.holidayDemand]; else event.demand[input.dataset.holidayDemand] = Number(input.value);
+            });
+            input.blur();
+        }));
+        row.querySelector('[data-holiday-suppliers]').addEventListener('change', (input) => changed(`${input.target.checked ? 'closing' : 'opening'} the suppliers over ${event.name}`, () => { event.suppliersClosed = input.target.checked; }));
+        row.querySelector('[data-holiday-delete]').addEventListener('click', () => {
+            checkpoint(`deleting ${event.name}`);
+            state.holidays = state.holidays.filter((item) => item !== event);
+            holidaysChanged();
+            toast(`Deleted ${event.name}.`, { undoable: true });
+        });
+    });
+}
+function holidaysChanged() {
+    renderHolidays();
+    networkChanged();
+}
+$('#addHolidayButton').addEventListener('click', () => {
+    checkpoint('adding a holiday or peak');
+    const event = createHoliday(state.holidays);
+    state.holidays.push(event);
+    $('#holidays').open = true;
+    holidaysChanged();
+    $(`#holidayList [data-holiday="${event.id}"] [data-holiday-name]`)?.select();
+});
+renderHolidays();
 
 // ---- the product categories ------------------------------------------------------------------------------------------
 // The kinds of goods the network carries (lib/categories.mjs): a list to rename, change, add to and delete from, as the
@@ -2101,9 +2168,9 @@ async function build({ focus = false } = {}) {
     try {
         if (state.router) routeLinks(state.pins, state.links, state.router);
         // The host accepts 2 MB of options: a large network's roads are left out, and its lanes drawn straight.
-        let network = networkSelection(state.pins, state.links, { catalogue: state.vehicles, categories: state.categories });
+        let network = networkSelection(state.pins, state.links, { catalogue: state.vehicles, categories: state.categories, holidays: state.holidays });
         const straight = JSON.stringify(network).length > maximumNetworkBytes;
-        if (straight) network = networkSelection(state.pins, state.links, { paths: false, catalogue: state.vehicles, categories: state.categories });
+        if (straight) network = networkSelection(state.pins, state.links, { paths: false, catalogue: state.vehicles, categories: state.categories, holidays: state.holidays });
         const answer = await call(api.runImport(importerId, {
             step: 'buildNetwork', ...(state.bbox ? { bbox: state.bbox } : {}), network,
             settings: { portTeuPerDay: state.portVolume, arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(), operator: null, standbyPorts: [...state.standby], timeFactor: timeFactor() }
@@ -2307,7 +2374,7 @@ function sessionState() {
         version: 2, place: state.place ? { display_name: state.place.display_name, boundingbox: state.place.boundingbox } : null,
         margin: $('#marginSelect').value, bbox: state.bbox, roadLevel: state.roadLevel, sample: Boolean(state.sample), portVolume: state.portVolume,
         // Links without their legs, which are routed again when the session is restored (from the same roads, the same legs).
-        pins: state.pins, links: state.links.map(({ id, from, to, basis, vehicles, time, backup, share }) => ({ id, from, to, basis, ...(vehicles ? { vehicles } : {}), ...(time ? { time } : {}), ...(backup ? { backup: true } : {}), ...(Number(share) > 0 ? { share: Number(share) } : {}) })), vehicles: state.vehicles, categories: state.categories,
+        holidays: state.holidays, pins: state.pins, links: state.links.map(({ id, from, to, basis, vehicles, time, backup, share }) => ({ id, from, to, basis, ...(vehicles ? { vehicles } : {}), ...(time ? { time } : {}), ...(backup ? { backup: true } : {}), ...(Number(share) > 0 ? { share: Number(share) } : {}) })), vehicles: state.vehicles, categories: state.categories,
         useCalibration: Boolean(state.useCalibration),
         dismissed: [...state.dismissed], suggestions: Object.keys(state.suggestions), available: [...state.available], listRole: state.listRole,
         built: state.built, keepInStep: $('#keepInStep').checked,
@@ -2406,6 +2473,8 @@ async function restoreSession() {
         // And one from before categories: the default three, and a refrigerated vehicle for the chilled ones to go by.
         state.vehicles = completeCatalogue(saved.vehicles, { refrigerated: !saved.categories });
         state.categories = completeCategories(saved.categories);
+        state.holidays = Array.isArray(saved.holidays) ? saved.holidays : [];
+        renderHolidays();
         state.useCalibration = Boolean(saved.useCalibration);
         renderVehicles();
         renderCategories();
@@ -2459,7 +2528,7 @@ function setBusy(busy) {
     // Run waits too: a scenario asked for while the model is being built would otherwise be silently ignored.
     for (const selector of ['#fetchButton', '#sampleButton', '#sitesButton', '#searchButton', '#runScenarioButton', ...Object.keys(sources).map((source) => `[data-fetch-source="${source}"]`)]) $(selector).disabled = busy;
     if (!busy) showArea();
-    const errors = networkProblems(state.pins, state.links, state.vehicles, state.categories).filter((problem) => problem.level === 'error');
+    const errors = networkProblems(state.pins, state.links, state.vehicles, state.categories, state.holidays).filter((problem) => problem.level === 'error');
     $('#buildButton').disabled = busy || errors.length > 0 || !state.pins.length;
 }
 
@@ -2546,6 +2615,9 @@ function renderScenario({ fetchTransits = false } = {}) {
     // And failures are ranked where a site can go down: a network placed on the map.
     $('#scenarioTabs [data-scenario="weakestLink"]').hidden = !downSites().length;
     if (!downSites().length && state.scenarioTab === 'weakestLink') state.scenarioTab = 'roadClosure';
+    // And the network as planned, with its hours and holidays and no disruption.
+    $('#scenarioTabs [data-scenario="asPlanned"]').hidden = !downSites().length;
+    if (!downSites().length && state.scenarioTab === 'asPlanned') state.scenarioTab = 'roadClosure';
     // And candidate sites are compared there too.
     $('#scenarioTabs [data-scenario="newSite"]').hidden = !downSites().length;
     if (!downSites().length && state.scenarioTab === 'newSite') state.scenarioTab = 'roadClosure';
@@ -2653,12 +2725,12 @@ $('#chokepointSelect').addEventListener('change', () => { renderDependence(); re
 // ---- the scenarios: choosing one ----------------------------------------------------------------------------------
 // Six scenarios share the days they run for and the summary of what they changed: a chokepoint disruption (above), a
 // road closed, the fleet changed, demand stepped up, a supplier short or late and a site down.
-const scenarioIds = ['chokepointDisruption', 'roadClosure', 'fleetChange', 'demandSurge', 'supplierTrouble', 'siteDown', 'weakestLink', 'newSite'];
+const scenarioIds = ['asPlanned', 'chokepointDisruption', 'roadClosure', 'fleetChange', 'demandSurge', 'supplierTrouble', 'siteDown', 'weakestLink', 'newSite'];
 
 function showScenarioTab() {
     document.querySelectorAll('#scenarioTabs button').forEach((button) => button.classList.toggle('active', button.dataset.scenario === state.scenarioTab));
     document.querySelectorAll('.scenarioPanel').forEach((panel) => { panel.hidden = panel.dataset.panel !== state.scenarioTab; });
-    $('#runScenarioButton').textContent = { weakestLink: 'Run them all and rank', newSite: 'Build and compare them' }[state.scenarioTab] ?? 'Run the scenario';
+    $('#runScenarioButton').textContent = { weakestLink: 'Run them all and rank', newSite: 'Build and compare them', asPlanned: 'Run it as planned' }[state.scenarioTab] ?? 'Run the scenario';
     renderRanking();
     renderSiteComparison();
     renderMarks();
@@ -2686,7 +2758,7 @@ function renderSiteHint() {
 // The model of the network with these candidates open, built in the host (not shown in the canvas).
 async function importVariant(open) {
     if (state.router) routeLinks(state.pins, state.links, state.router);
-    const choose = (paths) => networkSelection(state.pins, state.links, { paths, catalogue: state.vehicles, categories: state.categories, open });
+    const choose = (paths) => networkSelection(state.pins, state.links, { paths, catalogue: state.vehicles, categories: state.categories, open, holidays: state.holidays });
     let network = choose(true);
     if (JSON.stringify(network).length > maximumNetworkBytes) network = choose(false);
     const answer = await call(api.runImport(importerId, {
@@ -3041,6 +3113,8 @@ function renderScenarioHints() {
     }
     renderSupplierHint(settings.supplier);
     renderDownHint(settings.down);
+    const kept = state.pins.filter((pin) => pin.hours).length;
+    $('#plannedHint').textContent = `${state.holidays.length ? `${state.holidays.length} holiday${state.holidays.length === 1 ? '' : 's'} or peak${state.holidays.length === 1 ? '' : 's'} in the calendar: ${state.holidays.map((event) => `${event.name} (day ${event.day})`).join(', ')}` : 'No holiday or peak in the calendar'}; ${kept ? `${kept} site${kept === 1 ? ' keeps' : 's keep'} hours` : 'no site keeps hours'}.`;
     renderSiteHint();
     const failures = failuresToRank();
     const counted = ['supplier', 'warehouse', 'road'].map((kind) => [failures.filter((item) => item.kind === kind).length, kind]).filter(([count]) => count).map(([count, kind]) => `${count} ${kind}${count === 1 ? '' : 's'}`);
@@ -3188,6 +3262,13 @@ function scenarioRun(id, start, runTime, status) {
     const days = `from day ${$('#startInput').value} for ${$('#durationInput').value} days`;
     const settings = scenarioSettings();
     if (id === 'chokepointDisruption') return chokepointRun(disruptionSettings(), start, runTime, status);
+    // As planned: nothing is changed, and the result is what the plan does, not what a disruption adds to it.
+    if (id === 'asPlanned') {
+        return {
+            ...quietRun(common), resultId: 'asPlanned', absolute: true,
+            describe: `The network as planned, counted from day ${$('#startInput').value}: ${state.holidays.length ? state.holidays.map((event) => describeHoliday(event)).join('; ') : 'no holiday or peak'}; no disruption.`
+        };
+    }
     if (id === 'roadClosure') {
         const { mode } = settings.closure;
         const open = settings.closure.open / 100;
@@ -3312,7 +3393,7 @@ $('#runScenarioButton').addEventListener('click', async () => {
         $('#runScenarioButton').disabled = true;
         status.innerHTML = notice('', 'Running the baseline and the scenario…');
         const answer = await call(api.runScenario(scenarioId, { supplied: run.supplied, forkAt: start, runTime, signals: summarySignals }));
-        state.scenario = summariseRun(answer, scenarioId, run, start, Number($('#durationInput').value) * day);
+        state.scenario = summariseRun(answer, run.resultId ?? scenarioId, run, start, Number($('#durationInput').value) * day);
         state.mapShows = 'scenario';
         // The host holds a value outside a parameter's range to it: say so, since the run is then not what was asked for.
         const clamped = (answer.interventions ?? []).filter((change) => change.clamped);
@@ -3386,6 +3467,10 @@ function summariseRun(answer, id, run, start, duration) {
         return points.length ? points.reduce((sum, point) => sum + point[1], 0) / points.length : 0;
     };
     const both = (pick) => ({ baseline: pick(baseline), scenario: pick(scenario) });
+    // A run of the network as planned has no baseline to be judged against: what it loses and wastes is all its own, so
+    // those figures are set against nothing.
+    const ref = (value) => (run.absolute ? 0 : value);
+    const own = (pair) => ({ baseline: ref(pair.baseline), scenario: pair.scenario });
     const total = (series, names, symbol) => names.reduce((sum, name) => sum + grew(series[name]?.[symbol]), 0);
     const townNames = [...new Set(view().served.map((item) => item.town))];
     const laneNames = view().lanes.map((lane) => lane.name);
@@ -3410,20 +3495,20 @@ function summariseRun(answer, id, run, start, duration) {
     };
     const storeResults = stores.map((item) => {
         const low = extreme(scenario[item.stock]?.stock, (value, best) => value < best);
-        const lost = both((series) => grew(series[item.name]?.lost));
+        const lost = own(both((series) => grew(series[item.name]?.lost)));
         // Priced copy by copy: a category may have a value of a pallet of its own.
         const priced = (pair, value = item.saleValue) => ({ baseline: pair.baseline * (value ?? 0), scenario: pair.scenario * (value ?? 0) });
-        const lostOf = (member) => ({ baseline: grew(raw[0][member.name]?.lost), scenario: grew(raw[1][member.name]?.lost) });
+        const lostOf = (member) => ({ baseline: ref(grew(raw[0][member.name]?.lost)), scenario: grew(raw[1][member.name]?.lost) });
         const valueLost = item.members.map((member) => priced(lostOf(member), member.saleValue)).reduce((all, each) => ({ baseline: all.baseline + each.baseline, scenario: all.scenario + each.scenario }), { baseline: 0, scenario: 0 });
         const categories = shown.categories && item.members.length > 1 ? item.members.map((member) => {
-            const itsLost = { baseline: grew(raw[0][member.name]?.lost), scenario: grew(raw[1][member.name]?.lost) };
-            return { name: member.categoryName, emptyDays: { baseline: outDays(raw[0], member.stock, member.demand), scenario: outDays(raw[1], member.stock, member.demand) }, lost: itsLost, lostValue: priced(itsLost, member.saleValue) };
+            const itsLost = lostOf(member);
+            return { name: member.categoryName, emptyDays: { baseline: ref(outDays(raw[0], member.stock, member.demand)), scenario: outDays(raw[1], member.stock, member.demand) }, lost: itsLost, lostValue: priced(itsLost, member.saleValue) };
         }) : null;
         const worst = (side) => Math.max(...categories.map((each) => each.emptyDays[side]));
         return {
             name: item.name, baseline: extreme(baseline[item.stock]?.stock, (value, best) => value < best)[1], low: low[1], day: low[0] / day,
             lost, lostValue: valueLost,
-            emptyDays: categories ? { baseline: worst('baseline'), scenario: worst('scenario') } : { baseline: outDays(baseline, item.stock, item.demand), scenario: outDays(scenario, item.stock, item.demand) },
+            emptyDays: categories ? { baseline: worst('baseline'), scenario: worst('scenario') } : { baseline: ref(outDays(baseline, item.stock, item.demand)), scenario: outDays(scenario, item.stock, item.demand) },
             ...(categories ? { categories } : {}),
             scenPts: sampleSpark(scenario[item.stock]?.stock, start), basePts: sampleSpark(baseline[item.stock]?.stock, start)
         };
@@ -3432,7 +3517,7 @@ function summariseRun(answer, id, run, start, duration) {
     // by category (each category's own copies of the sites that hold it).
     const perishable = (built.categories ?? []).some((category) => category.shelfDays > 0);
     const holders = (category) => [...new Set(built.lanes.filter((lane) => lane.category === category).map((lane) => lane.to))];
-    const wastedOf = (category) => ({ baseline: holders(category).reduce((sum, node) => sum + grew(raw[0][node]?.spoiled), 0), scenario: holders(category).reduce((sum, node) => sum + grew(raw[1][node]?.spoiled), 0) });
+    const wastedOf = (category) => ({ baseline: ref(holders(category).reduce((sum, node) => sum + grew(raw[0][node]?.spoiled), 0)), scenario: holders(category).reduce((sum, node) => sum + grew(raw[1][node]?.spoiled), 0) });
     const wasted = perishable ? (built.categories ?? []).map((category) => wastedOf(category.id)).reduce((all, each) => ({ baseline: all.baseline + each.baseline, scenario: all.scenario + each.scenario }), { baseline: 0, scenario: 0 }) : null;
     // And each category over every store: how many ran out of it, the longest, and the sales of it lost.
     const byCategory = shown.categories && storeResults.some((item) => item.categories) ? shown.categories.map((category) => {
@@ -3442,7 +3527,7 @@ function summariseRun(answer, id, run, start, duration) {
         return { name: category.name, storesOut: out.length, longest: Math.max(0, ...out), lost: sum('lost'), lostValue: sum('lostValue'), ...(category.shelfDays > 0 ? { wasted: wastedOf(category.id) } : {}) };
     }) : null;
     return {
-        id, describe: run.describe, start: start / day, days, until: end / day, ...run.extra,
+        id, describe: run.describe, start: start / day, days, until: end / day, ...run.extra, ...(run.absolute ? { absolute: true } : {}),
         // Per lane, TEU a day while the scenario lasts: [baseline, scenario].
         flows: Object.fromEntries(laneNames.map((name) => [name, [during(baseline[name]?.arriving), during(scenario[name]?.arriving)]])),
         totals: {
@@ -3459,7 +3544,7 @@ function summariseRun(answer, id, run, start, duration) {
             // value of a pallet sold.
             ...(wasted ? { wasted } : {}),
             ...(stores.length ? {
-                lost: both((series) => total(series, stores.map((item) => item.name), 'lost')),
+                lost: own(both((series) => total(series, stores.map((item) => item.name), 'lost'))),
                 lostValue: { baseline: storeResults.reduce((sum, item) => sum + item.lostValue.baseline, 0), scenario: storeResults.reduce((sum, item) => sum + item.lostValue.scenario, 0) }
             } : {})
         },
@@ -3606,7 +3691,7 @@ function scenarioHeadline(result) {
     const cost = runningCost(totals);
     const change = cost.scenario - cost.baseline;
     const share = Math.abs(change) / Math.max(1e-9, cost.baseline);
-    const costs = share < 0.005 ? 'running costs as in the baseline' : `running costs ${change > 0 ? 'up' : 'down'} ${number(Math.abs(change))} (${number(share * 100, share < 0.1 ? 1 : 0)}%) against the baseline`;
+    const costs = result.absolute ? `running costs of ${number(cost.scenario)} since day ${number(result.start)}` : share < 0.005 ? 'running costs as in the baseline' : `running costs ${change > 0 ? 'up' : 'down'} ${number(Math.abs(change))} (${number(share * 100, share < 0.1 ? 1 : 0)}%) against the baseline`;
     return `${parts.map((part, index) => (index && !part.startsWith('and ') ? `, ${part}` : index ? ` ${part}` : part)).join('')}; ${costs}.`;
 }
 
@@ -3641,11 +3726,13 @@ function renderScenarioResult() {
         const scen = `<polyline points="${toPts(scenPts)}" fill="none" stroke="${stroke}" stroke-width="1.5"/>`;
         return `<svg class="sparkline" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" aria-hidden="true" title="Trajectory over time">${base}${scen}</svg>`;
     };
-    const totalsRow = (label, pair, format, options = {}, title = '') => `<tr><td${title ? ` title="${escape(title)}"` : ''}>${label}</td><td${worse(pair.scenario, pair.baseline, options)}>${format(pair.scenario)}</td><td class="number">${format(pair.baseline)}</td></tr>`;
+    // As planned, there is one column: nothing to set it against.
+    const totalsRow = (label, pair, format, options = {}, title = '') => `<tr><td${title ? ` title="${escape(title)}"` : ''}>${label}</td><td${worse(pair.scenario, pair.baseline, options)}>${format(pair.scenario)}</td>${result.absolute ? '' : `<td class="number">${format(pair.baseline)}</td>`}</tr>`;
+    const totalsHead = `<th>Since day ${number(result.start)}</th><th class="number">${result.absolute ? 'As planned' : 'Scenario'}</th>${result.absolute ? '' : '<th class="number">baseline</th>'}`;
     const running = result.totals ? runningCost(result.totals) : null;
     // In business terms first: demand met, sales lost and what running the network cost; the rest under Details.
     const totals = result.totals ? `
-        <table class="business"><thead><tr><th>Since day ${number(result.start)}</th><th class="number">Scenario</th><th class="number">baseline</th></tr></thead>
+        <table class="business"><thead><tr>${totalsHead}</tr></thead>
             <tbody>
                 ${totalsRow('Share of demand met', result.totals.fill, percent, { lowerIsWorse: true, noise: 0.001 }, 'Of what was ordered since the scenario started, the share sold or delivered by the end of the run')}
                 ${result.totals.lost ? totalsRow(`Sales lost (${goods()})`, result.totals.lost, (value) => number(value, 1), { noise: 0.05 }, 'Sales the stores could not make for want of stock, whose shoppers went elsewhere rather than wait') : ''}
@@ -3655,7 +3742,7 @@ function renderScenarioResult() {
                 ${totalsRow('Running cost', running, (value) => number(value), {}, 'Transport, fleet and holding costs together')}
             </tbody></table>` : '';
     const detailTotals = result.totals ? `
-        <table><thead><tr><th>Since day ${number(result.start)}</th><th class="number">Scenario</th><th class="number">baseline</th></tr></thead>
+        <table><thead><tr>${totalsHead}</tr></thead>
             <tbody>
                 ${result.totals.wait ? totalsRow('Days an order waited', result.totals.wait, (value) => number(value, 2), { noise: 0.01 }, `The time an order spent waiting in a ${view()?.stores ? 'store\'s or customer area\'s' : 'town\'s'} backlog, averaged over every order since the scenario started`) : ''}
                 ${totalsRow('Backlog cost', result.totals.backlog, (value) => number(value), {}, 'A charge for every order-day spent waiting: a measure of service, not money spent')}

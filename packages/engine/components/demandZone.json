@@ -6,7 +6,7 @@
     "domains": [
         "logistics"
     ],
-    "description": "A group of customers ordering at a steady rate, with an optional demand step: from the step day on, demand is multiplied by the step multiplier (1 for no step; both are shared by every zone). Orders add to the backlog; Delivery bundles clear it, and drop from it the sales lost when the shelves are short (a store's shoppers who go elsewhere rather than wait). Delivered, lost and ordered are running totals, so backlog always equals its starting value plus ordered minus delivered minus lost, and ordered minus delivered over a period gives the fill rate. Backlog cost accrues per TEU per day waiting. Demand pattern is 1 normally and follows a calendar for a store that keeps hours: nothing while it is closed and more while it is open, so that a week's demand is what it would be.",
+    "description": "A group of customers ordering at a steady rate, with an optional demand step: from the step day on, demand is multiplied by the step multiplier (1 for no step; both are shared by every zone). Orders add to the backlog; Delivery bundles clear it, and drop from it the sales lost when the shelves are short (a store's shoppers who go elsewhere rather than wait). Delivered, lost and ordered are running totals, so backlog always equals its starting value plus ordered minus delivered minus lost, and ordered minus delivered over a period gives the fill rate. Backlog cost accrues per TEU per day waiting. Demand pattern is 1 normally and follows a calendar for a store that keeps hours: nothing while it is closed and more while it is open, so that a week's demand is what it would be. Holidays and peaks is 1 normally and follows the network's calendar of dated events: more before and during a festival, less after, nothing on a day everything is closed.",
     "shape": "sphere",
     "color": "#52727a",
     "states": [
@@ -65,6 +65,14 @@
             "scope": "instance"
         },
         {
+            "key": "seasonFactor",
+            "name": "Holidays and peaks",
+            "symbol": "seasonFactor",
+            "value": 1,
+            "unit": "",
+            "scope": "instance"
+        },
+        {
             "key": "stepMultiplier",
             "name": "Demand step multiplier",
             "symbol": "stepMultiplier",
@@ -100,7 +108,7 @@
     "sourceTerms": [
         {
             "state": "demandRate",
-            "expression": "\\mathrm{baseDemand} \\cdot \\mathrm{demandPattern} \\cdot \\begin{cases} \\mathrm{stepMultiplier} & t \\ge \\mathrm{stepDay} \\cdot \\mathrm{secondsPerDay} \\\\ 1 & \\text{otherwise} \\end{cases}",
+            "expression": "\\mathrm{baseDemand} \\cdot \\mathrm{demandPattern} \\cdot \\mathrm{seasonFactor} \\cdot \\begin{cases} \\mathrm{stepMultiplier} & t \\ge \\mathrm{stepDay} \\cdot \\mathrm{secondsPerDay} \\\\ 1 & \\text{otherwise} \\end{cases}",
             "parameters": [
                 {
                     "name": "Base demand",
@@ -126,6 +134,11 @@
                     "name": "Demand pattern",
                     "symbol": "demandPattern",
                     "shared": "demandPattern"
+                },
+                {
+                    "name": "Holidays and peaks",
+                    "symbol": "seasonFactor",
+                    "shared": "seasonFactor"
                 }
             ],
             "setsValue": true
