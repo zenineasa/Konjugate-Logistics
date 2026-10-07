@@ -25,7 +25,7 @@ import { createPin, networkSelection, routeLinks, suggestLinks } from '../../pac
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
 import { buildRoadGraph } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { compactRoadGraph, createNetworkRouter } from '../../packages/toolbox/lib/routing.mjs';
-import { fleetPlan, supplierPlan } from '../../packages/toolbox/lib/scenarios.mjs';
+import { demandPlan, fleetPlan, supplierPlan } from '../../packages/toolbox/lib/scenarios.mjs';
 import { createVehicle, defaultCatalogue } from '../../packages/toolbox/lib/vehicles.mjs';
 import { loadTemplates, ModelBuilder } from '../../scripts/templatePlacement.mjs';
 import { gridRoads } from '../fixtures/roadGrid.mjs';
@@ -201,6 +201,23 @@ try {
     const moved = 0.8 * general.arrivals * 10;
     assert.ok(Math.abs(madeBy(elsewhereRun) - madeBy(waitRun) - moved) < 0.1 * moved, `ordering elsewhere: the second supplier makes what the first cannot (${madeBy(elsewhereRun).toFixed(0)} pallets against ${madeBy(waitRun).toFixed(0)}).`);
 
+    // ---- chilled goods that keep a day and a half. No site aims to hold more, so the baseline wastes nothing; when the
+    // stores sell 60% less for ten days, what they and their warehouses hold is more than they can sell in time, and
+    // chilled goods are wasted while the others, which keep, are not. What is wasted is counted, so goods are conserved.
+    const perishable = network.categories.map((category) => (category.id === 'chilled' ? { ...category, shelfDays: 1.5, basis: { ...category.basis, shelfDays: 'user' } } : { ...category, shelfDays: null }));
+    const fresh = build(() => {}, { categories: perishable });
+    const freshBaseline = await runDocument(directory, 'categories-shelf-baseline', fresh.document, 40);
+    checkInvariants(freshBaseline);
+    checkSteady(freshBaseline);
+    const wastedBy = (result, built, category) => [...new Set(built.lanes.filter((lane) => lane.category === category).map((lane) => lane.to))].reduce((sum, node) => sum + result.series(`${node}.spoiled`).at(-1), 0);
+    assert.ok(wastedBy(freshBaseline, fresh.built, 'chilled') < 1e-9, 'shelf life: nothing is wasted while the sites sell what they hold in time');
+    const slump = demandPlan({ towns: fresh.built.towns, change: -0.6, ...window }).supplied;
+    const slumpRun = await runDocument(directory, 'categories-shelf-slump', build(follow(slump), { categories: perishable }).document, 40);
+    checkInvariants(slumpRun);
+    const wasted = wastedBy(slumpRun, fresh.built, 'chilled');
+    assert.ok(wasted > 1, `shelf life: chilled goods are wasted when sales fall (${wasted.toFixed(1)} pallets).`);
+    assert.ok(wastedBy(slumpRun, fresh.built, 'ambient') < 1e-9 && wastedBy(slumpRun, fresh.built, 'frozen') < 1e-9, 'shelf life: goods that keep are not.');
+
     // ---- the big store's refrigerated vans for its chilled and frozen goods cut by nine in ten: those run short, its ambient goods do not.
     const big = stores[0];
     const cold = toFirst.filter((lane) => lane.category !== 'ambient');
@@ -216,7 +233,7 @@ try {
     assert.throws(() => buildRegionModel({ builder: new ModelBuilder(templates), selection, route: router.route, links: warm.links, options: { vehicles: warm.vehicles, unit: warm.unit, categories: warm.categories } }),
         /Chilled: .* carries Chilled, which needs a refrigerated vehicle/);
 
-    console.log(`✓ network with categories: ${document.nodes.length} nodes (${pins.length} pins, ${built.lanes.length} lanes, ${built.categories.length} categories, each conserved on its own) hold still; with the dairy short, ${store.name} runs out of chilled goods (${lost(shortRun, 'Chilled').toFixed(1)} pallets of sales lost) and keeps its ambient ones, and every order is made in the end; three days late its warehouse's cover takes it (down to ${(100 * lowestOf(lateRun, `${itsWarehouse}.stock`)).toFixed(0)}% of its stock) and a week late the store falls to ${(100 * lateLow).toFixed(0)}% of its own, both coming back; with the general supplier short of ambient goods the stores fall to ${(100 * lowestAmbient(waitRun)).toFixed(0)}% of their stock waiting for it and keep ${(100 * lowestAmbient(elsewhereRun)).toFixed(0)}% ordering from the second supplier; with a tenth of its refrigerated vans ${big.name}'s chilled goods fall to ${chilledThen.toFixed(1)} pallets (from ${stock(baseline, 'Chilled.stock', 14, big).toFixed(1)}) while its ambient goods hold; one category alone builds the network as it was; goods, vehicles and orders conserved.`);
+    console.log(`✓ network with categories: ${document.nodes.length} nodes (${pins.length} pins, ${built.lanes.length} lanes, ${built.categories.length} categories, each conserved on its own) hold still; with the dairy short, ${store.name} runs out of chilled goods (${lost(shortRun, 'Chilled').toFixed(1)} pallets of sales lost) and keeps its ambient ones, and every order is made in the end; three days late its warehouse's cover takes it (down to ${(100 * lowestOf(lateRun, `${itsWarehouse}.stock`)).toFixed(0)}% of its stock) and a week late the store falls to ${(100 * lateLow).toFixed(0)}% of its own, both coming back; with the general supplier short of ambient goods the stores fall to ${(100 * lowestAmbient(waitRun)).toFixed(0)}% of their stock waiting for it and keep ${(100 * lowestAmbient(elsewhereRun)).toFixed(0)}% ordering from the second supplier; with a tenth of its refrigerated vans ${big.name}'s chilled goods fall to ${chilledThen.toFixed(1)} pallets (from ${stock(baseline, 'Chilled.stock', 14, big).toFixed(1)}) while its ambient goods hold; with chilled goods that keep a day and a half, ${wasted.toFixed(0)} pallets of them are wasted when sales fall by 60% for ten days and none of the goods that keep; one category alone builds the network as it was; goods, vehicles and orders conserved.`);
 } finally {
     await rm(directory, { recursive: true, force: true });
 }

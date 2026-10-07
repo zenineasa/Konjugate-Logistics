@@ -105,7 +105,8 @@ function checkGoods({ name, document, series }) {
     const held = new Map([
         ...ports.map((port) => [port, [series(`${port}.queue`), series(`${port}.stock`), series(`${port}.arrived`).map((value) => -value)]]),
         ...suppliers.map((supplier) => [supplier, [making(supplier), series(`${supplier}.made`).map((value) => -value)]]),
-        ...lanes.map((lane) => [lane, [loaded(lane)]]), ...warehouses.map((warehouse) => [warehouse, [series(`${warehouse}.stock`)]]),
+        // What a warehouse or a stock room wasted (goods past their shelf life) left the model through it.
+        ...lanes.map((lane) => [lane, [loaded(lane)]]), ...warehouses.map((warehouse) => [warehouse, [series(`${warehouse}.stock`), series(`${warehouse}.spoiled`)]]),
         ...towns.map((town) => [town, [series(`${town}.delivered`)]])
     ]);
     const goods = [...held.values()].flat();
@@ -167,7 +168,7 @@ function checkRest({ name, document, series }, { fleetsChange = false } = {}) {
 
 // Every state that is not a running total holds still.
 export function checkSteady({ name, document, series }) {
-    const cumulative = /^(arrived|handled|delivered|ordered|made|lost|transportCost|fleetCost|holdingCost|backlogCost)$/;
+    const cumulative = /^(arrived|handled|delivered|ordered|made|lost|spoiled|transportCost|fleetCost|holdingCost|backlogCost)$/;
     for (const node of document.nodes) {
         for (const state of node.states) {
             if (cumulative.test(state.symbol)) continue;

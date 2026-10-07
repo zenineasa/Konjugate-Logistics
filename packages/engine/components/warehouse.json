@@ -6,7 +6,7 @@
     "domains": [
         "logistics"
     ],
-    "description": "A warehouse, or a store's stock room, that replenishes from road and rail lanes. On order counts everything it has placed with its inbound lanes and not yet received, so its order rule is local however many lanes feed it. Each lane places its order share of the order rate; while the shares add up to less than 1 (goods that no source can supply), the rest is not ordered, and its customers wait. It forecasts demand by exponential smoothing and orders by an order-up-to rule: the forecast plus a correction towards forecast x planned replenishment time plus the stock it aims to hold, never below nothing. The stock it aims to hold is forecast x stock cover target, or its storage capacity if that is less, and the correction never aims past its storage capacity whatever is on its way: once full, it orders only what it expects to send out. Goods already on their way still arrive, so stock can pass the capacity for a while when demand falls faster than its forecast; Space used (stock over capacity) shows it above 1. The planned replenishment time is the planner's assumption, which may differ from the lanes' real travel times. Holding cost accrues per unit per day in stock.",
+    "description": "A warehouse, or a store's stock room, that replenishes from road and rail lanes. On order counts everything it has placed with its inbound lanes and not yet received, so its order rule is local however many lanes feed it. Each lane places its order share of the order rate; while the shares add up to less than 1 (goods that no source can supply), the rest is not ordered, and its customers wait. It forecasts demand by exponential smoothing and orders by an order-up-to rule: the forecast plus a correction towards forecast x planned replenishment time plus the stock it aims to hold, never below nothing. The stock it aims to hold is forecast x stock cover target, or its storage capacity if that is less, and the correction never aims past its storage capacity whatever is on its way: once full, it orders only what it expects to send out. Goods already on their way still arrive, so stock can pass the capacity for a while when demand falls faster than its forecast; Space used (stock over capacity) shows it above 1. The planned replenishment time is the planner's assumption, which may differ from the lanes' real travel times. Holding cost accrues per unit per day in stock. Goods that keep only so long have a shelf life: what it holds beyond what it expects to send out within the shelf life cannot be sold in time and is wasted, over the time to clear out-of-date stock, into a running total. With stock for less than the shelf life nothing is wasted, as when the oldest goods go out first; the default shelf life is so long that nothing ever is.",
     "shape": "box",
     "color": "#c16f55",
     "states": [
@@ -41,6 +41,12 @@
             "unit": "cost"
         },
         {
+            "symbol": "spoiled",
+            "label": "Wasted (cumulative)",
+            "initialValue": 0,
+            "unit": "TEU"
+        },
+        {
             "symbol": "spaceUsed",
             "label": "Space used",
             "initialValue": 0.00021,
@@ -65,6 +71,14 @@
             "scope": "instance"
         },
         {
+            "key": "shelfDays",
+            "name": "Shelf life",
+            "symbol": "shelfDays",
+            "value": 1000000,
+            "unit": "day",
+            "scope": "instance"
+        },
+        {
             "key": "coverDays",
             "name": "Stock cover target",
             "symbol": "coverDays",
@@ -85,6 +99,14 @@
             "name": "Demand smoothing time",
             "symbol": "smoothingDays",
             "value": 5,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
+            "key": "spoilDays",
+            "name": "Time to clear out-of-date stock",
+            "symbol": "spoilDays",
+            "value": 1,
             "unit": "day",
             "scope": "project"
         },
@@ -176,6 +198,48 @@
                 }
             ],
             "setsValue": true
+        },
+        {
+            "state": "stock",
+            "expression": "-\\frac{\\max(0, \\mathrm{stock} - \\mathrm{forecast} \\cdot \\mathrm{shelfDays})}{\\mathrm{spoilDays} \\cdot \\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Shelf life",
+                    "symbol": "shelfDays",
+                    "shared": "shelfDays"
+                },
+                {
+                    "name": "Time to clear out-of-date stock",
+                    "symbol": "spoilDays",
+                    "shared": "spoilDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "state": "spoiled",
+            "expression": "\\frac{\\max(0, \\mathrm{stock} - \\mathrm{forecast} \\cdot \\mathrm{shelfDays})}{\\mathrm{spoilDays} \\cdot \\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Shelf life",
+                    "symbol": "shelfDays",
+                    "shared": "shelfDays"
+                },
+                {
+                    "name": "Time to clear out-of-date stock",
+                    "symbol": "spoilDays",
+                    "shared": "spoilDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
         }
     ]
 }

@@ -461,6 +461,13 @@ try {
     // In the list: a figure changed is yours; a category added, and undone.
     await change('#categoryList [data-category="frozen"] [data-category-field="leadDays"]', '7');
     assert.deepEqual(await stateOf(() => window.logisticsToolboxState.categories[2].fields.leadDays), { value: 7, basis: 'user' });
+    // How long its goods keep: ten days for chilled goods, assumed; the others keep until a figure is given, and undone.
+    const shelf = (id) => `#categoryList [data-category="${id}"] [data-category-field="shelfDays"]`;
+    assert.deepEqual([await page.inputValue(shelf('ambient')), await page.inputValue(shelf('chilled')), await page.getAttribute(shelf('ambient'), 'placeholder')], ['', '10', 'they keep']);
+    await change(shelf('frozen'), '90');
+    assert.deepEqual(await stateOf(() => window.logisticsToolboxState.categories[2].fields.shelfDays), { value: 90, basis: 'user' });
+    await page.click('#undoButtonTool');
+    assert.deepEqual(await stateOf(() => window.logisticsToolboxState.categories[2].fields.shelfDays), { value: null, basis: null }, 'the shelf life undone');
     await page.click('#addCategoryButton');
     assert.deepEqual(await stateOf(() => window.logisticsToolboxState.categories.map((category) => category.name)), ['Ambient', 'Chilled', 'Frozen', 'Category 1']);
     await page.click('#undoButtonTool');
@@ -702,6 +709,20 @@ try {
     await page.click('#scenarioTabs [data-scenario="roadClosure"]');
     noErrors();
 
+    // 7a4. The weakest link: its tab says how many failures it would run, as ticked, and the button says it runs them all.
+    await page.click('#scenarioTabs [data-scenario="weakestLink"]');
+    assert.equal(await page.textContent('#runScenarioButton'), 'Run them all and rank');
+    const supplyRoads = await linksOf('supply');
+    assert.equal(await page.textContent('#rankHint'), `${4 + supplyRoads} failures to run, one after another: 2 suppliers, 2 warehouses, ${supplyRoads} roads.`);
+    await page.check('#rankStoreRoads');
+    assert.match(await page.textContent('#rankHint'), new RegExp(`^${4 + supplyRoads + await linksOf('store')} failures to run`));
+    await page.uncheck('#rankStoreRoads');
+    await page.uncheck('#rankRoads');
+    assert.equal(await page.textContent('#rankHint'), '4 failures to run, one after another: 2 suppliers, 2 warehouses.');
+    await page.click('#scenarioTabs [data-scenario="roadClosure"]');
+    assert.equal(await page.textContent('#runScenarioButton'), 'Run the scenario');
+    noErrors();
+
     // 7b. With an engine (KONJUGATE_ENGINE=export runs the model as Konjugate's code export writes it): Harbour shop's
     // only lane closed for ten days, and the summary shows its shelves empty and its shoppers waiting.
     if (process.env.KONJUGATE_ENGINE === 'export') {
@@ -730,6 +751,12 @@ try {
         const allLost = await stateOf(() => window.logisticsToolboxState.scenario.totals.lost.scenario);
         assert.ok(Math.abs(byCategory.reduce((sum, item) => sum + item.lost.scenario, 0) - allLost) < 1e-6, 'the categories\' lost sales are the total\'s');
         assert.match(await page.textContent('#scenarioResult #byCategory'), /Category.*Ambient.*Chilled.*Frozen/s);
+        // Chilled goods keep ten days: what is wasted of them is counted, in all and by category; the others keep.
+        const wasted = await stateOf(() => window.logisticsToolboxState.scenario.totals.wasted);
+        assert.ok(wasted && wasted.scenario >= 0 && wasted.baseline < 1e-6, `nothing is wasted in the baseline (${JSON.stringify(wasted)})`);
+        assert.match(result, /Goods wasted \(pallets\)/);
+        assert.deepEqual(byCategory.map((item) => Boolean(item.wasted)), [false, true, false]);
+        assert.match(await page.textContent('#scenarioResult #byCategory'), /wasted \(pallets\).*Ambient.*keeps/s);
         assert.match(await page.textContent('#scenarioResult table.business:not(#byCategory) .basis'), /^Ambient: out [\d.]+ days, [\d.]+ lost; Chilled: out/);
         const lost = await stateOf(() => window.logisticsToolboxState.scenario.stores.find((item) => item.name === 'Harbour shop'));
         assert.ok(lost.lost.scenario > 0 && lost.lost.baseline === 0 && Math.abs(lost.lostValue.scenario - 1000 * lost.lost.scenario) < 1e-6, `four in five of the sales it could not make are lost, at 1,000 a pallet (${JSON.stringify(lost.lost)})`);
@@ -794,6 +821,34 @@ try {
         assert.match(await page.textContent('#map .siteMark.down title'), /^Harbour shop: closed from day 5 for 10 days$/);
         assert.equal(await page.locator('#map .siteMark.supplier').count(), 0, 'the supplier\'s ring goes with its scenario');
         assert.equal(await page.isVisible('#legendDown'), true);
+        // The weakest link: each supplier making nothing and each warehouse down, run in turn for the ten days and
+        // ranked by the sales they lose, worst first, none of them kept as a run of its own; then the worst run alone.
+        await page.click('#scenarioTabs [data-scenario="weakestLink"]');
+        await page.click('#runScenarioButton');
+        await page.waitForSelector('#rankingTable, #scenarioStatus .notice.error', { timeout: 300000 }).catch(fail);
+        assert.equal(await page.locator('#scenarioStatus .notice.error').count(), 0, await page.textContent('#scenarioStatus'));
+        const ranking = await stateOf(() => window.logisticsToolboxState.ranking);
+        assert.deepEqual(ranking.rows.map((row) => row.name).sort(), ['Supplier 1', 'Supplier 2', 'Warehouse 1', 'Warehouse 2']);
+        assert.ok(ranking.rows.every((row, index) => !index || ranking.rows[index - 1].lostValue >= row.lostValue), `worst first (${ranking.rows.map((row) => Math.round(row.lostValue))})`);
+        assert.ok(ranking.rows[0].lostValue > 0 && ranking.rows[0].storesOut > 0, 'the worst failure empties stores and loses sales');
+        assert.deepEqual([ranking.start, ranking.days], [5, 10]);
+        const worst = ranking.rows[0];
+        assert.match(await page.textContent('#rankingResult .headline'), new RegExp(`^The weakest link: ${worst.name}\\. If ${worst.what} for 10 days, it costs most, losing sales worth [\\d,]+\\.`));
+        assert.equal(await page.locator('#rankingTable tbody tr').count(), 4);
+        assert.match(await page.textContent('#rankingTable tbody tr'), new RegExp(`^1${worst.what}`));
+        assert.deepEqual(await stateOf(() => window.logisticsToolboxState.runs.map((run) => run.number)), [1, 2, 3, 4], 'the failures ranked are not runs of their own');
+        // (Kept a moment after it is shown, as every change is.)
+        for (let waited = 0; waited < 50 && !host.session?.ranking; waited += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+        assert.deepEqual(host.session.ranking.rows.map((row) => row.name), ranking.rows.map((row) => row.name), 'the ranking is kept with the session');
+        // Run it: the worst failure alone, from its own tab, with its map and details.
+        await page.click('#rankingTable [data-run-failure="0"]');
+        await page.waitForFunction((what) => (document.querySelector('#scenarioResult p')?.textContent ?? '').startsWith(what) || document.querySelector('#scenarioStatus .notice.error'), `${worst.name} `, { timeout: 120000 }).catch(fail);
+        assert.equal(await page.locator('#scenarioStatus .notice.error').count(), 0, await page.textContent('#scenarioStatus'));
+        assert.equal(await page.evaluate(() => document.querySelector('#scenarioTabs .active').dataset.scenario), worst.kind === 'supplier' ? 'supplierTrouble' : 'siteDown');
+        assert.equal(await page.isVisible('#rankingResult'), false, 'the ranking shows under its own tab');
+        const alone = await stateOf(() => window.logisticsToolboxState.scenario.totals.lostValue);
+        assert.ok(Math.abs(alone.scenario - alone.baseline - worst.lostValue) < 0.01 * worst.lostValue + 1, `run alone, it loses what it lost in the ranking (${alone.scenario - alone.baseline} against ${worst.lostValue})`);
+        assert.deepEqual(await stateOf(() => window.logisticsToolboxState.runs.map((run) => run.number)), [1, 2, 3, 4, 5]);
         await page.click('#scenarioTabs [data-scenario="roadClosure"]');
         noErrors();
     }
@@ -988,7 +1043,7 @@ try {
     await macPage.close();
     noErrors();
 
-    console.log(`✓ logistics network window: the sample region loads its roads alone; ${placements.length} pins placed from the palette are linked and routed as suggested; every action works from a button or menu, a drag or a right click, and the keyboard, and undoes; a moved store re-routes its one link in ${routing.milliseconds < 1 ? 'under a millisecond' : `${routing.milliseconds.toFixed(0)} ms`}; links are drawn, refused with a reason, deleted and not suggested again; the model is built from the pins and links, a copy for each of its three categories (${built.match(/\d+ nodes/)[0]}), its stores holding stock and its links on the vehicles chosen on their cards, from their menus and with V;${process.env.KONJUGATE_ENGINE === 'export' ? ' a store whose road closes runs out of stock a supplier short and late is ringed on the map and a closed store keeps its stock and loses its sales;' : ''} ports and towns are suggested only when asked for and adopted; the network saves as a CSV and loads back; the session restores it, and an earlier session is migrated; shortcuts behave and read as Windows and Linux users and Mac users expect; a network is kept with the project before any build; an area loaded is kept on the computer and loads again with nothing fetched, fresh on request, and the cache clears; a searched region fetches its roads and place names alone, and ports only when asked for.`);
+    console.log(`✓ logistics network window: the sample region loads its roads alone; ${placements.length} pins placed from the palette are linked and routed as suggested; every action works from a button or menu, a drag or a right click, and the keyboard, and undoes; a moved store re-routes its one link in ${routing.milliseconds < 1 ? 'under a millisecond' : `${routing.milliseconds.toFixed(0)} ms`}; links are drawn, refused with a reason, deleted and not suggested again; the model is built from the pins and links, a copy for each of its three categories (${built.match(/\d+ nodes/)[0]}), its stores holding stock and its links on the vehicles chosen on their cards, from their menus and with V;${process.env.KONJUGATE_ENGINE === 'export' ? ' a store whose road closes runs out of stock a supplier short and late is ringed on the map, a closed store keeps its stock and loses its sales and the failures of suppliers and warehouses are ranked by what they cost;' : ''} ports and towns are suggested only when asked for and adopted; the network saves as a CSV and loads back; the session restores it, and an earlier session is migrated; shortcuts behave and read as Windows and Linux users and Mac users expect; a network is kept with the project before any build; an area loaded is kept on the computer and loads again with nothing fetched, fresh on request, and the cache clears; a searched region fetches its roads and place names alone, and ports only when asked for.`);
 } finally {
     await browser.close();
     await rm(scratch, { recursive: true, force: true });

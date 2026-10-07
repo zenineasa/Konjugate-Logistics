@@ -63,7 +63,7 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 | Read a link's time off a map | Google ↗ or OSM ↗ on its card or in the list | Its menu, "Check its time in Google Maps" or "on OpenStreetMap" | |
 | Scale the other links by your times | The calibration's tick in the Travel times list | | |
 | Change a vehicle type | Vehicles in the Network step: its name, figures, "May deliver to stores" and "Refrigerated"; Add a vehicle type; ✕ to delete one | | |
-| Change a category | Categories in the Network step: its name, usual share, supplier lead time and "Needs refrigerated vehicles"; Add a category; ✕ to delete one | | |
+| Change a category | Categories in the Network step: its name, usual share, supplier lead time, how long it keeps and "Needs refrigerated vehicles"; Add a category; ✕ to delete one | | |
 | Give a site its own mix of categories | The share beside each category on its card (0: it does not carry it); Use the usual shares | | |
 | Give a supplier its own lead time | The days beside each category on its card (empty: the category's) | | |
 | Undo, redo | ↶ ↷ above the map; Undo in the message after a change | | Command+Z; Command+Shift+Z (or Ctrl+Y) |
@@ -75,6 +75,7 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 | Clear the maps kept on this computer | Clear at the foot of the Map step | | |
 | Make a supplier short or late | The Supplier tab in the Scenarios step: which supplier, of which goods, how short, how late and what its warehouses do meanwhile; Run | Its menu on the map, "Make it late or short…", which opens the tab with it chosen | |
 | Take a warehouse down or close a store | The Site down tab in the Scenarios step: which site, and what the stores it restocks do meanwhile; Run | Its menu on the map, "Take it down…" or "Close it…", which opens the tab with it chosen | |
+| Rank the failures | The Weakest link tab in the Scenarios step: tick what may fail, Run them all and rank; Run it beside one to run it alone | | |
 | Set a run beside another | Set beside, under the scenario's result (the run before it unless chosen; nothing to hide it) | | Tab to it, then the arrow keys |
 | Read a run's details | Details, under its result | | |
 

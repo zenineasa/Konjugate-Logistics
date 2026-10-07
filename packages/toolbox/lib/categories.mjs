@@ -14,20 +14,22 @@
 
 export const categoryFields = [
     { key: 'share', label: 'Usual share', unit: '%', digits: 1, detail: 'Of what a site supplies or sells, until the site has a mix of its own. The shares are weighed against each other, so they need not add up to 100.' },
-    { key: 'leadDays', label: 'Supplier lead time', unit: 'days', digits: 2, detail: 'From an order reaching a supplier to the goods standing ready to load, unless the supplier has its own for the category.' }
+    { key: 'leadDays', label: 'Supplier lead time', unit: 'days', digits: 2, detail: 'From an order reaching a supplier to the goods standing ready to load, unless the supplier has its own for the category.' },
+    // `optional`: empty is a figure too (the goods keep), unless the category's default says otherwise.
+    { key: 'shelfDays', label: 'Keeps for', unit: 'days', digits: 1, optional: true, detail: 'Its shelf life at a warehouse or a store: what a site holds beyond what it expects to send out or sell in this many days is wasted, and no site aims to hold more. Empty: the goods keep (chilled goods, 10 days, until you say).' }
 ];
 
 // The catalogue a new network starts with: assumptions to replace with the user's own.
 export const defaultCategories = [
-    { id: 'ambient', name: 'Ambient', share: 60, leadDays: 3, chilled: false },
-    { id: 'chilled', name: 'Chilled', share: 25, leadDays: 1, chilled: true },
-    { id: 'frozen', name: 'Frozen', share: 15, leadDays: 5, chilled: true }
+    { id: 'ambient', name: 'Ambient', share: 60, leadDays: 3, shelfDays: null, chilled: false },
+    { id: 'chilled', name: 'Chilled', share: 25, leadDays: 1, shelfDays: 10, chilled: true },
+    { id: 'frozen', name: 'Frozen', share: 15, leadDays: 5, shelfDays: null, chilled: true }
 ];
 // Enough to tell a network's goods apart without a model too large to read: each category is a copy of the network.
 export const mostCategories = 6;
 
-const asField = (value) => ({ value, basis: 'assumed' });
-const templateOf = (id) => defaultCategories.find((category) => category.id === id) ?? { share: 10, leadDays: 2 };
+const asField = (value) => ({ value: value ?? null, basis: value === null || value === undefined ? null : 'assumed' });
+const templateOf = (id) => defaultCategories.find((category) => category.id === id) ?? { share: 10, leadDays: 2, shelfDays: null };
 
 export function defaultCategoryCatalogue() {
     return defaultCategories.map((category) => ({
@@ -81,7 +83,9 @@ export function categoriesProblem(catalogue) {
         if (names.has(name.toLowerCase())) return `Two categories are named ${name}: give each its own name.`;
         names.add(name.toLowerCase());
         for (const field of categoryFields) {
-            if (!(Number(category.fields?.[field.key]?.value) > 0)) return `${name}: its ${field.label.toLowerCase()} must be more than nothing.`;
+            const value = category.fields?.[field.key]?.value;
+            if (field.optional && (value === null || value === undefined)) continue;
+            if (!(Number(value) > 0)) return `${name}: its ${field.label.toLowerCase()} must be more than nothing.`;
         }
     }
     return null;
@@ -91,8 +95,8 @@ export function categoriesProblem(catalogue) {
 export function categoriesForModel(catalogue) {
     return catalogue.map((category) => ({
         id: category.id, name: category.name.trim(), chilled: Boolean(category.chilled),
-        ...Object.fromEntries(categoryFields.map((field) => [field.key, Number(category.fields[field.key].value)])),
-        basis: Object.fromEntries(categoryFields.map((field) => [field.key, category.fields[field.key].basis]))
+        ...Object.fromEntries(categoryFields.map((field) => [field.key, Number(category.fields[field.key]?.value) > 0 ? Number(category.fields[field.key].value) : null])),
+        basis: Object.fromEntries(categoryFields.map((field) => [field.key, category.fields[field.key]?.basis ?? null]))
     }));
 }
 

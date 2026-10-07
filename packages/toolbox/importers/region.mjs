@@ -122,7 +122,9 @@ function checkedCategories(categories) {
         if (!(Number(category.leadDays) > 0)) throw new Error(`${category.name}: its supplier lead time must be more than nothing.`);
         return {
             id: String(category.id), name: String(category.name).trim(), chilled: category.chilled === true, share: Number(category.share), leadDays: Number(category.leadDays),
-            basis: { share: category.basis?.share === 'user' ? 'user' : 'assumed', leadDays: category.basis?.leadDays === 'user' ? 'user' : 'assumed' }
+            // How long its goods keep, when they keep only so long.
+            shelfDays: Number(category.shelfDays) > 0 ? Number(category.shelfDays) : null,
+            basis: { share: category.basis?.share === 'user' ? 'user' : 'assumed', leadDays: category.basis?.leadDays === 'user' ? 'user' : 'assumed', shelfDays: category.basis?.shelfDays === 'user' ? 'user' : 'assumed' }
         };
     });
 }

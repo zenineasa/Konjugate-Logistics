@@ -766,7 +766,12 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
     const placeStock = ({ entity, site, total, laneSpecs, minimumDays, defaultCover, coverAs = null, what }) => {
         // A figure of the site's own: one the user set (an assumed one is the role's default, which the model has too).
         const own = (key) => Number(site[key]) > 0 && site[`${key}Basis`] !== 'assumed';
-        const cover = own('coverDays') ? Number(site.coverDays) : defaultCover;
+        // Goods that keep only so long: no site aims to hold more than it sends out or sells within their shelf life, since
+        // what it held beyond that would be wasted.
+        const shelf = Number(scope?.category.shelfDays) > 0 ? Number(scope.category.shelfDays) : null;
+        const wantedCover = own('coverDays') ? Number(site.coverDays) : defaultCover;
+        const cover = shelf !== null ? Math.min(wantedCover, shelf) : wantedCover;
+        if (cover < wantedCover - 1e-9) warnings.push(`${site.name} aims to hold ${number(cover, 2)} days of ${scope.category.name}, not its ${number(wantedCover, 2)} days of cover: ${scope.category.name} keeps ${number(shelf, 2)} days, and what it held beyond that would be wasted.`);
         // With categories, each has its share of the site's room, by what the site handles of it.
         const room = scope?.room?.get(site.id) ?? 1;
         const capacity = own('capacity') ? Number(site.capacity) * room : storageCapacity;
@@ -784,7 +789,9 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         }
         if (capacity < target - 1e-9) warnings.push(`${site.name} has room for ${number(capacity, 2)} ${unit}, less than its ${number(cover, 2)} days of cover (${number(target, 1)}): it holds ${number(capacity, 2)}, ${number(capacity / total, 2)} days of what it ${what}.`);
         const as = {
-            ...(own('coverDays') ? { coverDays: { own: true, value: cover } } : coverAs ? { coverDays: coverAs } : {}),
+            // Its own cover, or one held to its goods' shelf life, is its own parameter: its order rule aims for that, not for
+            // the cover every other warehouse or store shares.
+            ...(own('coverDays') || cover < wantedCover - 1e-9 ? { coverDays: { own: true, value: cover } } : coverAs ? { coverDays: coverAs } : {}),
             ...(own('holdingCost') ? { holdingCostPerDay: { own: true, value: Number(site.holdingCost) } } : {})
         };
         // A store's stock room sits just above its shoppers on the canvas.
@@ -793,9 +800,10 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         const node = place('warehouse', entity, {
             name: entity, position: at,
             initialValues: { stock, onOrder, forecast: total, orderRate: total, spaceUsed: stock / capacity },
-            shared: { planningLeadTime, storageCapacity: capacity }, as
+            shared: { planningLeadTime, storageCapacity: capacity, ...(shelf !== null ? { shelfDays: shelf } : {}) }, as
         });
         note(site.name, 'Planned replenishment time', planningLeadTime, 'day', 'routed', 'Average order-to-arrival time over its lanes.');
+        if (shelf !== null) note(site.name, 'Shelf life', shelf, 'day', scope.category.basis?.shelfDays === 'user' ? 'user' : 'assumed', `${scope.category.basis?.shelfDays === 'user' ? 'Your figure for' : 'Assumed for'} ${scope.category.name}. What it holds beyond what it expects to ${what === 'sells' ? 'sell' : 'send out'} in this time is wasted, and counted. Each site is judged on its own: time spent at a warehouse is not taken off the shelf life at a store.`);
         if (own('coverDays') || coverAs) note(site.name, 'Stock cover target', cover, 'day', own('coverDays') ? (site.coverDaysBasis ?? 'user') : 'assumed', own('coverDays') ? 'Your figure.' : `Assumed: the default for a ${what === 'sells' ? 'store' : 'warehouse'}, until you set it.`);
         if (own('capacity')) note(site.name, 'Storage capacity', capacity, unit, site.capacityBasis ?? 'user', scope ? `${number(room * 100, 1)}% of your ${number(Number(site.capacity), 1)}: ${scope.category.name}'s share of what the site handles. Each category has its own room.` : 'Your figure.');
         if (own('holdingCost')) note(site.name, 'Holding cost', Number(site.holdingCost), `cost/${unit}/day`, site.holdingCostBasis ?? 'user', 'Your figure.');
@@ -1045,7 +1053,7 @@ function assemble(parts, { builder, settings, categories = null }) {
         // What the model counts, how many of it a TEU is, the vehicle types its lanes run on (null for two truck sizes)
         // and the categories it carries (null for goods of one kind).
         unit: first.unit, perTeu: first.perTeu, vehicles: first.vehicles,
-        categories: categories ? categories.map((category) => ({ id: category.id, name: category.name, chilled: Boolean(category.chilled) })) : null,
+        categories: categories ? categories.map((category) => ({ id: category.id, name: category.name, chilled: Boolean(category.chilled), ...(Number(category.shelfDays) > 0 ? { shelfDays: Number(category.shelfDays) } : {}) })) : null,
         served: all('served')
     };
 }

@@ -172,6 +172,7 @@
                         <button type="button" role="tab" data-scenario="demandSurge">Demand</button>
                         <button type="button" role="tab" data-scenario="supplierTrouble" hidden>Supplier</button>
                         <button type="button" role="tab" data-scenario="siteDown" hidden>Site down</button>
+                        <button type="button" role="tab" data-scenario="weakestLink" hidden>Weakest link</button>
                     </div>
                     <div class="scenarioPanel" data-panel="chokepointDisruption">
                         <p class="muted small">Fewer ships through a strait or canal for a while: the ports that depend on it receive less.</p>
@@ -260,6 +261,14 @@
                         </select></label>
                         <div class="muted small" id="downHint"></div>
                     </div>
+                    <div class="scenarioPanel" data-panel="weakestLink" hidden>
+                        <p class="muted small">Which failure hurts most? Each one is run in turn for the days below, on its own, and they are ranked by the sales they lose. A comparison of failures of the same length, not a forecast of which will happen.</p>
+                        <label class="row small"><input type="checkbox" id="rankSuppliers" checked> each supplier, making nothing</label>
+                        <label class="row small"><input type="checkbox" id="rankWarehouses" checked> each warehouse, down</label>
+                        <label class="row small"><input type="checkbox" id="rankRoads" checked> each road into a warehouse, closed</label>
+                        <label class="row small"><input type="checkbox" id="rankStoreRoads"> each road to a store, closed</label>
+                        <div class="muted small" id="rankHint"></div>
+                    </div>
                     <div class="row small">
                         <label>from day <input type="number" id="startInput" min="0" step="1" value="10"></label>
                         <label>for <input type="number" id="durationInput" min="1" step="1" value="30"> days</label>
@@ -269,6 +278,7 @@
                         <button class="button" type="button" id="showScenarioButton" disabled>Show in Konjugate</button>
                     </div>
                     <div id="scenarioStatus"></div>
+                    <div id="rankingResult" hidden></div>
                     <div id="scenarioResult"></div>
                 </div>
             </section>

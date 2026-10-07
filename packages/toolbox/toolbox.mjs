@@ -548,6 +548,7 @@ function resetNetwork() {
     renderHistoryButtons();
     state.built = null;
     state.scenario = null;
+    state.ranking = null;
     state.runs = [];
     state.compareWith = undefined;
     map.setFlows(null);
@@ -1101,7 +1102,7 @@ function renderCategories() {
                 <button class="link remove" type="button" data-category-delete title="Delete this category" aria-label="Delete ${escape(category.name)}"${state.categories.length === 1 ? ' disabled' : ''}>✕</button></div>
             ${categoryFields.map((field) => {
                 const value = category.fields[field.key];
-                return `<div class="field" title="${escape(field.detail)}"><label for="category-${escape(category.id)}-${field.key}">${escape(field.label)}</label><span><input type="number" min="0" step="any" id="category-${escape(category.id)}-${field.key}" data-category-field="${field.key}" value="${value.value}"> <span class="muted">${escape(field.unit)}</span></span><span class="basis ${value.basis}">${escape(basisLabel[value.basis] ?? value.basis)}</span></div>`;
+                return `<div class="field" title="${escape(field.detail)}"><label for="category-${escape(category.id)}-${field.key}">${escape(field.label)}</label><span><input type="number" min="0" step="any" id="category-${escape(category.id)}-${field.key}" data-category-field="${field.key}" value="${value.value ?? ''}"${field.optional ? ' placeholder="they keep"' : ''}> <span class="muted">${escape(field.unit)}</span></span><span class="basis ${value.basis ?? ''}">${escape(basisLabel[value.basis] ?? value.basis ?? '')}</span></div>`;
             }).join('')}
             <label class="row small" title="Chilled and frozen goods: carried only by vehicle types ticked Refrigerated"><input type="checkbox" data-category-chilled ${category.chilled ? 'checked' : ''}> Needs refrigerated vehicles</label>
         </li>`).join('');
@@ -2246,7 +2247,8 @@ function sessionState() {
         operator: $('#operatorSelect').value || null, operatorFile: Boolean(state.operatorFile), standby: [...state.standby],
         disruption: { ...disruptionSettings(), dependence: [...state.dependence], transits: [...state.transits].filter(([, value]) => value && !value.error) },
         scenarioTab: state.scenarioTab, scenarioSettings: scenarioSettings(), scenario: state.scenario,
-        runs: state.runs, compareWith: state.compareWith ?? null
+        runs: state.runs, compareWith: state.compareWith ?? null, ranking: state.ranking ?? null,
+        rank: { suppliers: $('#rankSuppliers').checked, warehouses: $('#rankWarehouses').checked, roads: $('#rankRoads').checked, storeRoads: $('#rankStoreRoads').checked }
     };
 }
 
@@ -2352,6 +2354,8 @@ async function restoreSession() {
             renderBuilt();
             $('#showButton').disabled = false;
             state.scenario = saved.scenario ?? null;
+            state.ranking = saved.ranking ?? null;
+            if (saved.rank) for (const [key, id] of [['suppliers', '#rankSuppliers'], ['warehouses', '#rankWarehouses'], ['roads', '#rankRoads'], ['storeRoads', '#rankStoreRoads']]) $(id).checked = Boolean(saved.rank[key]);
             state.runs = Array.isArray(saved.runs) ? saved.runs : [];
             state.compareWith = saved.compareWith ?? undefined;
             renderScenario();
@@ -2469,6 +2473,9 @@ function renderScenario({ fetchTransits = false } = {}) {
     if (!builtSuppliers().length && state.scenarioTab === 'supplierTrouble') state.scenarioTab = 'roadClosure';
     // Nor can a site go down in a build from before deliveries could be stopped.
     $('#scenarioTabs [data-scenario="siteDown"]').hidden = !downSites().length;
+    // And failures are ranked where a site can go down: a network placed on the map.
+    $('#scenarioTabs [data-scenario="weakestLink"]').hidden = !downSites().length;
+    if (!downSites().length && state.scenarioTab === 'weakestLink') state.scenarioTab = 'roadClosure';
     if (!downSites().length && state.scenarioTab === 'siteDown') state.scenarioTab = 'roadClosure';
     renderDependence();
     // After a fresh build, fetch the chokepoint's transits; when restoring a session (perhaps offline), show only what was kept.
@@ -2573,11 +2580,13 @@ $('#chokepointSelect').addEventListener('change', () => { renderDependence(); re
 // ---- the scenarios: choosing one ----------------------------------------------------------------------------------
 // Six scenarios share the days they run for and the summary of what they changed: a chokepoint disruption (above), a
 // road closed, the fleet changed, demand stepped up, a supplier short or late and a site down.
-const scenarioIds = ['chokepointDisruption', 'roadClosure', 'fleetChange', 'demandSurge', 'supplierTrouble', 'siteDown'];
+const scenarioIds = ['chokepointDisruption', 'roadClosure', 'fleetChange', 'demandSurge', 'supplierTrouble', 'siteDown', 'weakestLink'];
 
 function showScenarioTab() {
     document.querySelectorAll('#scenarioTabs button').forEach((button) => button.classList.toggle('active', button.dataset.scenario === state.scenarioTab));
     document.querySelectorAll('.scenarioPanel').forEach((panel) => { panel.hidden = panel.dataset.panel !== state.scenarioTab; });
+    $('#runScenarioButton').textContent = state.scenarioTab === 'weakestLink' ? 'Run them all and rank' : 'Run the scenario';
+    renderRanking();
     renderMarks();
 }
 document.querySelectorAll('#scenarioTabs button').forEach((button) => button.addEventListener('click', () => {
@@ -2585,6 +2594,128 @@ document.querySelectorAll('#scenarioTabs button').forEach((button) => button.add
     if (state.scenarioTab === 'roadClosure') state.closureChosen = true;
     showScenarioTab();
 }));
+
+// ---- the weakest link: every failure run in turn, and ranked -------------------------------------------------------
+// The failures the Weakest link tab runs, as ticked: each supplier making nothing, each warehouse down, each road into
+// a warehouse closed and, when asked for, each road to a store. Each is one of the window's own scenarios, with its
+// sites waiting (no one orders elsewhere), so the ranking says what each failure costs if nothing is done about it.
+function failuresToRank() {
+    if (!view() || !downSites().length) return [];
+    const ticked = (id) => $(id).checked;
+    const roads = view().lanes.filter((lane) => !lane.standby && lane.rate > 0 && (lane.kind === 'store' ? ticked('#rankStoreRoads') : ticked('#rankRoads')));
+    return [
+        ...(ticked('#rankSuppliers') ? builtSuppliers().map((supplier) => ({ kind: 'supplier', name: supplier.name, what: `${supplier.name} makes nothing` })) : []),
+        ...(ticked('#rankWarehouses') ? downSites().filter((site) => site.kind === 'warehouse').map((site) => ({ kind: 'warehouse', name: site.name, what: `${site.name} is down` })) : []),
+        ...roads.map((lane) => ({ kind: 'road', name: lane.name, what: `${laneEnds(lane)} is closed` }))
+    ];
+}
+// The scenario a failure is, as scenarioRun would make it from its tab.
+function failureRun(failure, common) {
+    if (failure.kind === 'supplier') {
+        const supplier = builtSuppliers().find((item) => item.name === failure.name);
+        const plan = supplierPlan({ lanes: state.built.lanes, suppliers: state.built.ports.filter((port) => port.supplier), chosen: supplier.members.map((copy) => copy.name), short: 1, mode: 'wait', ...common });
+        return { id: 'supplierTrouble', supplied: { byParameter: plan.supplied }, lanes: [], describe: failure.what };
+    }
+    if (failure.kind === 'warehouse') {
+        const site = downSites().find((item) => item.name === failure.name);
+        const plan = siteDownPlan({ lanes: state.built.lanes, deliveries: state.built.deliveries, nodes: site.nodes, mode: 'wait', ...common });
+        return { id: 'siteDown', supplied: { byParameter: plan.supplied }, lanes: [], describe: failure.what };
+    }
+    const plan = closureAcross(state.built, view(), { closed: failure.name, mode: 'wait', open: 0, detourHours: 0, ...common });
+    return { id: 'roadClosure', supplied: { byParameter: plan.supplied }, lanes: [], describe: failure.what };
+}
+// What a failure cost, from its run's summary: the figures the ranking shows, beyond the baseline's.
+function failureCost(failure, result) {
+    const stores = result.stores ?? [];
+    const out = stores.map((item) => item.emptyDays.scenario - item.emptyDays.baseline).filter((span) => span > outNoise);
+    const beyond = (pair) => (pair ? pair.scenario - pair.baseline : 0);
+    return {
+        ...failure, storesOut: out.length, longest: Math.max(0, ...out), lost: Math.max(0, beyond(result.totals.lost)), lostValue: Math.max(0, beyond(result.totals.lostValue)),
+        fillDrop: Math.max(0, -beyond(result.totals.fill)), wait: Math.max(0, beyond(result.totals.wait)),
+        of: (result.byCategory ?? []).filter((item) => item.storesOut > 0).map((item) => item.name)
+    };
+}
+// Worst first: by the value of the sales lost, then the stores out and how long, then the demand not met and how long
+// orders waited (a network of customer areas alone loses no sales).
+const byCost = (a, b) => (b.lostValue - a.lostValue) || (b.lost - a.lost) || (b.storesOut - a.storesOut) || (b.longest - a.longest) || (b.fillDrop - a.fillDrop) || (b.wait - a.wait);
+
+async function rankFailures(start, runTime, status) {
+    const failures = failuresToRank();
+    if (!failures.length) throw new Error('Tick at least one kind of failure to run.');
+    const duration = Number($('#durationInput').value) * day;
+    const common = { start, duration, forkAt: start, runTime };
+    const rows = [];
+    for (const [index, failure] of failures.entries()) {
+        status.innerHTML = notice('', `Running failure ${index + 1} of ${failures.length}: ${failure.what}…`);
+        const run = failureRun(failure, common);
+        // Not kept in the canvas: one of many, summarised and let go.
+        const answer = await call(api.runScenario(run.id, { supplied: run.supplied, forkAt: start, runTime, signals: summarySignals, retain: false }));
+        rows.push(failureCost(failure, summariseRun(answer, run.id, run, start, duration)));
+    }
+    state.ranking = { start: start / day, days: duration / day, builtAt: state.built.builtAt ?? null, rows: rows.sort(byCost) };
+    status.innerHTML = '';
+    renderRanking();
+    keepSessionSoon();
+}
+
+// The ranking, under the Weakest link tab: worst first, each with a button that runs it alone, for its map and details.
+function renderRanking() {
+    const panel = $('#rankingResult');
+    const ranking = state.ranking;
+    panel.hidden = !ranking || state.scenarioTab !== 'weakestLink';
+    if (panel.hidden) { panel.innerHTML = ''; return; }
+    const hasStores = Boolean(view()?.stores?.length);
+    const stale = ranking.builtAt && state.built?.builtAt && ranking.builtAt !== state.built.builtAt;
+    const harmless = ranking.rows.filter((row) => !(row.lost > 0.05 || row.storesOut || row.fillDrop > 0.0005 || row.wait > 0.01));
+    const head = hasStores
+        ? `<th class="number" title="Stores that ran out of something for longer than in the baseline">stores out</th><th class="number">longest (days)</th><th class="number">sales lost (${goods()})</th><th class="number">value lost</th>`
+        : '<th class="number">demand not met (points)</th><th class="number">days an order waited more</th>';
+    const cells = (row) => (hasStores
+        ? `<td class="number${row.storesOut ? ' worse' : ''}">${number(row.storesOut)}</td><td class="number${row.longest > outNoise ? ' worse' : ''}">${number(row.longest, 1)}</td><td class="number${row.lost > 0.05 ? ' worse' : ''}">${number(row.lost, 1)}</td><td class="number${row.lostValue > 0.5 ? ' worse' : ''}">${number(row.lostValue)}</td>`
+        : `<td class="number${row.fillDrop > 0.0005 ? ' worse' : ''}">${number(row.fillDrop * 100, 1)}</td><td class="number${row.wait > 0.01 ? ' worse' : ''}">${number(row.wait, 2)}</td>`);
+    panel.innerHTML = `
+        <p class="headline">${escape(rankingHeadline(ranking, harmless.length))}</p>
+        ${stale ? notice('warning', 'The network has been built again since these were run: run them again to rank it as it is now.') : ''}
+        <table class="business" id="rankingTable"><thead><tr><th></th><th>If, from day ${number(ranking.start)} for ${number(ranking.days)} days</th>${head}<th></th></tr></thead>
+            <tbody>${ranking.rows.map((row, index) => `<tr><td class="number">${index + 1}</td><td>${escape(row.what)}${row.of?.length ? `<div class="basis">out of ${escape(row.of.join(' and '))}</div>` : ''}</td>${cells(row)}<td><button class="link" type="button" data-run-failure="${index}" title="Run this one alone, for its map and details">Run it</button></td></tr>`).join('')}</tbody></table>
+        <p class="muted small">Each failure was run on its own, with nothing done about it: no one orders elsewhere. Values are in the model's cost units, beyond the baseline's.</p>`;
+    panel.querySelectorAll('[data-run-failure]').forEach((button) => button.addEventListener('click', () => runFailureAlone(ranking.rows[Number(button.dataset.runFailure)])));
+}
+function rankingHeadline(ranking, harmless) {
+    const [worst] = ranking.rows;
+    const costs = worst.lostValue > 0.5 ? `losing sales worth ${number(worst.lostValue)}` : worst.lost > 0.05 ? `losing ${number(worst.lost, 1)} ${goods()} of sales`
+        : worst.storesOut ? `${worst.storesOut} store${worst.storesOut === 1 ? '' : 's'} running out` : worst.fillDrop > 0.0005 ? `${number(worst.fillDrop * 100, 1)} points of demand not met` : null;
+    if (!costs) return `None of the ${ranking.rows.length} failures run lost a sale or emptied a store over ${number(ranking.days)} days.`;
+    const safe = harmless ? ` ${harmless} of the ${ranking.rows.length} cost nothing.` : '';
+    return `The weakest link: ${worst.what.replace(/ (makes nothing|is down|is closed)$/, '')}. If ${worst.what} for ${number(ranking.days)} days, it costs most, ${costs}.${safe}`;
+}
+// One failure of the ranking, run from its own tab as it was ranked, so its map and details show.
+function runFailureAlone(row) {
+    $('#startInput').value = state.ranking.start;
+    $('#durationInput').value = state.ranking.days;
+    if (row.kind === 'supplier') {
+        state.scenarioTab = 'supplierTrouble';
+        $('#supplierSelect').value = `supplier:${row.name}`;
+        renderSupplierGoods('all');
+        $('#supplierShortInput').value = 100;
+        $('#supplierLateInput').value = 0;
+        $('#supplierModeSelect').value = 'wait';
+    } else if (row.kind === 'warehouse') {
+        state.scenarioTab = 'siteDown';
+        $('#downSiteSelect').value = `site:${row.name}`;
+        $('#downModeSelect').value = 'wait';
+    } else {
+        state.scenarioTab = 'roadClosure';
+        state.closureChosen = true;
+        $('#closureLaneSelect').value = row.name;
+        $('#closureModeSelect').value = 'wait';
+        $('#closureOpenInput').value = 0;
+    }
+    showScenarioTab();
+    renderScenarioHints();
+    $('#runScenarioButton').click();
+}
+for (const selector of ['#rankSuppliers', '#rankWarehouses', '#rankRoads', '#rankStoreRoads']) $(selector).addEventListener('change', renderScenarioHints);
 
 // From a warehouse's or a store's menu on the map: the Site down tab, with that site chosen, in view.
 function planSiteDown(pin) {
@@ -2736,6 +2867,9 @@ function renderScenarioHints() {
     }
     renderSupplierHint(settings.supplier);
     renderDownHint(settings.down);
+    const failures = failuresToRank();
+    const counted = ['supplier', 'warehouse', 'road'].map((kind) => [failures.filter((item) => item.kind === kind).length, kind]).filter(([count]) => count).map(([count, kind]) => `${count} ${kind}${count === 1 ? '' : 's'}`);
+    $('#rankHint').textContent = failures.length ? `${failures.length} failure${failures.length === 1 ? '' : 's'} to run, one after another: ${counted.join(', ')}.` : 'Tick what may fail.';
     const lanes = fleetLanes(settings.fleet.lanes);
     const trucks = lanes.reduce((sum, item) => sum + item.fleet + (item.fleet2 ?? 0), 0);
     $('#fleetHint').textContent = `${lanes.length} lane${lanes.length === 1 ? '' : 's'} with ${number(trucks)} ${state.built.vehicles ? 'vehicles' : 'trucks'}.`;
@@ -2984,6 +3118,12 @@ $('#runScenarioButton').addEventListener('click', async () => {
             }
             if (!state.imported || needsStandby.some((port) => !state.built?.standbyPorts?.includes(port))) throw new Error('The model could not be built; see Model above.');
         }
+        if (id === 'weakestLink') {
+            setBusy(true);
+            $('#runScenarioButton').disabled = true;
+            await rankFailures(start, runTime, status);
+            return;
+        }
         const run = scenarioRun(id, start, runTime, status);
         if (!run) return;
         const scenarioId = run.id ?? id;
@@ -3026,7 +3166,7 @@ api?.onProgress?.((progress) => {
 
 // ---- the scenarios: what a run showed --------------------------------------------------------------------------------
 
-const summarySignals = ['arrived', 'queue', 'waitDays', 'stock', 'spaceUsed', 'backlog', 'delivered', 'ordered', 'lost', 'arriving', 'utilisation', 'transportCost', 'fleetCost', 'holdingCost', 'backlogCost', 'toMake', 'made'];
+const summarySignals = ['arrived', 'queue', 'waitDays', 'stock', 'spaceUsed', 'backlog', 'delivered', 'ordered', 'lost', 'arriving', 'utilisation', 'transportCost', 'fleetCost', 'holdingCost', 'backlogCost', 'toMake', 'made', 'spoiled'];
 
 // What the run showed, from the day the scenario starts to the end of the run, kept small enough to save with the
 // session: the share of demand met, the sales lost (in goods and in money) and the costs, how long an order waited, per
@@ -3104,12 +3244,18 @@ function summariseRun(answer, id, run, start, duration) {
             scenPts: sampleSpark(scenario[item.stock]?.stock, start), basePts: sampleSpark(baseline[item.stock]?.stock, start)
         };
     });
+    // Goods wasted past their shelf life, at every warehouse and store, when any category keeps only so long: in all, and
+    // by category (each category's own copies of the sites that hold it).
+    const perishable = (built.categories ?? []).some((category) => category.shelfDays > 0);
+    const holders = (category) => [...new Set(built.lanes.filter((lane) => lane.category === category).map((lane) => lane.to))];
+    const wastedOf = (category) => ({ baseline: holders(category).reduce((sum, node) => sum + grew(raw[0][node]?.spoiled), 0), scenario: holders(category).reduce((sum, node) => sum + grew(raw[1][node]?.spoiled), 0) });
+    const wasted = perishable ? (built.categories ?? []).map((category) => wastedOf(category.id)).reduce((all, each) => ({ baseline: all.baseline + each.baseline, scenario: all.scenario + each.scenario }), { baseline: 0, scenario: 0 }) : null;
     // And each category over every store: how many ran out of it, the longest, and the sales of it lost.
     const byCategory = shown.categories && storeResults.some((item) => item.categories) ? shown.categories.map((category) => {
         const rows = storeResults.flatMap((item) => (item.categories ?? []).filter((each) => each.name === category.name));
         const out = rows.map((each) => each.emptyDays.scenario - each.emptyDays.baseline).filter((span) => span > outNoise);
         const sum = (key) => ({ baseline: rows.reduce((all, each) => all + each[key].baseline, 0), scenario: rows.reduce((all, each) => all + each[key].scenario, 0) });
-        return { name: category.name, storesOut: out.length, longest: Math.max(0, ...out), lost: sum('lost'), lostValue: sum('lostValue') };
+        return { name: category.name, storesOut: out.length, longest: Math.max(0, ...out), lost: sum('lost'), lostValue: sum('lostValue'), ...(category.shelfDays > 0 ? { wasted: wastedOf(category.id) } : {}) };
     }) : null;
     return {
         id, describe: run.describe, start: start / day, days, until: end / day, ...run.extra,
@@ -3127,6 +3273,7 @@ function summariseRun(answer, id, run, start, duration) {
             backlog: both((series) => total(series, townNames, 'backlogCost')),
             // Sales the stores could not make and that were lost, not waited for: in goods, and priced at each store's
             // value of a pallet sold.
+            ...(wasted ? { wasted } : {}),
             ...(stores.length ? {
                 lost: both((series) => total(series, stores.map((item) => item.name), 'lost')),
                 lostValue: both((series) => stores.reduce((sum, item) => sum + grew(series[item.name]?.lost) * (item.saleValue ?? 0), 0))
@@ -3319,6 +3466,7 @@ function renderScenarioResult() {
                 ${totalsRow('Share of demand met', result.totals.fill, percent, { lowerIsWorse: true, noise: 0.001 }, 'Of what was ordered since the scenario started, the share sold or delivered by the end of the run')}
                 ${result.totals.lost ? totalsRow(`Sales lost (${goods()})`, result.totals.lost, (value) => number(value, 1), { noise: 0.05 }, 'Sales the stores could not make for want of stock, whose shoppers went elsewhere rather than wait') : ''}
                 ${result.totals.lostValue ? totalsRow('Value of sales lost', result.totals.lostValue, (value) => number(value), {}, 'The sales lost, at each store\'s value of a pallet sold') : ''}
+                ${result.totals.wasted ? totalsRow(`Goods wasted (${goods()})`, result.totals.wasted, (value) => number(value, 1), { noise: 0.05 }, 'Goods past their shelf life: what a warehouse or a store held beyond what it could send out or sell in time') : ''}
                 ${[['transport', 'Transport cost'], ['fleet', 'Fleet cost'], ['holding', 'Holding cost']].map(([key, label]) => totalsRow(label, result.totals[key], (value) => number(value))).join('')}
                 ${totalsRow('Running cost', running, (value) => number(value), {}, 'Transport, fleet and holding costs together')}
             </tbody></table>` : '';
@@ -3369,8 +3517,8 @@ function renderScenarioResult() {
             <tbody>${businessStores.map((item) => `<tr><td>${escape(item.name)}${outOf(item)}</td><td${worse(item.emptyDays.scenario, item.emptyDays.baseline, { noise: 0.04 })}>${number(item.emptyDays.scenario, 1)}</td><td class="number">${number(item.emptyDays.baseline, 1)}</td><td${worse(item.lost?.scenario ?? 0, item.lost?.baseline ?? 0, { noise: 0.05 })}>${number(item.lost?.scenario ?? 0, 1)}</td><td${worse(lostOf(item), item.lostValue?.baseline ?? 0)}>${number(lostOf(item))}</td></tr>`).join('')}</tbody></table>` : '';
     // By category: how many stores ran out of each, the longest, and the sales of it lost.
     const categoriesTable = result.byCategory?.length ? `
-        <table class="business" id="byCategory"><thead><tr><th>Category</th><th class="number" title="Stores that ran out of it for longer than in the baseline">stores out</th><th class="number">longest (days)</th><th class="number">sales lost (${goods()})</th><th class="number">baseline</th><th class="number">value lost</th></tr></thead>
-            <tbody>${result.byCategory.map((item) => `<tr><td>${escape(item.name)}</td><td class="number${item.storesOut ? ' worse' : ''}">${number(item.storesOut)}</td><td class="number${item.longest > outNoise ? ' worse' : ''}">${number(item.longest, 1)}</td><td${worse(item.lost.scenario, item.lost.baseline, { noise: 0.05 })}>${number(item.lost.scenario, 1)}</td><td class="number">${number(item.lost.baseline, 1)}</td><td${worse(item.lostValue.scenario, item.lostValue.baseline)}>${number(item.lostValue.scenario)}</td></tr>`).join('')}</tbody></table>` : '';
+        <table class="business" id="byCategory"><thead><tr><th>Category</th><th class="number" title="Stores that ran out of it for longer than in the baseline">stores out</th><th class="number">longest (days)</th><th class="number">sales lost (${goods()})</th><th class="number">baseline</th><th class="number">value lost</th>${result.byCategory.some((item) => item.wasted) ? `<th class="number" title="Goods past their shelf life">wasted (${goods()})</th>` : ''}</tr></thead>
+            <tbody>${result.byCategory.map((item) => `<tr><td>${escape(item.name)}</td><td class="number${item.storesOut ? ' worse' : ''}">${number(item.storesOut)}</td><td class="number${item.longest > outNoise ? ' worse' : ''}">${number(item.longest, 1)}</td><td${worse(item.lost.scenario, item.lost.baseline, { noise: 0.05 })}>${number(item.lost.scenario, 1)}</td><td class="number">${number(item.lost.baseline, 1)}</td><td${worse(item.lostValue.scenario, item.lostValue.baseline)}>${number(item.lostValue.scenario)}</td>${result.byCategory.some((each) => each.wasted) ? (item.wasted ? `<td${worse(item.wasted.scenario, item.wasted.baseline, { noise: 0.05 })}>${number(item.wasted.scenario, 1)}</td>` : '<td class="number muted">keeps</td>') : ''}</tr>`).join('')}</tbody></table>` : '';
     const detailsWereOpen = $('#scenarioResult details.resultDetails')?.open ?? false;
     $('#scenarioResult').innerHTML = `
         <p class="small">${escape(describe)}</p>
