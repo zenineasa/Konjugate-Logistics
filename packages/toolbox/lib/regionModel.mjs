@@ -21,6 +21,7 @@
 import { laneCorridors } from './corridors.mjs';
 import { toLocal } from './geo.mjs';
 import { allocateFleet, parseOperator } from './operator.mjs';
+import { calendarSamples, describeCalendar, laneGates, weeklyHours } from './calendars.mjs';
 import { carriersFor } from './vehicles.mjs';
 import { historyWindow, tonnesPerTeu } from './portwatch.mjs';
 
@@ -152,7 +153,7 @@ export function roadLaneState(rate, leadTime, fleet, { truckCapacity, loadDays, 
         loaded1: loaded, loaded2: loaded, loaded3: loaded,
         loadedTrucks: first.loadedTrucks, returning: first.returning, idleTrucks: first.idle,
         loadedTrucks2: second.loadedTrucks, returning2: second.returning, idleTrucks2: second.idle,
-        requested: rate * responseDays, arriving: rate,
+        requested: rate * responseDays, wanted: rate * responseDays, arriving: rate,
         canLoad: (first.idle * truckCapacity + second.idle * truckCapacity2) / loadDays,
         utilisation: busy + idle > 0 ? busy / (busy + idle) : 0
     };
@@ -589,6 +590,29 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         makeLive(portName, 'outageCapacity', berthMaximum);
     }
 
+    // ---- calendars: a site's hours (`hours` on its entry: { open, receive, dispatch }, each { from, to, days }) are one
+    // parameter of the model for everything they govern, in every category's copy, following a held schedule stored with
+    // the model: a store's demand while it is open, the lanes into a site while it receives, the lanes out of one while
+    // it dispatches. Day 0 is a Monday.
+    const calendarSymbols = (builder.calendarSymbols ??= new Map());
+    const calendarWords = { open: ['is open', 'Opening hours', 'Its shoppers buy in these hours: nothing while it is closed and more while it is open, so a week\'s sales are what they would be.'], receive: ['receives', 'Receiving hours', 'Loaded vehicles wait at its door outside these hours, and unload when it receives.'], dispatch: ['dispatches', 'Dispatch hours', 'Nothing is loaded for its lanes outside these hours.'] };
+    const calendarAs = (site, kind) => {
+        if (!site?.hours?.[kind]) return null;
+        const key = `${kind}|${site.id}`;
+        if (!calendarSymbols.has(key)) calendarSymbols.set(key, `${kind}Hours${calendarSymbols.size + 1}`);
+        return { symbol: calendarSymbols.get(key), name: `${site.name} ${calendarWords[kind][0]}`, unit: '', value: 1 };
+    };
+    // Once a placement has made the parameter, it is given its schedule, and said.
+    const scheduleCalendar = (site, kind) => {
+        const calendar = site?.hours?.[kind];
+        const shared = calendar && builder.sharedParameters.find((item) => item.symbol === calendarSymbols.get(`${kind}|${site.id}`));
+        if (!shared || shared.schedule) return;
+        // Nothing outside its hours, and within them as much more as they are short of the whole week: a week's sales in
+        // the hours it is open, a day's orders loaded in the hours it dispatches, what waits at the door unloaded promptly.
+        shared.schedule = { interpolation: 'hold', samples: calendarSamples(calendar, settings.days, { average: true }) };
+        provenance.push({ entity: site.name, parameter: calendarWords[kind][1], value: weeklyHours(calendar), unit: 'h/week', basis: 'user', detail: `Yours: ${describeCalendar(calendar)}. ${calendarWords[kind][2]} Day 0 of a run is a Monday.` });
+    };
+
     // ---- vehicles: each type is one set of shared parameters (capacity, costs, loading time) for every lane and
     // shipment it runs on, so a change to a type reaches every link it carries; each lane keeps its own fleet of it.
     const typeById = new Map((catalogue ?? []).map((type) => [type.id, type]));
@@ -703,7 +727,10 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         const capacity2 = types ? (types[1] ?? types[0]).capacity : truckCapacity2;
         const loading = types ? Math.max(...types.map((type) => type.loadingHours)) / 24 : loadDays;
         const laneLoadDays = types ? Math.max(loading, shortestLoadDays) : loadDays;
-        const need = laneNeed(rate, leadTime, laneLoadDays);
+        // The hours its ends keep: a day's flow is loaded in the hours its origin dispatches, and loaded vehicles wait at
+        // the door of a destination that receives only part of the day, so it needs more vehicles than its flow alone.
+        const gates = laneGates(originSite.hours?.dispatch ?? null, destinationSite.hours?.receive ?? null);
+        const need = laneNeed(rate * gates.peak, leadTime, laneLoadDays) + rate * gates.waitDays;
         const contract = kind === 'supply' ? allocation[`${originSite.name}|${destinationSite.name}`] : null;
         let fleet;
         let fleet2;
@@ -728,10 +755,13 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         const node = place('roadLane', name, {
             name, position: between(originSite, destinationSite, offset),
             initialValues: roadLaneState(rate, leadTime, fleet, { truckCapacity: capacity1, loadDays: laneLoadDays, responseDays: maker ? maker.pipelineDays : responseDays, fleet2, truckCapacity2: capacity2 }),
-            shared: { leadTime, distance: kilometres, fleetSize: fleet, fleetSize2: fleet2 }, ...(placedAs ? { as: placedAs.lane } : {})
+            shared: { leadTime, distance: kilometres, fleetSize: fleet, fleetSize2: fleet2 },
+            as: { ...(placedAs?.lane ?? {}), ...(calendarAs(originSite, 'dispatch') ? { dispatchOpen: calendarAs(originSite, 'dispatch') } : {}), ...(calendarAs(destinationSite, 'receive') ? { receiveOpen: calendarAs(destinationSite, 'receive') } : {}) }
         });
+        scheduleCalendar(originSite, 'dispatch');
+        scheduleCalendar(destinationSite, 'receive');
         // To keep up, a lane needs its loaded and returning vehicles and a loading period's flow idle at the origin.
-        const minimum = 2 * rate * leadTime + rate * laneLoadDays;
+        const minimum = 2 * rate * gates.peak * leadTime + rate * gates.peak * laneLoadDays + rate * gates.waitDays;
         const fleetCapacity = fleet * capacity1 + fleet2 * capacity2;
         if (contract) {
             operatorLanes.push({ name, depot: contract.depot, fleet, fleet2, capacity: fleetCapacity, need: minimum });
@@ -922,8 +952,9 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         const node = place('demandZone', townName, {
             name: townName, position: position(town),
             initialValues: { backlog: townDemand * (shop ? settings.saleDays : responseDays), demandRate: townDemand },
-            shared: { baseDemand: townDemand }
+            shared: { baseDemand: townDemand }, as: calendarAs(town, 'open') ? { demandPattern: calendarAs(town, 'open') } : {}
         });
+        scheduleCalendar(town, 'open');
         // Live, so a scenario can step demand up: to four times the town's own.
         makeLive(townName, 'baseDemand', niceCeiling(4 * townDemand));
         if (shop) {

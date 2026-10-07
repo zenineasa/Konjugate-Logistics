@@ -6,7 +6,7 @@
     "domains": [
         "logistics"
     ],
-    "description": "A trucking lane with its own fleet, in up to two truck sizes. Loaded trucks travel in three stages (an Erlang-3 travel time, so arrivals spread out realistically), unload at the destination and return empty over the same travel time to wait at the origin. Each size keeps its own count of idle, loaded and returning trucks, and each is conserved: they always add up to that size's fleet. Changing a fleet size hires or releases trucks towards it over the hiring time; only idle trucks are released. Loads are shared between the sizes in proportion to their idle capacity, and the lane can load at most its idle trucks times their capacities per turnaround time, so a small fleet caps throughput. Open scales the loading: 1 normally, 0 while the road is closed (trucks on the road still finish their trips), in between for a restriction. Orders waiting holds what the destination has ordered but not yet been shipped. Transport cost counts each completed round trip at twice the distance times the size's cost per km; fleet cost counts every truck on the lane, busy or idle, at its size's cost per day. The second size has no trucks unless its fleet size is set. Connect it with a Road shipment bundle.",
+    "description": "A trucking lane with its own fleet, in up to two truck sizes. Loaded trucks travel in three stages (an Erlang-3 travel time, so arrivals spread out realistically), unload at the destination and return empty over the same travel time to wait at the origin. Each size keeps its own count of idle, loaded and returning trucks, and each is conserved: they always add up to that size's fleet. Changing a fleet size hires or releases trucks towards it over the hiring time; only idle trucks are released. Loads are shared between the sizes in proportion to their idle capacity, and the lane can load at most its idle trucks times their capacities per turnaround time, so a small fleet caps throughput. Open scales the loading: 1 normally, 0 while the road is closed (trucks on the road still finish their trips), in between for a restriction. Orders waiting holds what the destination has ordered but not yet been shipped. Transport cost counts each completed round trip at twice the distance times the size's cost per km; fleet cost counts every truck on the lane, busy or idle, at its size's cost per day. The second size has no trucks unless its fleet size is set. Connect it with a Road shipment bundle. Dispatching and Receiving are 1 normally and follow a calendar when the sites at its ends keep hours: 0 outside them, and above 1 within them by as much as the hours are short of the whole week. While the origin does not dispatch nothing is loaded, and while it does the orders waiting are loaded that much sooner (Orders to load now: a day's orders picked within a shift); while the destination does not receive, loaded vehicles wait at its door, and unload when it opens, in an hour or so however long the trip was.",
     "shape": "cylinder",
     "color": "#d98b54",
     "states": [
@@ -71,6 +71,12 @@
             "unit": "TEU"
         },
         {
+            "symbol": "wanted",
+            "label": "Orders to load now",
+            "initialValue": 35,
+            "unit": "TEU"
+        },
+        {
             "symbol": "arriving",
             "label": "Arriving",
             "initialValue": 70,
@@ -122,6 +128,22 @@
             "key": "laneOpen",
             "name": "Open",
             "symbol": "laneOpen",
+            "value": 1,
+            "unit": "",
+            "scope": "instance"
+        },
+        {
+            "key": "dispatchOpen",
+            "name": "Dispatching",
+            "symbol": "dispatchOpen",
+            "value": 1,
+            "unit": "",
+            "scope": "instance"
+        },
+        {
+            "key": "receiveOpen",
+            "name": "Receiving",
+            "symbol": "receiveOpen",
             "value": 1,
             "unit": "",
             "scope": "instance"
@@ -217,6 +239,18 @@
     ],
     "sourceTerms": [
         {
+            "state": "wanted",
+            "expression": "\\mathrm{requested} \\cdot \\mathrm{dispatchOpen}",
+            "parameters": [
+                {
+                    "name": "Dispatching",
+                    "symbol": "dispatchOpen",
+                    "shared": "dispatchOpen"
+                }
+            ],
+            "setsValue": true
+        },
+        {
             "state": "loaded1",
             "expression": "-\\frac{3}{\\mathrm{leadTime} \\cdot \\mathrm{secondsPerDay}} \\cdot \\mathrm{loaded1}",
             "parameters": [
@@ -266,12 +300,17 @@
         },
         {
             "state": "arriving",
-            "expression": "\\frac{3 \\cdot \\mathrm{loaded3}}{\\mathrm{leadTime}}",
+            "expression": "\\frac{3 \\cdot \\min(\\mathrm{receiveOpen}, \\max(1, 8 \\cdot \\mathrm{leadTime})) \\cdot \\mathrm{loaded3}}{\\mathrm{leadTime}}",
             "parameters": [
                 {
                     "name": "Travel time",
                     "symbol": "leadTime",
                     "shared": "leadTime"
+                },
+                {
+                    "name": "Receiving",
+                    "symbol": "receiveOpen",
+                    "shared": "receiveOpen"
                 }
             ],
             "setsValue": true
@@ -424,7 +463,7 @@
         },
         {
             "state": "canLoad",
-            "expression": "\\frac{\\mathrm{laneOpen} \\cdot (\\mathrm{idleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{idleTrucks2} \\cdot \\mathrm{truckCapacity2})}{\\mathrm{loadDays}}",
+            "expression": "\\frac{\\mathrm{laneOpen} \\cdot \\min(1, \\mathrm{dispatchOpen}) \\cdot (\\mathrm{idleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{idleTrucks2} \\cdot \\mathrm{truckCapacity2})}{\\mathrm{loadDays}}",
             "parameters": [
                 {
                     "name": "Open",
@@ -445,6 +484,11 @@
                     "name": "Truck turnaround at origin",
                     "symbol": "loadDays",
                     "shared": "loadDays"
+                },
+                {
+                    "name": "Dispatching",
+                    "symbol": "dispatchOpen",
+                    "shared": "dispatchOpen"
                 }
             ],
             "setsValue": true

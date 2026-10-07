@@ -17,6 +17,7 @@
 // link that would carry next to nothing, and says so; links the user drew are built as drawn.
 
 import { groupOfRole, roleNames } from './sites.mjs';
+import { calendarOf, calendarProblem, hoursForModel, kindsFor } from './calendars.mjs';
 import { categoriesForModel, categoriesProblem, hasMix, mixForModel } from './categories.mjs';
 import { carriersFor, catalogueForModel, linkKind, linkVehicleProblem, vehicleProblem, vehiclesOf } from './vehicles.mjs';
 
@@ -244,6 +245,13 @@ export function networkProblems(allPins, allLinks, catalogue = null, categories 
     if (!of('source').length) add('error', 'Place a supplier or a port: it is where goods enter the network.');
     if (!of('warehouse').length) add('error', 'Place a warehouse: stores and customers are served from warehouses.');
     if (!of('demand').length) add('error', 'Place a store, a dark store or a customer area: it is where the demand is.');
+    // Hours that cannot be kept.
+    for (const pin of pins) {
+        for (const kind of kindsFor(pin.role)) {
+            const issue = calendarProblem(calendarOf(pin, kind), pin.name, kind);
+            if (issue) add('error', issue, [pin.id]);
+        }
+    }
     const named = new Map();
     for (const pin of pins) named.set(pin.name, [...(named.get(pin.name) ?? []), pin.id]);
     for (const [name, ids] of named) if (ids.length > 1) add('error', `Two sites are named ${name}: give each its own name.`, ids);
@@ -313,6 +321,8 @@ export function networkSelection(allPins, allLinks, { paths = true, catalogue = 
             Object.assign(entry, { supplier: true, teuPerDay: field('supply').value, teuPerDayBasis: field('supply').basis });
             carry('makes', 'makes');
         }
+        // The hours it keeps, where it keeps any.
+        Object.assign(entry, hoursForModel(pin));
         // Its own mix of categories, and a supplier's own lead times: nothing when it takes the usual.
         if (categories && hasMix(pin.role)) Object.assign(entry, mixForModel(pin, categories));
         if (pin.role === 'port') carry('teuPerDay', 'teuPerDay');

@@ -17,6 +17,7 @@ import { compareSites } from './lib/siteComparison.mjs';
 import { completeFields, createPin, isCandidate, kindOf, openNetwork, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
 import { calibration, calibrationAdvised, calibrationMinimum, formatDuration, googleMapsUrl, howLabels, modelHours, openStreetMapUrl, parseTravelTimes, suspectTime, timeFrom, whenLabels, writeTravelTimes } from './lib/travelTimes.mjs';
 import { affectedAcross, closureAcross, diversionAcross, mergeSeries, siteView } from './lib/builtView.mjs';
+import { calendarKinds, calendarOf, dayNames, describeCalendar, kindsFor, setHours } from './lib/calendars.mjs';
 import { categoryFields, clearMix, completeCategories, createCategory, defaultCategoryCatalogue, hasMix, mixOf, mostCategories, setCategoryField, setLeadDays, setMix } from './lib/categories.mjs';
 import { anyVehicle, carriersFor, carriesVehicles, completeCatalogue, createVehicle, defaultCatalogue, linkKind, setVehicleField, typesPerLink, vehicleFields, vehiclesOf } from './lib/vehicles.mjs';
 import { writeSites } from './lib/sites.mjs';
@@ -1589,6 +1590,7 @@ function renderCard() {
                 return `<div class="field"><label for="field-${field.key}">${escape(field.label)}</label><span><input type="number" min="0"${field.max ? ` max="${field.max}"` : ''} step="any" id="field-${field.key}" data-field="${field.key}" value="${value.value ?? ''}" placeholder="${escape(placeholder)}"> <span class="muted">${escape(field.unit)}</span></span><span class="basis ${value.basis ?? ''}">${escape(basisLabel[value.basis] ?? '')}</span></div><div class="detail">${escape(field.detail)}</div>`;
             }).join('')}
             ${renderMix(pin)}
+            ${renderHours(pin)}
             ${pin.role === 'warehouse' ? `<label class="row small" title="A candidate is not built into the model: the New site tab of the Scenarios step compares the network as it is with the network with it open"><input type="checkbox" id="pinCandidate" ${isCandidate(pin) ? 'checked' : ''}> A candidate: not open yet, to compare</label>` : ''}
             <div class="detail road">${escape(roadText(pin))}</div>
             ${found ? `<div class="detail">Adopted from OpenStreetMap${found.activity ? `; IMF PortWatch: about ${number(found.activity.importTonnesPerDay)} t of container imports a day, ${found.activity.from} to ${found.activity.to}` : ''}${found.population ? `; population ${number(found.population)}` : ''}${found.floorAreaSquareMetres ? `; ${number(found.floorAreaSquareMetres)} m² of floor area` : ''}.</div>` : ''}
@@ -1603,6 +1605,7 @@ function renderCard() {
             networkChanged();
         }));
         wireMix(pin, card);
+        wireHours(pin, card);
         $('#pinCandidate')?.addEventListener('change', (event) => {
             checkpoint(event.target.checked ? `making ${pin.name} a candidate` : `opening ${pin.name}`);
             if (event.target.checked) pin.candidate = true; else delete pin.candidate;
@@ -1679,6 +1682,33 @@ function setBackup(link, backup) {
     if (backup) { link.backup = true; delete link.share; } else delete link.backup;
     $('#selectionCard').dataset.for = '';
     networkChanged();
+}
+
+// The hours a site keeps, on its card: when a store is open, when a store or a warehouse receives and when a warehouse
+// or a supplier dispatches, each from an hour to an hour on the days ticked. Empty, with every day ticked: round the clock.
+function renderHours(pin) {
+    const kinds = kindsFor(pin.role);
+    if (!kinds.length) return '';
+    const row = (kind) => {
+        const calendar = calendarOf(pin, kind);
+        const days = calendar?.days ?? Array(7).fill(true);
+        return `<li title="${escape(calendarKinds[kind].detail)}"><span class="hoursKind">${calendarKinds[kind].label}</span>
+            <span><input type="number" min="0" max="24" step="0.25" data-hours="${kind}" data-end="from" value="${calendar && calendar.from > 0 ? calendar.from : ''}" placeholder="0" aria-label="${calendarKinds[kind].label} from, hour of the day"> to <input type="number" min="0" max="24" step="0.25" data-hours="${kind}" data-end="to" value="${calendar && calendar.to < 24 ? calendar.to : ''}" placeholder="24" aria-label="${calendarKinds[kind].label} to, hour of the day"></span>
+            <span class="days">${dayNames.map((name, index) => `<label title="${name}"><input type="checkbox" data-hours-day="${kind}" data-day="${index}" ${days[index] ? 'checked' : ''} aria-label="${calendarKinds[kind].label} on ${name}">${name[0]}</label>`).join('')}</span>
+            <span class="basis ${calendar ? 'user' : 'assumed'}">${calendar ? escape(describeCalendar(calendar)) : 'round the clock'}</span></li>`;
+    };
+    return `<div class="hours"><b>Hours</b><ul>${kinds.map(row).join('')}</ul>
+        <div class="detail">Hours of the day, 0 to 24 (8.5 is half past eight). Empty, every day: round the clock. A run starts on a Monday.</div></div>`;
+}
+function wireHours(pin, card) {
+    const changed = (kind, change) => {
+        checkpoint(`changing when ${pin.name} ${calendarKinds[kind].verb}`, { merge: true });
+        setHours(pin, kind, change);
+        card.dataset.for = '';
+        networkChanged();
+    };
+    card.querySelectorAll('[data-hours]').forEach((input) => input.addEventListener('change', () => changed(input.dataset.hours, { [input.dataset.end]: input.value })));
+    card.querySelectorAll('[data-hours-day]').forEach((box) => box.addEventListener('change', () => changed(box.dataset.hoursDay, { day: Number(box.dataset.day), on: box.checked })));
 }
 
 // A site's mix of categories on its card: of what it supplies or sells, each category's share (0: it does not carry

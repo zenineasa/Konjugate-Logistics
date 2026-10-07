@@ -146,6 +146,7 @@
                 "target": [
                     "loaded1",
                     "requested",
+                    "wanted",
                     "canLoad",
                     "idleTrucks"
                 ]
@@ -154,7 +155,7 @@
                 "role": "target",
                 "state": "loaded1"
             },
-            "latex": "\\frac{\\min(\\frac{\\mathrm{targetRequested}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{sourceStock}}{\\mathrm{originDrainDays}}))}{\\mathrm{secondsPerDay}}",
+            "latex": "\\frac{\\min(\\frac{\\mathrm{targetWanted}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{sourceStock}}{\\mathrm{originDrainDays}}))}{\\mathrm{secondsPerDay}}",
             "parameters": [
                 {
                     "name": "Order response time",
@@ -181,6 +182,7 @@
                 "source": "stock",
                 "target": [
                     "requested",
+                    "wanted",
                     "canLoad",
                     "idleTrucks"
                 ]
@@ -189,7 +191,7 @@
                 "role": "target",
                 "state": "requested"
             },
-            "latex": "-\\frac{\\min(\\frac{\\mathrm{targetRequested}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{sourceStock}}{\\mathrm{originDrainDays}}))}{\\mathrm{secondsPerDay}}",
+            "latex": "-\\frac{\\min(\\frac{\\mathrm{targetWanted}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{sourceStock}}{\\mathrm{originDrainDays}}))}{\\mathrm{secondsPerDay}}",
             "parameters": [
                 {
                     "name": "Order response time",
@@ -216,6 +218,7 @@
                 "source": "stock",
                 "target": [
                     "requested",
+                    "wanted",
                     "canLoad",
                     "idleTrucks",
                     "idleTrucks2"
@@ -225,7 +228,7 @@
                 "role": "target",
                 "state": "idleTrucks"
             },
-            "latex": "-\\frac{\\min(\\frac{\\mathrm{targetRequested}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot (1 - \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases})}{\\mathrm{truckCapacity} \\cdot \\mathrm{secondsPerDay}}",
+            "latex": "-\\frac{\\min(\\frac{\\mathrm{targetWanted}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot (1 - \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases})}{\\mathrm{truckCapacity} \\cdot \\mathrm{secondsPerDay}}",
             "parameters": [
                 {
                     "name": "Order response time",
@@ -262,6 +265,7 @@
                 "source": "stock",
                 "target": [
                     "requested",
+                    "wanted",
                     "canLoad",
                     "idleTrucks",
                     "idleTrucks2"
@@ -271,7 +275,7 @@
                 "role": "target",
                 "state": "loadedTrucks"
             },
-            "latex": "\\frac{\\min(\\frac{\\mathrm{targetRequested}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot (1 - \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases})}{\\mathrm{truckCapacity} \\cdot \\mathrm{secondsPerDay}}",
+            "latex": "\\frac{\\min(\\frac{\\mathrm{targetWanted}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot (1 - \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases})}{\\mathrm{truckCapacity} \\cdot \\mathrm{secondsPerDay}}",
             "parameters": [
                 {
                     "name": "Order response time",
@@ -308,6 +312,7 @@
                 "source": "stock",
                 "target": [
                     "requested",
+                    "wanted",
                     "canLoad",
                     "idleTrucks",
                     "idleTrucks2"
@@ -317,7 +322,7 @@
                 "role": "target",
                 "state": "idleTrucks2"
             },
-            "latex": "-\\frac{\\min(\\frac{\\mathrm{targetRequested}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases}}{\\mathrm{truckCapacity2} \\cdot \\mathrm{secondsPerDay}}",
+            "latex": "-\\frac{\\min(\\frac{\\mathrm{targetWanted}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases}}{\\mathrm{truckCapacity2} \\cdot \\mathrm{secondsPerDay}}",
             "parameters": [
                 {
                     "name": "Order response time",
@@ -354,6 +359,7 @@
                 "source": "stock",
                 "target": [
                     "requested",
+                    "wanted",
                     "canLoad",
                     "idleTrucks",
                     "idleTrucks2"
@@ -363,7 +369,7 @@
                 "role": "target",
                 "state": "loadedTrucks2"
             },
-            "latex": "\\frac{\\min(\\frac{\\mathrm{targetRequested}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases}}{\\mathrm{truckCapacity2} \\cdot \\mathrm{secondsPerDay}}",
+            "latex": "\\frac{\\min(\\frac{\\mathrm{targetWanted}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases}}{\\mathrm{truckCapacity2} \\cdot \\mathrm{secondsPerDay}}",
             "parameters": [
                 {
                     "name": "Order response time",

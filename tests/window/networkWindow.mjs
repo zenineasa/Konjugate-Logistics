@@ -522,6 +522,34 @@ try {
     await page.keyboard.press('Escape');
     noErrors();
 
+    // 6b4. The hours a site keeps, on its card: a store's opening hours and the hours it receives (it dispatches
+    // nothing), a figure and a day at a time; hours that cannot be kept stop the build with the reason; and undone.
+    await clickAt(placements[4][1]);
+    await page.waitForSelector('#selectionCard:not([hidden]) .hours');
+    assert.deepEqual(await page.$$eval('#selectionCard .hours .hoursKind', (items) => items.map((item) => item.textContent)), ['Open', 'Receives']);
+    assert.deepEqual(await page.$$eval('#selectionCard .hours .basis', (items) => items.map((item) => item.textContent)), ['round the clock', 'round the clock']);
+    const hoursOf = () => stateOf(() => window.logisticsToolboxState.pins[4].hours ?? null);
+    await change('#selectionCard [data-hours="open"][data-end="from"]', '8');
+    await change('#selectionCard [data-hours="open"][data-end="to"]', '22');
+    await page.uncheck('#selectionCard [data-hours-day="open"][data-day="6"]');
+    assert.deepEqual(await hoursOf(), { open: { from: 8, to: 22, days: [true, true, true, true, true, true, false] } });
+    assert.equal(await page.textContent('#selectionCard .hours .basis'), '8:00 to 22:00, Monday to Saturday');
+    await change('#selectionCard [data-hours="receive"][data-end="to"]', '9');
+    assert.deepEqual((await hoursOf()).receive, { from: 0, to: 9, days: Array(7).fill(true) });
+    assert.ok(!/second hour/.test(await page.textContent('#networkStatus')));
+    await change('#selectionCard [data-hours="open"][data-end="to"]', '6');
+    assert.match(await page.textContent('#networkStatus'), /Harbour shop is open from 8:00 to 6:00: the second hour must be later than the first/);
+    assert.equal(await page.isDisabled('#buildButton'), true);
+    for (let step = 0; step < 8 && await hoursOf(); step += 1) await page.click('#undoButtonTool');
+    assert.equal(await hoursOf(), null, 'the hours undone');
+    assert.ok(!/second hour/.test(await page.textContent('#networkStatus')));
+    // A warehouse receives and dispatches; a supplier dispatches; a customer area keeps no hours.
+    await clickAt(placements[2][1]);
+    await page.waitForSelector('#selectionCard:not([hidden]) .hours');
+    assert.deepEqual(await page.$$eval('#selectionCard .hours .hoursKind', (items) => items.map((item) => item.textContent)), ['Receives', 'Dispatches']);
+    await page.keyboard.press('Escape');
+    noErrors();
+
     // 6c. Travel times of the user's own: typed in the list (Enter to the next row), when it holds, read off Google Maps
     // (opened in the browser through the host), on the link's card with T, from its menu, a column pasted from a
     // spreadsheet, a time that looks wrong flagged, a calibration from them, and a file saved and loaded.

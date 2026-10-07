@@ -72,6 +72,16 @@ function resolvePin(entry, known, kind) {
     if (entry.supplier) site.supplier = true;
     // A supplier's: the most it can make a day, and its own lead times by category; and any site's own mix of categories.
     if (Number(entry.makes) > 0) Object.assign(site, { makes: Number(entry.makes), makesBasis: entry.makesBasis === 'assumed' ? 'assumed' : 'user' });
+    // The hours it keeps: when it is open, receives and dispatches, each from an hour to a later one on some days.
+    if (entry.hours && typeof entry.hours === 'object') {
+        const hours = {};
+        for (const kind of ['open', 'receive', 'dispatch']) {
+            const given = entry.hours[kind];
+            const [from, to] = [Number(given?.from), Number(given?.to)];
+            if (given && from >= 0 && to <= 24 && to > from && Array.isArray(given.days) && given.days.length === 7 && given.days.some(Boolean)) hours[kind] = { from, to, days: given.days.map(Boolean) };
+        }
+        if (Object.keys(hours).length) site.hours = hours;
+    }
     if (entry.mix && typeof entry.mix === 'object') site.mix = Object.fromEntries(Object.entries(entry.mix).map(([id, weight]) => [id, Math.max(0, Number(weight) || 0)]));
     if (entry.leadDaysBy && typeof entry.leadDaysBy === 'object') {
         site.leadDaysBy = Object.fromEntries(Object.entries(entry.leadDaysBy).filter(([, lead]) => Number(lead?.value) > 0).map(([id, lead]) => [id, { value: Number(lead.value), basis: 'user' }]));

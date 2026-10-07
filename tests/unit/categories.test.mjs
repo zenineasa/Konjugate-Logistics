@@ -466,3 +466,59 @@ test('a backup link between warehouses carries nothing until a scenario orders o
         ['Hub and Spoke restock each other in a circle: make one of those links a backup, or delete it.']);
     assert.deepEqual(networkProblems(circle.pins, [...circle.links, { ...back, backup: true }], defaultCatalogue()).filter((problem) => problem.level === 'error'), []);
 });
+
+test('a site\'s hours: none is round the clock; a figure or a day changed is kept, back to round the clock is none again', async () => {
+    const { calendarOf, calendarProblem, calendarSamples, describeCalendar, hoursForModel, kindsFor, laneGates, setHours, weeklyHours } = await import('../../packages/toolbox/lib/calendars.mjs');
+    assert.deepEqual([kindsFor('store'), kindsFor('warehouse'), kindsFor('supplier'), kindsFor('customerArea'), kindsFor('port')], [['open', 'receive'], ['receive', 'dispatch'], ['dispatch'], [], []]);
+    const store = createPin('store', { lat: 0, lon: 0 }, { name: 'Shop' });
+    assert.deepEqual([calendarOf(store, 'open'), hoursForModel(store), weeklyHours(null), describeCalendar(null)], [null, {}, 168, 'round the clock, every day']);
+    setHours(store, 'open', { from: '8' });
+    assert.deepEqual(calendarOf(store, 'open'), { from: 8, to: 24, days: Array(7).fill(true) });
+    setHours(store, 'open', { to: '22' });
+    setHours(store, 'open', { day: 6, on: false });
+    const open = calendarOf(store, 'open');
+    assert.deepEqual([open.from, open.to, open.days, weeklyHours(open), describeCalendar(open)], [8, 22, [true, true, true, true, true, true, false], 84, '8:00 to 22:00, Monday to Saturday']);
+    setHours(store, 'receive', { from: 6, to: 9.5 });
+    assert.equal(describeCalendar(calendarOf(store, 'receive')), '6:00 to 9:30, every day');
+    assert.deepEqual(Object.keys(hoursForModel(store).hours), ['open', 'receive']);
+    setHours(store, 'dispatch', { from: 6 });
+    assert.equal(store.hours.dispatch, undefined, 'a store dispatches nothing: no such hours');
+    // Back to round the clock: no calendar, and no hours at all once the last is gone.
+    setHours(store, 'receive', { from: '', to: '' });
+    assert.equal(calendarOf(store, 'receive'), null);
+    setHours(store, 'open', { from: '', to: '' });
+    setHours(store, 'open', { day: 6, on: true });
+    assert.equal(store.hours, undefined);
+    // Hours that cannot be kept are refused with the reason, and stop a build.
+    setHours(store, 'open', { from: 22, to: 8 });
+    assert.match(calendarProblem(calendarOf(store, 'open'), 'Shop', 'open'), /^Shop is open from 22:00 to 8:00: the second hour must be later than the first/);
+    assert.deepEqual(networkProblems([store], []).filter((problem) => /second hour/.test(problem.text)).map((problem) => [problem.level, problem.pins]), [['error', [store.id]]]);
+    assert.match(calendarProblem({ from: 8, to: 20, days: Array(7).fill(false) }, 'Shop', 'receive'), /^Shop receives on no day of the week/);
+    // As a schedule: nothing outside the hours, and within them as much above 1 as they are short of the week.
+    assert.deepEqual(calendarSamples(open, 2, { average: true }), [[0, 0], [8 * 3600, 2], [22 * 3600, 0], [32 * 3600, 2], [46 * 3600, 0]]);
+    assert.deepEqual(calendarSamples({ from: 0, to: 24, days: [true, false, true, true, true, true, true] }, 3), [[0, 1], [24 * 3600, 0], [48 * 3600, 1], [72 * 3600, 0]], 'all day but Tuesday');
+    assert.equal(calendarSamples(null, 5), null);
+    // What hours ask of a lane's vehicles: a day's goods loaded in eight hours, and half the closed time at the door.
+    assert.deepEqual(laneGates(null, null), { peak: 1, waitDays: 0 });
+    assert.equal(laneGates({ from: 9, to: 17, days: Array(7).fill(true) }, null).peak, 3);
+    assert.ok(Math.abs(laneGates(null, { from: 6, to: 9, days: Array(7).fill(true) }).waitDays - 0.875 * 0.875 / 2) < 1e-12);
+});
+
+test('a site\'s hours reach the model as one stored schedule each, whatever the categories: its demand, the lanes into it and the lanes out of it', async () => {
+    const { setHours } = await import('../../packages/toolbox/lib/calendars.mjs');
+    const { built, document } = placed({ change: ({ pins }) => { setHours(pins[2], 'open', { from: 8, to: 22 }); setHours(pins[2], 'receive', { from: 6, to: 9 }); setHours(pins[1], 'dispatch', { from: 9, to: 17 }); setHours(pins[0], 'dispatch', { day: 6, on: false }); } });
+    const scheduled = document.sharedParameters.filter((shared) => shared.schedule).map((shared) => [shared.name, shared.schedule.interpolation, shared.schedule.samples[1]]);
+    assert.deepEqual(scheduled.sort(), [['Store 1 is open', 'hold', [8 * 3600, 24 / 14]], ['Store 1 receives', 'hold', [6 * 3600, 8]], ['Supplier 1 dispatches', 'hold', [144 * 3600, 0]], ['Warehouse 1 dispatches', 'hold', [9 * 3600, 3]]].sort());
+    // One parameter for the store's three categories, on each one's demand; and for each lane the hours of its ends.
+    const usesOf = (name) => { const id = document.sharedParameters.find((shared) => shared.name === name).id; return [...document.nodes.flatMap((node) => node.sourceTerms.filter((term) => term.parameters.some((parameter) => parameter.sharedParameterId === id)).map((term) => `${node.name}.${term.state}`))].sort(); };
+    assert.deepEqual(usesOf('Store 1 is open'), ['Store 1: Ambient.demandRate', 'Store 1: Chilled.demandRate', 'Store 1: Frozen.demandRate']);
+    assert.deepEqual(usesOf('Store 1 receives'), ['Road Warehouse 1 → Store 1: Ambient.arriving', 'Road Warehouse 1 → Store 1: Chilled.arriving', 'Road Warehouse 1 → Store 1: Frozen.arriving']);
+    assert.equal(usesOf('Warehouse 1 dispatches').filter((use) => /canLoad$/.test(use)).length, 6, 'its lanes to both stores, in each category');
+    assert.equal(usesOf('Supplier 1 dispatches').filter((use) => /wanted$/.test(use)).length, 3);
+    // Said once for each, by site; and the lane has more vehicles than without hours.
+    assert.deepEqual(built.provenance.filter((entry) => /hours$/.test(entry.parameter)).map((entry) => [entry.entity, entry.parameter, entry.value, entry.basis]).sort(), [['Store 1', 'Opening hours', 98, 'user'], ['Store 1', 'Receiving hours', 21, 'user'], ['Supplier 1', 'Dispatch hours', 144, 'user'], ['Warehouse 1', 'Dispatch hours', 56, 'user']].sort());
+    const fleetOf = (model) => model.lanes.filter((lane) => lane.link === 'Road Warehouse 1 → Store 1').reduce((sum, lane) => sum + lane.fleet + lane.fleet2, 0);
+    assert.ok(fleetOf(built) > fleetOf(placed().built));
+    // With no hours, no schedule: the model is as it was.
+    assert.ok(!placed().document.sharedParameters.some((shared) => shared.schedule));
+});
