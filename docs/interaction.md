@@ -64,7 +64,7 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 | Give a link's travel time | Its card's travel time; the Travel times list in the Network step; Load your times (CSV) | Its menu, "Type its travel time…"; paste a column from a spreadsheet into the list | `T` (the selected link's time; with none selected, the list), Enter for the next link |
 | Read a link's time off a map | Google ↗ or OSM ↗ on its card or in the list | Its menu, "Check its time in Google Maps" or "on OpenStreetMap" | |
 | Scale the other links by your times | The calibration's tick in the Travel times list | | |
-| Change a vehicle type | Vehicles in the Network step: its name, figures, "May deliver to stores" and "Refrigerated"; Add a vehicle type; ✕ to delete one | | |
+| Change a vehicle type | Vehicles in the Network step: its name, figures, "May deliver to stores", "Refrigerated" and the hours it runs; Add a vehicle type; ✕ to delete one | | |
 | Set the hours a site keeps (open, receives, dispatches) | The hours and the days on its card (empty, every day: round the clock) | | |
 | Add or change a holiday or peak | Holidays and peaks in the Network step: its name, days, effect on each category's demand, the days before and after, and whether suppliers dispatch; Add a holiday or peak; ✕ to delete one | | |
 | Run the network as planned | The As planned tab in the Scenarios step; Run it as planned | | |

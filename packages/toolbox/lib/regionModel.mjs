@@ -21,7 +21,7 @@
 import { laneCorridors } from './corridors.mjs';
 import { toLocal } from './geo.mjs';
 import { allocateFleet, parseOperator } from './operator.mjs';
-import { calendarSamples, describeCalendar, laneGates, weeklyHours } from './calendars.mjs';
+import { calendarSamples, describeCalendar, laneGates, openShare, patternSamples, weeklyHours } from './calendars.mjs';
 import { closeDuring, describeHoliday, seasonSamples, supplierClosures } from './holidays.mjs';
 import { carriersFor } from './vehicles.mjs';
 import { historyWindow, tonnesPerTeu } from './portwatch.mjs';
@@ -612,7 +612,32 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         shared.schedule = { interpolation: 'hold', samples: season };
         for (const event of holidays) provenance.push({ entity: seasonName, parameter: event.name, value: event.days, unit: 'day', basis: 'user', detail: `Yours: ${describeHoliday(event, scope?.category.id ?? null, scope && !scope.single ? scope.category.name : null)}. Every store's and customer area's demand follows it, in the baseline and in every scenario.` });
     };
-    const keepsHours = (site, kind) => Boolean(site?.hours?.[kind]) || (kind === 'dispatch' && Boolean(site?.supplier) && closures.length > 0);
+    const keepsHours = (site, kind) => kind !== 'dispatch' && Boolean(site?.hours?.[kind]);
+    // When a lane loads: while its origin dispatches and one of its vehicle types runs (a type with no hours runs round
+    // the clock, so a lane with one such type is not held by the other's), and not on the days a holiday closes a
+    // supplier. One parameter for the lanes of a site that load alike. Null when it loads round the clock, every day.
+    const dispatchNoted = new Set();
+    const dispatchOf = (site, types) => {
+        const running = types?.length && types.every((type) => type.hours) ? types : null;
+        const calendar = site?.hours?.dispatch ?? null;
+        const closed = site?.supplier ? closures : [];
+        if (!calendar && !running && !closed.length) return null;
+        const key = `dispatch|${site.id}|${running ? running.map((type) => type.id).sort().join('+') : ''}`;
+        if (!calendarSymbols.has(key)) calendarSymbols.set(key, `dispatchHours${calendarSymbols.size + 1}`);
+        const pattern = { all: calendar ? [calendar] : [], any: running ? running.map((type) => type.hours) : null };
+        const vehicles = running ? running.map((type) => type.name.toLowerCase()).join(' and ') : null;
+        if (!(openShare(pattern) > 0)) throw new Error(`${site.name} dispatches ${describeCalendar(calendar)}, and its ${vehicles}s run ${running.map((type) => describeCalendar(type.hours)).join(' and ')}: there is no hour in which it can load them. Change one or the other.`);
+        return { key, pattern, closed, calendar, alias: { symbol: calendarSymbols.get(key), name: `${site.name} dispatches${vehicles ? ` by ${vehicles}` : ''}`, unit: '', value: 1 } };
+    };
+    const scheduleDispatch = (site, dispatch) => {
+        const shared = dispatch && builder.sharedParameters.find((item) => item.symbol === dispatch.alias.symbol);
+        if (!shared || shared.schedule) return;
+        shared.schedule = { interpolation: 'hold', samples: closeDuring(patternSamples(dispatch.pattern, settings.days, { average: true }), dispatch.closed) };
+        if (dispatchNoted.has(site.id)) return;
+        dispatchNoted.add(site.id);
+        if (dispatch.closed.length) provenance.push({ entity: site.name, parameter: 'Closed for holidays', value: dispatch.closed.reduce((sum, span) => sum + (span.to - span.from) / 86400, 0), unit: 'day', basis: 'user', detail: `Yours: it does not dispatch on ${holidays.filter((event) => event.suppliersClosed).map((event) => `${event.name} (day ${event.day} for ${event.days})`).join(', ')}. Orders placed then are loaded when it is back.` });
+        if (dispatch.calendar) provenance.push({ entity: site.name, parameter: calendarWords.dispatch[1], value: weeklyHours(dispatch.calendar), unit: 'h/week', basis: 'user', detail: `Yours: ${describeCalendar(dispatch.calendar)}. ${calendarWords.dispatch[2]} Day 0 of a run is a Monday.` });
+    };
     const calendarAs = (site, kind) => {
         if (!keepsHours(site, kind)) return null;
         const key = `${kind}|${site.id}`;
@@ -627,8 +652,8 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         // Nothing outside its hours, and within them as much more as they are short of the whole week: a week's sales in
         // the hours it is open, a day's orders loaded in the hours it dispatches, what waits at the door unloaded promptly.
         // And a supplier loads nothing on the days a holiday closes it.
-        const closed = kind === 'dispatch' && site.supplier ? closures : [];
-        shared.schedule = { interpolation: 'hold', samples: closeDuring(calendarSamples(calendar, settings.days, { average: true }), closed) };
+        const closed = [];
+        shared.schedule = { interpolation: 'hold', samples: calendarSamples(calendar, settings.days, { average: true }) };
         if (closed.length) provenance.push({ entity: site.name, parameter: 'Closed for holidays', value: closed.reduce((sum, span) => sum + (span.to - span.from) / 86400, 0), unit: 'day', basis: 'user', detail: `Yours: it does not dispatch on ${holidays.filter((event) => event.suppliersClosed).map((event) => `${event.name} (day ${event.day} for ${event.days})`).join(', ')}. Orders placed then are loaded when it is back.` });
         if (calendar) provenance.push({ entity: site.name, parameter: calendarWords[kind][1], value: weeklyHours(calendar), unit: 'h/week', basis: 'user', detail: `Yours: ${describeCalendar(calendar)}. ${calendarWords[kind][2]} Day 0 of a run is a Monday.` });
     };
@@ -647,6 +672,7 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         note(type.name, 'Cost per day', type.costPerDay, 'cost/day', basisOf('costPerDay'), said('costPerDay'));
         note(type.name, 'Top speed', type.speed, 'km/h', basisOf('speed'), `${said('speed')} A link takes at least its length at this speed.`);
         note(type.name, 'Loading time', type.loadingHours, 'h', basisOf('loadingHours'), `${said('loadingHours')} A lane loads as fast as the slower of its two types.`);
+        if (type.hours) note(type.name, 'Runs', weeklyHours(type.hours), 'h/week', 'user', `Yours: ${describeCalendar(type.hours)}. A lane on it loads only in these hours; a lane on two types loads while either runs. Vehicles already on the road finish their trips.`);
     };
     const asType = (type, what, name, typeUnit, value) => ({ symbol: `${type.id}${what}`, name: `${type.name}: ${name}`, unit: typeUnit, value });
     // How a lane of these types places its shared parameters: its first and second size as the two types (the first
@@ -749,7 +775,8 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         const laneLoadDays = types ? Math.max(loading, shortestLoadDays) : loadDays;
         // The hours its ends keep: a day's flow is loaded in the hours its origin dispatches, and loaded vehicles wait at
         // the door of a destination that receives only part of the day, so it needs more vehicles than its flow alone.
-        const gates = laneGates(originSite.hours?.dispatch ?? null, destinationSite.hours?.receive ?? null);
+        const dispatch = dispatchOf(originSite, types);
+        const gates = laneGates(dispatch?.pattern ?? null, destinationSite.hours?.receive ?? null);
         const need = laneNeed(rate * gates.peak, leadTime, laneLoadDays) + rate * gates.waitDays;
         const contract = kind === 'supply' ? allocation[`${originSite.name}|${destinationSite.name}`] : null;
         let fleet;
@@ -776,9 +803,9 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
             name, position: between(originSite, destinationSite, offset),
             initialValues: roadLaneState(rate, leadTime, fleet, { truckCapacity: capacity1, loadDays: laneLoadDays, responseDays: maker ? maker.pipelineDays : responseDays, fleet2, truckCapacity2: capacity2 }),
             shared: { leadTime, distance: kilometres, fleetSize: fleet, fleetSize2: fleet2 },
-            as: { ...(placedAs?.lane ?? {}), ...(calendarAs(originSite, 'dispatch') ? { dispatchOpen: calendarAs(originSite, 'dispatch') } : {}), ...(calendarAs(destinationSite, 'receive') ? { receiveOpen: calendarAs(destinationSite, 'receive') } : {}) }
+            as: { ...(placedAs?.lane ?? {}), ...(dispatch ? { dispatchOpen: dispatch.alias } : {}), ...(calendarAs(destinationSite, 'receive') ? { receiveOpen: calendarAs(destinationSite, 'receive') } : {}) }
         });
-        scheduleCalendar(originSite, 'dispatch');
+        scheduleDispatch(originSite, dispatch);
         scheduleCalendar(destinationSite, 'receive');
         // To keep up, a lane needs its loaded and returning vehicles and a loading period's flow idle at the origin.
         const minimum = 2 * rate * gates.peak * leadTime + rate * gates.peak * laneLoadDays + rate * gates.waitDays;

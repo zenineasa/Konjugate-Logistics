@@ -537,12 +537,26 @@ try {
     await change('#selectionCard [data-hours="receive"][data-end="to"]', '9');
     assert.deepEqual((await hoursOf()).receive, { from: 0, to: 9, days: Array(7).fill(true) });
     assert.ok(!/second hour/.test(await page.textContent('#networkStatus')));
+    // Past midnight is a night's hours; the same hour twice is none, and stops the build with the reason.
     await change('#selectionCard [data-hours="open"][data-end="to"]', '6');
-    assert.match(await page.textContent('#networkStatus'), /Harbour shop is open from 8:00 to 6:00: the second hour must be later than the first/);
+    assert.equal(await page.textContent('#selectionCard .hours .basis'), '8:00 to 6:00 the next morning, Monday to Saturday');
+    assert.ok(!/two different hours/.test(await page.textContent('#networkStatus')));
+    await change('#selectionCard [data-hours="open"][data-end="to"]', '8');
+    assert.match(await page.textContent('#networkStatus'), /Harbour shop is open from 8:00 to 8:00: give two different hours/);
     assert.equal(await page.isDisabled('#buildButton'), true);
     for (let step = 0; step < 8 && await hoursOf(); step += 1) await page.click('#undoButtonTool');
     assert.equal(await hoursOf(), null, 'the hours undone');
-    assert.ok(!/second hour/.test(await page.textContent('#networkStatus')));
+    assert.ok(!/two different hours/.test(await page.textContent('#networkStatus')));
+    // A vehicle type keeps hours too, in the Vehicles list: mini-vans by day, undone.
+    const vanHours = () => stateOf(() => window.logisticsToolboxState.vehicles.find((type) => type.id === 'miniVan').hours ?? null);
+    assert.equal(await page.textContent('#vehicleList [data-type="miniVan"] .vehicleHours .basis'), 'round the clock');
+    await change('#vehicleList [data-type="miniVan"] [data-vehicle-hours="from"]', '8');
+    await change('#vehicleList [data-type="miniVan"] [data-vehicle-hours="to"]', '20');
+    await page.uncheck('#vehicleList [data-type="miniVan"] [data-vehicle-day="6"]');
+    assert.deepEqual(await vanHours(), { from: 8, to: 20, days: [true, true, true, true, true, true, false] });
+    assert.equal(await page.textContent('#vehicleList [data-type="miniVan"] .vehicleHours .basis'), '8:00 to 20:00, Monday to Saturday');
+    for (let step = 0; step < 6 && await vanHours(); step += 1) await page.click('#undoButtonTool');
+    assert.equal(await vanHours(), null, 'the vehicle\'s hours undone');
     // A warehouse receives and dispatches; a supplier dispatches; a customer area keeps no hours.
     await clickAt(placements[2][1]);
     await page.waitForSelector('#selectionCard:not([hidden]) .hours');

@@ -253,6 +253,9 @@ td.better { color: var(--ok); font-weight: 600; }
 .card .links .vehicleChoice { grid-template-columns: 1fr auto auto auto; }
 .card .links .vehicleChoice select { width: 100%; }
 .card .links .vehicleChoice input[type="number"] { width: 64px; }
+.vehicles .vehicleHours { flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.vehicles .vehicleHours input[type="number"] { width: 52px; }
+.vehicles .vehicleHours .days label { margin-right: 3px; white-space: nowrap; }
 .card .hours { margin: 6px 0; font-size: 12px; }
 .card .hours ul { list-style: none; padding: 0; margin: 2px 0 4px; }
 .card .hours li { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; margin: 3px 0; }

@@ -12,6 +12,8 @@
 //
 // Deliveries to a customer area have no vehicles: they stand for a parcel or courier service, with a response time.
 
+import { calendarProblem, changeCalendar, wholeCalendar } from './calendars.mjs';
+
 export const vehicleFields = [
     { key: 'capacity', label: 'Capacity', unit: 'pallets', digits: 1, detail: 'What one vehicle carries, in the pallets the network counts in.' },
     { key: 'costPerKm', label: 'Cost per km', unit: 'a km', digits: 2, detail: 'Running cost (fuel, tyres, driver time on the road) per kilometre driven, loaded or empty.' },
@@ -42,7 +44,7 @@ export const typesPerLink = 2;
 const asField = (value) => ({ value, basis: 'assumed' });
 
 // A type from its figures: `fields` given are the user's; the rest start as assumed defaults (a medium truck's).
-export function createVehicle({ id, name, toStores = true, refrigerated = false, basis = 'user', ...given } = {}, others = []) {
+export function createVehicle({ id, name, toStores = true, refrigerated = false, hours = null, basis = 'user', ...given } = {}, others = []) {
     const template = defaultVehicles.find((type) => type.id === id) ?? defaultVehicles[1];
     const fields = {};
     for (const field of vehicleFields) {
@@ -51,7 +53,9 @@ export function createVehicle({ id, name, toStores = true, refrigerated = false,
             ? (typeof value === 'object' ? value : { value: Number(value), basis })
             : asField(template[field.key]);
     }
-    return { id: id ?? newVehicleId(others), name: name || nextVehicleName(others), toStores: Boolean(toStores), refrigerated: Boolean(refrigerated), fields };
+    // The hours it runs, where it keeps any: small vehicles deliver by day; a large one with two drivers who take turns
+    // runs round the clock, and has none.
+    return { id: id ?? newVehicleId(others), name: name || nextVehicleName(others), toStores: Boolean(toStores), refrigerated: Boolean(refrigerated), fields, ...(wholeCalendar(hours) ? { hours: wholeCalendar(hours) } : {}) };
 }
 
 export function newVehicleId(others = []) {
@@ -84,9 +88,18 @@ export function setVehicleField(type, key, text) {
     return type;
 }
 
+// The hours a type runs, one figure or one day changed by the user; back to round the clock, it keeps none.
+export function setVehicleHours(type, change) {
+    const next = changeCalendar(type.hours, change);
+    if (next) type.hours = next; else delete type.hours;
+    return type;
+}
+
 // What a type's figures say is wrong, if anything.
 export function vehicleProblem(type) {
     if (!type?.name?.trim()) return 'A vehicle type needs a name.';
+    const hours = calendarProblem(wholeCalendar(type.hours), `A ${type.name.toLowerCase()}`, 'runs');
+    if (hours) return hours;
     for (const field of vehicleFields) {
         if (!(Number(type.fields?.[field.key]?.value) > 0)) return `${type.name}: its ${field.label.toLowerCase()} must be more than nothing.`;
     }
@@ -142,6 +155,7 @@ export function linkVehicleProblem(vehicles, kind, catalogue, { from = 'the ware
 export function catalogueForModel(catalogue) {
     return catalogue.map((type) => ({
         id: type.id, name: type.name, toStores: type.toStores, refrigerated: Boolean(type.refrigerated),
+        ...(wholeCalendar(type.hours) ? { hours: wholeCalendar(type.hours) } : {}),
         ...Object.fromEntries(vehicleFields.map((field) => [field.key, Number(type.fields[field.key].value)])),
         basis: Object.fromEntries(vehicleFields.map((field) => [field.key, type.fields[field.key].basis]))
     }));
@@ -159,7 +173,7 @@ export function completeCatalogue(saved, { refrigerated = false } = {}) {
 
 function completeSaved(saved) {
     return saved.filter((type) => type?.id).map((type) => createVehicle({
-        id: type.id, name: type.name, toStores: type.toStores !== false, refrigerated: type.refrigerated === true,
+        id: type.id, name: type.name, toStores: type.toStores !== false, refrigerated: type.refrigerated === true, hours: type.hours ?? null,
         ...Object.fromEntries(vehicleFields.map((field) => [field.key, type.fields?.[field.key] ?? null]))
     }, saved));
 }

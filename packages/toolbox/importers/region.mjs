@@ -79,7 +79,8 @@ function resolvePin(entry, known, kind) {
         for (const kind of ['open', 'receive', 'dispatch']) {
             const given = entry.hours[kind];
             const [from, to] = [Number(given?.from), Number(given?.to)];
-            if (given && from >= 0 && to <= 24 && to > from && Array.isArray(given.days) && given.days.length === 7 && given.days.some(Boolean)) hours[kind] = { from, to, days: given.days.map(Boolean) };
+            // An hour to another (past midnight too: 22 to 6), on a day at least.
+            if (given && from >= 0 && from <= 24 && to >= 0 && to <= 24 && to !== from && Array.isArray(given.days) && given.days.length === 7 && given.days.some(Boolean)) hours[kind] = { from, to, days: given.days.map(Boolean) };
         }
         if (Object.keys(hours).length) site.hours = hours;
     }
@@ -118,6 +119,9 @@ function checkedVehicles(types) {
         for (const key of vehicleKeys) if (!(Number(type[key]) > 0)) throw new Error(`${type.name}: its ${key.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`)} must be more than nothing.`);
         return {
             id: String(type.id), name: String(type.name).trim(), toStores: type.toStores !== false, refrigerated: type.refrigerated === true,
+            // The hours it runs, where it keeps any.
+            ...(type.hours && Number(type.hours.from) >= 0 && Number(type.hours.to) <= 24 && Number(type.hours.to) !== Number(type.hours.from) && Array.isArray(type.hours.days) && type.hours.days.length === 7 && type.hours.days.some(Boolean)
+                ? { hours: { from: Number(type.hours.from), to: Number(type.hours.to), days: type.hours.days.map(Boolean) } } : {}),
             ...Object.fromEntries(vehicleKeys.map((key) => [key, Number(type[key])])),
             basis: Object.fromEntries(vehicleKeys.map((key) => [key, type.basis?.[key] === 'user' ? 'user' : 'assumed']))
         };

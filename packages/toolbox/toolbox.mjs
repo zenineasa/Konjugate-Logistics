@@ -18,9 +18,9 @@ import { createHoliday, describeHoliday, holidayProblem } from './lib/holidays.m
 import { completeFields, createPin, isCandidate, kindOf, openNetwork, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
 import { calibration, calibrationAdvised, calibrationMinimum, formatDuration, googleMapsUrl, howLabels, modelHours, openStreetMapUrl, parseTravelTimes, suspectTime, timeFrom, whenLabels, writeTravelTimes } from './lib/travelTimes.mjs';
 import { affectedAcross, closureAcross, diversionAcross, mergeSeries, siteView } from './lib/builtView.mjs';
-import { calendarKinds, calendarOf, dayNames, describeCalendar, kindsFor, setHours } from './lib/calendars.mjs';
+import { calendarKinds, calendarOf, dayNames, describeCalendar, kindsFor, setHours, wholeCalendar } from './lib/calendars.mjs';
 import { categoryFields, clearMix, completeCategories, createCategory, defaultCategoryCatalogue, hasMix, mixOf, mostCategories, setCategoryField, setLeadDays, setMix } from './lib/categories.mjs';
-import { anyVehicle, carriersFor, carriesVehicles, completeCatalogue, createVehicle, defaultCatalogue, linkKind, setVehicleField, typesPerLink, vehicleFields, vehiclesOf } from './lib/vehicles.mjs';
+import { anyVehicle, carriersFor, carriesVehicles, completeCatalogue, createVehicle, defaultCatalogue, linkKind, setVehicleField, setVehicleHours, typesPerLink, vehicleFields, vehiclesOf } from './lib/vehicles.mjs';
 import { writeSites } from './lib/sites.mjs';
 import { addsToSelection, commandHeld, platformKeys } from './lib/platform.mjs';
 
@@ -1036,6 +1036,7 @@ function renderVehicles() {
             }).join('')}
             <label class="row small"><input type="checkbox" data-vehicle-stores ${type.toStores ? 'checked' : ''}> May deliver to stores and dark stores</label>
             <label class="row small" title="Chilled and frozen goods go by refrigerated vehicles only; other goods by any"><input type="checkbox" data-vehicle-cold ${type.refrigerated ? 'checked' : ''}> Refrigerated</label>
+            ${vehicleHoursRow(type)}
         </li>`).join('');
     panel.querySelectorAll('[data-type]').forEach((row) => {
         const type = state.vehicles.find((item) => item.id === row.dataset.type);
@@ -1063,8 +1064,29 @@ function renderVehicles() {
             type.refrigerated = event.target.checked;
             vehiclesChanged();
         });
+        row.querySelectorAll('[data-vehicle-hours]').forEach((input) => input.addEventListener('change', () => {
+            checkpoint(`changing when the ${type.name.toLowerCase()} runs`, { merge: true });
+            setVehicleHours(type, { [input.dataset.vehicleHours]: input.value });
+            input.blur();
+            vehiclesChanged();
+        }));
+        row.querySelectorAll('[data-vehicle-day]').forEach((box) => box.addEventListener('change', () => {
+            checkpoint(`changing when the ${type.name.toLowerCase()} runs`, { merge: true });
+            setVehicleHours(type, { day: Number(box.dataset.vehicleDay), on: box.checked });
+            vehiclesChanged();
+        }));
         row.querySelector('[data-vehicle-delete]').addEventListener('click', () => deleteVehicle(type));
     });
+}
+// The hours a vehicle type runs, in its row: from an hour to an hour (past midnight too) on the days ticked. Empty,
+// every day: round the clock, as a large vehicle with two drivers who take turns does.
+function vehicleHoursRow(type) {
+    const hours = wholeCalendar(type.hours);
+    const days = hours?.days ?? Array(7).fill(true);
+    return `<div class="row small vehicleHours" title="When it is on the road: a link on it loads only in these hours (on two types, while either runs). Empty, every day: round the clock, as a large vehicle with two drivers who take turns. Small vehicles that deliver by day: 8 to 20.">Runs
+        <span><input type="number" min="0" max="24" step="0.25" data-vehicle-hours="from" value="${hours && hours.from > 0 ? hours.from : ''}" placeholder="0" aria-label="${escape(type.name)} runs from, hour of the day"> to <input type="number" min="0" max="24" step="0.25" data-vehicle-hours="to" value="${hours && hours.to < 24 ? hours.to : ''}" placeholder="24" aria-label="${escape(type.name)} runs to, hour of the day"></span>
+        <span class="days">${dayNames.map((name, index) => `<label title="${name}"><input type="checkbox" data-vehicle-day="${index}" ${days[index] ? 'checked' : ''} aria-label="${escape(type.name)} runs on ${name}">${name[0]}</label>`).join('')}</span>
+        <span class="basis ${hours ? 'user' : 'assumed'}">${hours ? escape(describeCalendar(hours)) : 'round the clock'}</span></div>`;
 }
 function vehiclesChanged() {
     renderVehicles();
@@ -1765,7 +1787,7 @@ function renderHours(pin) {
             <span class="basis ${calendar ? 'user' : 'assumed'}">${calendar ? escape(describeCalendar(calendar)) : 'round the clock'}</span></li>`;
     };
     return `<div class="hours"><b>Hours</b><ul>${kinds.map(row).join('')}</ul>
-        <div class="detail">Hours of the day, 0 to 24 (8.5 is half past eight). Empty, every day: round the clock. A run starts on a Monday.</div></div>`;
+        <div class="detail">Hours of the day, 0 to 24 (8.5 is half past eight; 22 to 6 runs through the night). Empty, every day: round the clock. A run starts on a Monday.</div></div>`;
 }
 function wireHours(pin, card) {
     const changed = (kind, change) => {
