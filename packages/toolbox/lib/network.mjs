@@ -336,7 +336,20 @@ export function pinFromCandidate(candidate, group, pins) {
 }
 
 // Pins and links from a file of sites (parseSites's answer): every site is the user's, linked as its `from` column says.
-export function networkFromSites(sites, pins = []) {
+// `categories` (the network's catalogue) turn a site's mix and a supplier's lead times, given by category name, into
+// the site's own; a category the network does not have is said, and left out.
+export function networkFromSites(sites, pins = [], categories = []) {
+    const categoryNamed = new Map(categories.map((category) => [category.name.trim().toLowerCase(), category]));
+    const unknown = [];
+    const byCategory = (site, values) => {
+        const known = {};
+        for (const [name, value] of Object.entries(values ?? {})) {
+            const category = categoryNamed.get(name.trim().toLowerCase());
+            if (category) known[category.id] = value;
+            else unknown.push(`${site.name} names the category "${name}", which this network does not have: add it under Categories and load the file again, or it is left out.`);
+        }
+        return known;
+    };
     const added = [];
     for (const site of [...sites.ports, ...sites.zones, ...sites.towns]) {
         const role = site.role ?? { port: 'port', zone: 'warehouse', town: 'customerArea' }[site.kind];
@@ -346,12 +359,19 @@ export function networkFromSites(sites, pins = []) {
         if (site.population > 0) fields.population = site.population;
         if (site.capacity > 0) fields.capacity = site.capacity;
         if (site.coverDays > 0) fields.cover = site.coverDays;
-        added.push({ site, pin: createPin(role, site, { name: site.name, pins: [...pins, ...added.map((item) => item.pin)], fields, source: 'your sites' }) });
+        if (site.makes > 0) fields.makes = site.makes;
+        const pin = createPin(role, site, { name: site.name, pins: [...pins, ...added.map((item) => item.pin)], fields, source: 'your sites' });
+        // A mix names the categories the site carries: one it leaves out, it does not carry.
+        const mix = byCategory(site, site.mix);
+        if (Object.values(mix).some((weight) => weight > 0)) pin.mix = Object.fromEntries(categories.map((category) => [category.id, mix[category.id] ?? 0]));
+        const lead = Object.fromEntries(Object.entries(byCategory(site, site.leadDaysBy)).filter(([, days]) => days > 0));
+        if (Object.keys(lead).length) pin.leadDays = lead;
+        added.push({ site, pin });
     }
     const all = [...pins, ...added.map((item) => item.pin)];
     const byName = new Map(all.map((pin) => [pin.name, pin]));
     const links = [];
-    const problems = [];
+    const problems = [...unknown];
     for (const { site, pin } of added) {
         for (const name of site.from ?? []) {
             const from = byName.get(name);

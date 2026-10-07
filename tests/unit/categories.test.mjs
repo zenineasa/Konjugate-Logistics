@@ -26,7 +26,7 @@ test('the default catalogue is ambient, chilled and frozen goods, every figure a
     // Chilled goods keep ten days, assumed; the others keep.
     assert.deepEqual(catalogue.map((category) => category.fields.shelfDays), [{ value: null, basis: null }, { value: 10, basis: 'assumed' }, { value: null, basis: null }]);
     assert.equal(categoriesProblem(catalogue), null);
-    assert.deepEqual(categoriesForModel(catalogue)[1], { id: 'chilled', name: 'Chilled', chilled: true, share: 25, leadDays: 1, shelfDays: 10, basis: { share: 'assumed', leadDays: 'assumed', shelfDays: 'assumed' } });
+    assert.deepEqual(categoriesForModel(catalogue)[1], { id: 'chilled', name: 'Chilled', chilled: true, share: 25, leadDays: 1, shelfDays: 10, saleValue: null, basis: { share: 'assumed', leadDays: 'assumed', shelfDays: 'assumed', saleValue: null } });
     assert.deepEqual([categoriesForModel(catalogue)[0].shelfDays, categoriesForModel(catalogue)[0].basis.shelfDays], [null, null]);
 });
 
@@ -48,7 +48,7 @@ test('a category\'s figure changed is the user\'s, cleared the default again; a 
     setCategoryField(saved[0], 'share', '70');
     delete saved[0].fields.leadDays;
     const restored = completeCategories(saved);
-    assert.deepEqual(restored[0].fields, { share: { value: 70, basis: 'user' }, leadDays: { value: 3, basis: 'assumed' }, shelfDays: { value: null, basis: null } });
+    assert.deepEqual(restored[0].fields, { share: { value: 70, basis: 'user' }, leadDays: { value: 3, basis: 'assumed' }, shelfDays: { value: null, basis: null }, saleValue: { value: null, basis: null } });
     // A shelf life is the user's once given; cleared, it is the category's default again: none for ambient goods, ten days for chilled.
     setCategoryField(catalogue[0], 'shelfDays', '30');
     assert.deepEqual(catalogue[0].fields.shelfDays, { value: 30, basis: 'user' });
@@ -213,6 +213,16 @@ test('goods that keep only so long: every site that holds them has their shelf l
     assert.ok(short.built.warnings.includes('Store 1 aims to hold 1.5 days of Chilled, not its 2 days of cover: Chilled keeps 1.5 days, and what it held beyond that would be wasted.'), short.built.warnings.join(' / '));
     assert.ok(short.built.provenance.some((entry) => entry.entity === 'Warehouse 1: Chilled' && entry.parameter === 'Shelf life' && entry.basis === 'user' && /^Your figure for Chilled\./.test(entry.detail)));
     assert.deepEqual(short.built.categories[1], { id: 'chilled', name: 'Chilled', chilled: true, shelfDays: 1.5 });
+});
+
+test('a category with a value of a pallet of its own prices its sales at every store; the others take each store\'s', () => {
+    const { built } = placed({ change: ({ categories, pins }) => { setCategoryField(categories[1], 'saleValue', '2500'); pins[3].fields.saleValue = { value: 700, basis: 'user' }; } });
+    const valueOf = (site, category) => { const item = built.stores.find((each) => each.site === site && each.category === category); return [item.saleValue, item.saleValueBasis]; };
+    // Chilled: its own 2,500 at both stores. Ambient: the default at one store, the store's own 700 at the other.
+    assert.deepEqual([valueOf('Store 1', 'chilled'), valueOf('Store 2', 'chilled')], [[2500, 'user'], [2500, 'user']]);
+    assert.deepEqual([valueOf('Store 1', 'ambient'), valueOf('Store 2', 'ambient'), valueOf('Store 2', 'frozen')], [[1000, 'assumed'], [700, 'user'], [700, 'user']]);
+    assert.ok(built.provenance.some((entry) => entry.entity === 'Store 1: Chilled' && entry.parameter === 'Value of a pallet sold' && entry.value === 2500 && entry.basis === 'user'));
+    assert.ok(!built.provenance.some((entry) => entry.entity === 'Store 1: Ambient' && entry.parameter === 'Value of a pallet sold'));
 });
 
 test('a site\'s own mix and a supplier\'s own lead time reach the model; a category no source supplies is refused, naming it', () => {

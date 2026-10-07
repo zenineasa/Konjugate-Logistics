@@ -1790,7 +1790,7 @@ $('#sitesButton').addEventListener('click', async () => {
         const answer = await call(api.runImport(importerId, { step: 'sites' }));
         if (answer.report?.errors?.length) throw new Error(answer.report.errors.join(' '));
         checkpoint('loading your sites');
-        const loaded = networkFromSites(answer.data.sites, state.pins);
+        const loaded = networkFromSites(answer.data.sites, state.pins, state.categories);
         state.pins.push(...loaded.pins);
         state.links.push(...loaded.links);
         const warnings = [...(answer.report?.warnings ?? []), ...loaded.problems];
@@ -1807,7 +1807,7 @@ $('#sitesButton').addEventListener('click', async () => {
 
 // The network as a CSV the user keeps: Load your sites reads it back.
 $('#saveSitesButton').addEventListener('click', () => {
-    const text = writeSites(state.pins, state.links);
+    const text = writeSites(state.pins, state.links, state.categories);
     const link = document.createElement('a');
     link.href = URL.createObjectURL(new Blob([text], { type: 'text/csv' }));
     link.download = 'network.csv';
@@ -3230,15 +3230,18 @@ function summariseRun(answer, id, run, start, duration) {
     const storeResults = stores.map((item) => {
         const low = extreme(scenario[item.stock]?.stock, (value, best) => value < best);
         const lost = both((series) => grew(series[item.name]?.lost));
-        const priced = (pair) => ({ baseline: pair.baseline * (item.saleValue ?? 0), scenario: pair.scenario * (item.saleValue ?? 0) });
+        // Priced copy by copy: a category may have a value of a pallet of its own.
+        const priced = (pair, value = item.saleValue) => ({ baseline: pair.baseline * (value ?? 0), scenario: pair.scenario * (value ?? 0) });
+        const lostOf = (member) => ({ baseline: grew(raw[0][member.name]?.lost), scenario: grew(raw[1][member.name]?.lost) });
+        const valueLost = item.members.map((member) => priced(lostOf(member), member.saleValue)).reduce((all, each) => ({ baseline: all.baseline + each.baseline, scenario: all.scenario + each.scenario }), { baseline: 0, scenario: 0 });
         const categories = shown.categories && item.members.length > 1 ? item.members.map((member) => {
             const itsLost = { baseline: grew(raw[0][member.name]?.lost), scenario: grew(raw[1][member.name]?.lost) };
-            return { name: member.categoryName, emptyDays: { baseline: outDays(raw[0], member.stock, member.demand), scenario: outDays(raw[1], member.stock, member.demand) }, lost: itsLost, lostValue: priced(itsLost) };
+            return { name: member.categoryName, emptyDays: { baseline: outDays(raw[0], member.stock, member.demand), scenario: outDays(raw[1], member.stock, member.demand) }, lost: itsLost, lostValue: priced(itsLost, member.saleValue) };
         }) : null;
         const worst = (side) => Math.max(...categories.map((each) => each.emptyDays[side]));
         return {
             name: item.name, baseline: extreme(baseline[item.stock]?.stock, (value, best) => value < best)[1], low: low[1], day: low[0] / day,
-            lost, lostValue: priced(lost),
+            lost, lostValue: valueLost,
             emptyDays: categories ? { baseline: worst('baseline'), scenario: worst('scenario') } : { baseline: outDays(baseline, item.stock, item.demand), scenario: outDays(scenario, item.stock, item.demand) },
             ...(categories ? { categories } : {}),
             scenPts: sampleSpark(scenario[item.stock]?.stock, start), basePts: sampleSpark(baseline[item.stock]?.stock, start)
@@ -3276,7 +3279,7 @@ function summariseRun(answer, id, run, start, duration) {
             ...(wasted ? { wasted } : {}),
             ...(stores.length ? {
                 lost: both((series) => total(series, stores.map((item) => item.name), 'lost')),
-                lostValue: both((series) => stores.reduce((sum, item) => sum + grew(series[item.name]?.lost) * (item.saleValue ?? 0), 0))
+                lostValue: { baseline: storeResults.reduce((sum, item) => sum + item.lostValue.baseline, 0), scenario: storeResults.reduce((sum, item) => sum + item.lostValue.scenario, 0) }
             } : {})
         },
         // The suppliers in trouble: the most orders that waited to be made at once, and what they made.

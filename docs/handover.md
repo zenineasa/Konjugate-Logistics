@@ -63,7 +63,7 @@ The window computes, for each parameter a scenario changes, a held path of value
 - Two ports splitting a diversion deliver 1.7 points less than one port taking it all, with the same cargo carried: not traced.
 - Demand changes only by the figure the user gives; roads never congest; goods arriving overland from outside the region are not modelled.
 - The interaction test's reopen step (session restored after closing the window) can time out under heavy load.
-- Categories: a category's idle vehicles on a link do not carry another's goods, and its share of a site's room does not hold another's; the mix is not in the CSV of sites; a category has no value of a pallet sold or stock cover of its own.
+- Categories: a category's idle vehicles on a link do not carry another's goods, and its share of a site's room does not hold another's; a category has no stock cover of its own; the sites CSV names categories, so a file made for one network's categories says which it lacks when loaded into another.
 - A supplier asked for more than it can make (orders moved to it when another road closes) delivers late, and the warehouse counts those orders as on their way meanwhile.
 - A fleet operator's file is not yet read into the vehicle catalogue (its truck sizes as types, its contracts as fleets on links).
 - City streets for a large city may come close to what the window may receive; not yet tried on real data.

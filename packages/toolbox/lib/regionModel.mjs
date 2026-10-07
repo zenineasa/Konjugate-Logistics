@@ -897,8 +897,12 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
             });
             note(town.name, kindName === 'store' ? 'Sales lost when out of stock' : 'Orders lost when out of stock', lostShare * 100, '%', ownLost ? 'user' : 'assumed',
                 ownLost ? 'Your figure.' : `Assumed: the default for a ${kindName}, until you set it. Of what it cannot sell for want of stock, this share is lost; the rest waits for a delivery.`);
-            const ownValue = Number(town.saleValue) > 0 && town.saleValueBasis !== 'assumed';
-            const saleValue = ownValue ? Number(town.saleValue) : settings.saleValue;
+            // What a pallet sold is worth: the category's, where it has one (the same at every store); else the store's own
+            // or the default.
+            const categoryValue = Number(scope?.category.saleValue) > 0 ? Number(scope.category.saleValue) : null;
+            const ownValue = categoryValue !== null || (Number(town.saleValue) > 0 && town.saleValueBasis !== 'assumed');
+            const saleValue = categoryValue ?? (ownValue ? Number(town.saleValue) : settings.saleValue);
+            if (categoryValue !== null) note(town.name, 'Value of a pallet sold', categoryValue, `cost/${unit === 'pallets' ? 'pallet' : unit}`, scope.category.basis?.saleValue === 'user' ? 'user' : 'assumed', `The value of a pallet of ${scope.category.name}, at every store. The sales it loses are priced at this.`);
             for (const [laneIndex, lane] of laneSpecs.entries()) {
                 const zone = lane.allocation.zone;
                 placeLane({

@@ -468,6 +468,11 @@ try {
     assert.deepEqual(await stateOf(() => window.logisticsToolboxState.categories[2].fields.shelfDays), { value: 90, basis: 'user' });
     await page.click('#undoButtonTool');
     assert.deepEqual(await stateOf(() => window.logisticsToolboxState.categories[2].fields.shelfDays), { value: null, basis: null }, 'the shelf life undone');
+    // What a pallet of it is worth: chilled goods 2,500, kept for the build; the others each store's own.
+    const worth = (id) => `#categoryList [data-category="${id}"] [data-category-field="saleValue"]`;
+    assert.equal(await page.inputValue(worth('chilled')), '');
+    await change(worth('chilled'), '2500');
+    assert.deepEqual(await stateOf(() => window.logisticsToolboxState.categories[1].fields.saleValue), { value: 2500, basis: 'user' });
     await page.click('#addCategoryButton');
     assert.deepEqual(await stateOf(() => window.logisticsToolboxState.categories.map((category) => category.name)), ['Ambient', 'Chilled', 'Frozen', 'Category 1']);
     await page.click('#undoButtonTool');
@@ -759,7 +764,9 @@ try {
         assert.match(await page.textContent('#scenarioResult #byCategory'), /wasted \(pallets\).*Ambient.*keeps/s);
         assert.match(await page.textContent('#scenarioResult table.business:not(#byCategory) .basis'), /^Ambient: out [\d.]+ days, [\d.]+ lost; Chilled: out/);
         const lost = await stateOf(() => window.logisticsToolboxState.scenario.stores.find((item) => item.name === 'Harbour shop'));
-        assert.ok(lost.lost.scenario > 0 && lost.lost.baseline === 0 && Math.abs(lost.lostValue.scenario - 1000 * lost.lost.scenario) < 1e-6, `four in five of the sales it could not make are lost, at 1,000 a pallet (${JSON.stringify(lost.lost)})`);
+        // Priced by category: chilled goods at the 2,500 a pallet given in the list, the others at the store's 1,000.
+        const pricedAt = lost.categories.reduce((sum, item) => sum + item.lost.scenario * (item.name === 'Chilled' ? 2500 : 1000), 0);
+        assert.ok(lost.lost.scenario > 0 && lost.lost.baseline === 0 && Math.abs(lost.lostValue.scenario - pricedAt) < 1e-6 && lost.lostValue.scenario > 1000 * lost.lost.scenario, `four in five of the sales it could not make are lost, each category at its own value (${JSON.stringify([lost.lost, lost.lostValue])})`);
         assert.equal(await page.isVisible('#scenarioResult details.resultDetails table'), false, 'the details start folded');
         assert.match(await page.textContent('#scenarioResult details.resultDetails'), /Backlog cost/);
         // The closed road's X, solid now, and gone from the map's baseline view.
@@ -883,7 +890,7 @@ try {
     assert.deepEqual(parsed.errors, []);
     const all = await pins();
     assert.deepEqual([...parsed.sites.ports, ...parsed.sites.zones, ...parsed.sites.towns].map((site) => site.name).sort(), all.map((pin) => pin.name).sort());
-    assert.match(csv, /^Harbour shop,store,[-\d.]+,[-\d.]+,20,,,,,Warehouse 1$/m);
+    assert.match(csv, /^Harbour shop,store,[-\d.]+,[-\d.]+,20,,,,,Warehouse 1,,,$/m);
 
     // 10. The session, kept with the project, restores the network on reopening.
     const kept = { pins: await pins(), links: (await links()).map((link) => [link.from, link.to, link.basis]) };

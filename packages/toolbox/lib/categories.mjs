@@ -16,20 +16,21 @@ export const categoryFields = [
     { key: 'share', label: 'Usual share', unit: '%', digits: 1, detail: 'Of what a site supplies or sells, until the site has a mix of its own. The shares are weighed against each other, so they need not add up to 100.' },
     { key: 'leadDays', label: 'Supplier lead time', unit: 'days', digits: 2, detail: 'From an order reaching a supplier to the goods standing ready to load, unless the supplier has its own for the category.' },
     // `optional`: empty is a figure too (the goods keep), unless the category's default says otherwise.
-    { key: 'shelfDays', label: 'Keeps for', unit: 'days', digits: 1, optional: true, detail: 'Its shelf life at a warehouse or a store: what a site holds beyond what it expects to send out or sell in this many days is wasted, and no site aims to hold more. Empty: the goods keep (chilled goods, 10 days, until you say).' }
+    { key: 'shelfDays', label: 'Keeps for', unit: 'days', digits: 1, optional: true, detail: 'Its shelf life at a warehouse or a store: what a site holds beyond what it expects to send out or sell in this many days is wasted, and no site aims to hold more. Empty: the goods keep (chilled goods, 10 days, until you say).' },
+    { key: 'saleValue', label: 'Value of a pallet sold', unit: 'a pallet', digits: 0, optional: true, detail: 'What a pallet of it brings when sold, at every store: the summary prices the sales lost of it at this. Empty: each store\'s own value of a pallet.' }
 ];
 
 // The catalogue a new network starts with: assumptions to replace with the user's own.
 export const defaultCategories = [
-    { id: 'ambient', name: 'Ambient', share: 60, leadDays: 3, shelfDays: null, chilled: false },
-    { id: 'chilled', name: 'Chilled', share: 25, leadDays: 1, shelfDays: 10, chilled: true },
-    { id: 'frozen', name: 'Frozen', share: 15, leadDays: 5, shelfDays: null, chilled: true }
+    { id: 'ambient', name: 'Ambient', share: 60, leadDays: 3, shelfDays: null, saleValue: null, chilled: false },
+    { id: 'chilled', name: 'Chilled', share: 25, leadDays: 1, shelfDays: 10, saleValue: null, chilled: true },
+    { id: 'frozen', name: 'Frozen', share: 15, leadDays: 5, shelfDays: null, saleValue: null, chilled: true }
 ];
 // Enough to tell a network's goods apart without a model too large to read: each category is a copy of the network.
 export const mostCategories = 6;
 
 const asField = (value) => ({ value: value ?? null, basis: value === null || value === undefined ? null : 'assumed' });
-const templateOf = (id) => defaultCategories.find((category) => category.id === id) ?? { share: 10, leadDays: 2, shelfDays: null };
+const templateOf = (id) => defaultCategories.find((category) => category.id === id) ?? { share: 10, leadDays: 2, shelfDays: null, saleValue: null };
 
 export function defaultCategoryCatalogue() {
     return defaultCategories.map((category) => ({

@@ -9,6 +9,7 @@ import { buildRoadGraph } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { compactRoadGraph, createNetworkRouter } from '../../packages/toolbox/lib/routing.mjs';
 import { completeSupplyUpTo, createPin, defaultName, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, roles, routeLinks, setField, sourcesPerWarehouse, suggestLinks, warehousesPerSource } from '../../packages/toolbox/lib/network.mjs';
 import { parseSites, writeSites } from '../../packages/toolbox/lib/sites.mjs';
+import { defaultCategoryCatalogue, setLeadDays, setMix } from '../../packages/toolbox/lib/categories.mjs';
 import { gridRoads, randomPoint, seeded } from '../fixtures/roadGrid.mjs';
 
 const grid = gridRoads({ size: 30, spacing: 400 });
@@ -216,10 +217,10 @@ test('the network saved as a CSV reads back as the same pins and links, with onl
     const pins = [supplier, warehouse, store, dark, area];
     const links = [[supplier, warehouse], [warehouse, store], [warehouse, dark], [warehouse, area]].map(([from, to]) => ({ id: linkId(from.id, to.id), from: from.id, to: to.id, basis: 'suggested' }));
     const text = writeSites(pins, links);
-    assert.equal(text.split('\n')[0], 'name,kind,latitude,longitude,teuPerDay,floorArea,population,capacity,cover,from');
-    assert.match(text, /^"Mill, north",supplier,25\.1,55\.1,40,,,,,$/m);
-    assert.match(text, /^Shop,store,25\.3,55\.3,,,,,1\.5,"Depot ""A"""$/m, 'the assumed demand is left out; the cover set is kept');
-    assert.match(text, /^"Depot ""A""",warehouse,25\.2,55\.2,,,,4000,,"Mill, north"$/m, 'the capacity set is kept, the assumed cover is not');
+    assert.equal(text.split('\n')[0], 'name,kind,latitude,longitude,teuPerDay,floorArea,population,capacity,cover,from,mix,leadDays,makes');
+    assert.match(text, /^"Mill, north",supplier,25\.1,55\.1,40,,,,,,,,$/m);
+    assert.match(text, /^Shop,store,25\.3,55\.3,,,,,1\.5,"Depot ""A""",,,$/m, 'the assumed demand is left out; the cover set is kept');
+    assert.match(text, /^"Depot ""A""",warehouse,25\.2,55\.2,,,,4000,,"Mill, north",,,$/m, 'the capacity set is kept, the assumed cover is not');
     const parsed = parseSites(text);
     assert.deepEqual(parsed.errors, []);
     const loaded = networkFromSites(parsed.sites);
@@ -250,4 +251,42 @@ test('every role reads from a file, old kinds too', () => {
     assert.deepEqual(errors, []);
     assert.deepEqual([...sites.ports, ...sites.zones, ...sites.towns].map((site) => [site.name, site.role]), [['A', 'supplier'], ['B', 'port'], ['C', 'warehouse'], ['D', 'store'], ['E', 'darkStore'], ['F', 'customerArea'], ['G', 'customerArea'], ['H', 'customerArea']]);
     assert.equal(sites.ports[0].supplier, true);
+});
+
+test('a site\'s own mix of categories, a supplier\'s own lead times and the most it can make are saved with the network and read back', () => {
+    const categories = defaultCategoryCatalogue();
+    const dairy = createPin('supplier', { lat: 25.1, lon: 55.1 }, { name: 'Dairy', fields: { supply: 30, makes: 45 } });
+    setMix(dairy, 'ambient', 0, categories);
+    setMix(dairy, 'frozen', 0, categories);
+    setLeadDays(dairy, 'chilled', '0.5');
+    const mill = createPin('supplier', { lat: 25.15, lon: 55.15 }, { name: 'Mill' });
+    const warehouse = createPin('warehouse', { lat: 25.2, lon: 55.2 }, { name: 'Depot' });
+    const shop = createPin('store', { lat: 25.3, lon: 55.3 }, { name: 'Shop' });
+    setMix(shop, 'frozen', 0, categories);
+    const pins = [dairy, mill, warehouse, shop];
+    const links = [[dairy, warehouse], [mill, warehouse], [warehouse, shop]].map(([from, to]) => ({ id: linkId(from.id, to.id), from: from.id, to: to.id, basis: 'user' }));
+    const text = writeSites(pins, links, categories);
+    assert.match(text, /^Dairy,supplier,25\.1,55\.1,30,,,,,,"Ambient:0\|Chilled:25\|Frozen:0",Chilled:0\.5,45$/m);
+    assert.match(text, /^Mill,supplier,25\.15,55\.15,,,,,,,,,$/m, 'the usual shares are not written: they are the network\'s to give');
+    assert.match(text, /^Shop,store,25\.3,55\.3,,,,,,Depot,"Ambient:60\|Chilled:25\|Frozen:0",,$/m);
+    const parsed = parseSites(text);
+    assert.deepEqual([parsed.errors, parsed.warnings], [[], []]);
+    const loaded = networkFromSites(parsed.sites, [], categories);
+    assert.deepEqual(loaded.problems, []);
+    const byName = new Map(loaded.pins.map((pin) => [pin.name, pin]));
+    assert.deepEqual(byName.get('Dairy').mix, { ambient: 0, chilled: 25, frozen: 0 });
+    assert.deepEqual(byName.get('Dairy').leadDays, { chilled: 0.5 });
+    assert.deepEqual(byName.get('Dairy').fields.makes, { value: 45, basis: 'user' });
+    assert.deepEqual(byName.get('Shop').mix, { ambient: 60, chilled: 25, frozen: 0 });
+    assert.equal(byName.get('Mill').mix, undefined);
+    assert.equal(byName.get('Mill').leadDays, undefined);
+    // Written by hand: a category left out is not carried, names are matched whatever their case, and one the network
+    // does not have is said and left out; a part that is no category and number, or a warehouse's mix, is said too.
+    const hand = parseSites('name,kind,lat,lon,mix,lead days,makes\nFarm,supplier,25,55,chilled:1;Fresh:3,CHILLED:2,12\nHub,warehouse,25.1,55.1,Ambient:1,,\nStall,store,25.2,55.2,Ambient,,5\n');
+    assert.deepEqual(hand.errors, ['Line 4: "Ambient" for Stall is not a category and a number, as in Chilled:30.']);
+    assert.deepEqual(hand.warnings, ['Line 3: a warehouse carries what passes through it, so its mix is not used.', 'Line 4: only a supplier has lead times and a most it can make, so Stall\'s are not used.']);
+    const farm = networkFromSites({ ports: hand.sites.ports, zones: [], towns: [] }, [], categories);
+    assert.deepEqual(farm.pins[0].mix, { ambient: 0, chilled: 1, frozen: 0 });
+    assert.deepEqual(farm.pins[0].leadDays, { chilled: 2 });
+    assert.deepEqual(farm.problems, ['Farm names the category "Fresh", which this network does not have: add it under Categories and load the file again, or it is left out.']);
 });

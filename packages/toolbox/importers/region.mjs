@@ -124,7 +124,9 @@ function checkedCategories(categories) {
             id: String(category.id), name: String(category.name).trim(), chilled: category.chilled === true, share: Number(category.share), leadDays: Number(category.leadDays),
             // How long its goods keep, when they keep only so long.
             shelfDays: Number(category.shelfDays) > 0 ? Number(category.shelfDays) : null,
-            basis: { share: category.basis?.share === 'user' ? 'user' : 'assumed', leadDays: category.basis?.leadDays === 'user' ? 'user' : 'assumed', shelfDays: category.basis?.shelfDays === 'user' ? 'user' : 'assumed' }
+            // And what a pallet of it sold is worth, when it has a value of its own.
+            saleValue: Number(category.saleValue) > 0 ? Number(category.saleValue) : null,
+            basis: { share: category.basis?.share === 'user' ? 'user' : 'assumed', leadDays: category.basis?.leadDays === 'user' ? 'user' : 'assumed', shelfDays: category.basis?.shelfDays === 'user' ? 'user' : 'assumed', saleValue: category.basis?.saleValue === 'user' ? 'user' : 'assumed' }
         };
     });
 }

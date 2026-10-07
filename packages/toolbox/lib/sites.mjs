@@ -2,16 +2,20 @@
 
 // A CSV of the user's own sites, the network they place on the map saved as a table, or one made in a spreadsheet:
 //
-//   name,kind,latitude,longitude,teuPerDay,floorArea,population,capacity,cover,from
-//   Harbour terminal,port,24.81,54.65,420,,,,,
-//   Our depot,warehouse,24.95,55.02,,18000,,4000,3,Harbour terminal
-//   Mall store,store,25.27,55.30,35,,,60,2,Our depot
+//   name,kind,latitude,longitude,teuPerDay,floorArea,population,capacity,cover,from,mix,leadDays,makes
+//   Harbour terminal,port,24.81,54.65,420,,,,,,,,
+//   Dairy,supplier,24.90,54.90,30,,,,,,Chilled:100,Chilled:0.5,45
+//   Our depot,warehouse,24.95,55.02,,18000,,4000,3,Harbour terminal|Dairy,,,
+//   Mall store,store,25.27,55.30,35,,,60,2,Our depot,Ambient:70|Chilled:30,,
 //
 // `kind` is a site's role: supplier, port, warehouse, store, dark store or customer area (customer, town and depot
 // are read too). teuPerDay is a supplier's or port's volume, or a store's or customer area's demand; floorArea (m²)
 // sizes a warehouse; population weights a customer area without a fixed demand; capacity (pallets) and cover (days of
 // stock it aims to hold) are a warehouse's, store's or dark store's. `from` names the sites it is supplied
-// from, separated by |, so a saved network keeps its links. Only name, kind, latitude and longitude are required.
+// from, separated by |, so a saved network keeps its links. `mix` is a source's or a demand site's own mix of product
+// categories, by name with a weight each (a category it leaves out it does not carry; empty: the usual shares),
+// `leadDays` a supplier's own lead time for a category, in days, and `makes` the most a supplier can make a day. A
+// category the network does not have is said and left out. Only name, kind, latitude and longitude are required.
 // Headers are matched loosely (lat, lng, ...).
 
 const roles = {
@@ -31,8 +35,22 @@ const aliases = {
     latitude: ['latitude', 'lat', 'y'], longitude: ['longitude', 'lon', 'lng', 'long', 'x'],
     teuPerDay: ['teuperday', 'teu/day', 'teu', 'volume', 'demand'], floorArea: ['floorarea', 'floor area', 'area', 'm2', 'sqm'],
     population: ['population', 'pop', 'weight'], capacity: ['capacity', 'storage', 'storage capacity', 'storagecapacity'],
-    cover: ['cover', 'cover days', 'stock cover', 'coverdays'], from: ['from', 'supplied from', 'served from', 'sources']
+    cover: ['cover', 'cover days', 'stock cover', 'coverdays'], from: ['from', 'supplied from', 'served from', 'sources'],
+    mix: ['mix', 'categories', 'category mix'], leadDays: ['leaddays', 'lead days', 'lead time', 'leadtime'], makes: ['makes', 'can make', 'most it can make']
 };
+
+// "Ambient:70|Chilled:30" as { Ambient: 70, Chilled: 30 }; a part that is no name and number is returned as wrong.
+function namedNumbers(text, separator) {
+    const values = {};
+    const wrong = [];
+    for (const part of String(text ?? '').split(separator).map((item) => item.trim()).filter(Boolean)) {
+        const at = part.lastIndexOf(':');
+        const value = at > 0 ? Number(part.slice(at + 1)) : NaN;
+        if (at > 0 && part.slice(0, at).trim() && Number.isFinite(value) && value >= 0) values[part.slice(0, at).trim()] = value;
+        else wrong.push(part);
+    }
+    return { values, wrong };
+}
 
 function splitLine(line, delimiter) {
     const cells = [];
@@ -99,9 +117,20 @@ export function parseSites(text) {
         }
         const stocked = ['warehouse', 'store', 'darkStore'].includes(role);
         if (!stocked && (capacity > 0 || cover > 0)) warnings.push(`Line ${lineNumber}: a ${roleNames[role]} holds no stock, so its capacity and cover are not used.`);
-        const from = String(cell('from') ?? '').split(delimiter === ';' ? /\|/ : /[|;]/).map((item) => item.trim()).filter(Boolean);
+        const separator = delimiter === ';' ? /\|/ : /[|;]/;
+        const from = String(cell('from') ?? '').split(separator).map((item) => item.trim()).filter(Boolean);
+        // Its own mix of categories and, for a supplier, its own lead times and the most it can make.
+        const mix = namedNumbers(cell('mix'), separator);
+        const lead = namedNumbers(cell('leadDays'), separator);
+        const makes = number(cell('makes'));
+        for (const part of [...mix.wrong, ...lead.wrong]) errors.push(`Line ${lineNumber}: "${part}" for ${name} is not a category and a number, as in Chilled:30.`);
+        if (Number.isNaN(makes) || (makes !== null && makes < 0)) errors.push(`Line ${lineNumber}: makes for ${name} is not a number of zero or more.`);
+        if (role === 'warehouse' && Object.keys(mix.values).length) warnings.push(`Line ${lineNumber}: a warehouse carries what passes through it, so its mix is not used.`);
+        if (role !== 'supplier' && (Object.keys(lead.values).length || makes > 0)) warnings.push(`Line ${lineNumber}: only a supplier has lead times and a most it can make, so ${name}'s are not used.`);
         const site = {
             id: `user:${kind}:${lineNumber}`, kind, role, name, lat, lon, source: 'your sites', user: true, ...(from.length ? { from } : {}),
+            ...(role !== 'warehouse' && Object.keys(mix.values).length ? { mix: mix.values } : {}),
+            ...(role === 'supplier' && Object.keys(lead.values).length ? { leadDaysBy: lead.values } : {}), ...(role === 'supplier' && makes > 0 ? { makes } : {}),
             ...(stocked && capacity > 0 ? { capacity } : {}), ...(stocked && cover > 0 ? { coverDays: cover } : {})
         };
         if (kind === 'port') sites.ports.push({ ...site, ...(role === 'supplier' ? { supplier: true } : {}), ...(teuPerDay > 0 ? { teuPerDay, teuPerDayBasis: 'user' } : {}), significance: Infinity });
@@ -116,15 +145,19 @@ export function parseSites(text) {
 
 // The network as a CSV parseSites reads back: every pin, with the figures the user set (assumed ones are left out, to be
 // assumed again), and the sites each is supplied from. `pins` are the window's ({ role, name, lat, lon, fields });
-// `links` ({ from, to } by pin id).
+// `links` ({ from, to } by pin id); `categories` the network's ({ id, name }), for a site's own mix and a supplier's
+// own lead times, written by category name.
 const quote = (value) => (/[",\n|]/.test(String(value)) ? `"${String(value).replace(/"/g, '""')}"` : String(value));
-export function writeSites(pins, links = []) {
+export function writeSites(pins, links = [], categories = []) {
     const byId = new Map(pins.map((pin) => [pin.id, pin]));
     const own = (pin, key) => (pin.fields?.[key]?.basis === 'user' && Number(pin.fields[key].value) > 0 ? Number(pin.fields[key].value) : '');
     const rows = pins.map((pin) => {
         const volume = own(pin, pin.role === 'supplier' ? 'supply' : pin.role === 'port' ? 'teuPerDay' : 'demand');
         const from = links.filter((link) => link.to === pin.id && byId.has(link.from)).map((link) => byId.get(link.from).name);
-        return [pin.name, roleNames[pin.role], Number(pin.lat.toFixed(6)), Number(pin.lon.toFixed(6)), volume, own(pin, 'floorArea'), own(pin, 'population'), own(pin, 'capacity'), own(pin, 'cover'), from.join('|')].map(quote).join(',');
+        // Its own mix, every category named (0 for one it does not carry), and its own lead times.
+        const mix = pin.role !== 'warehouse' && pin.mix ? categories.map((category) => `${category.name}:${Math.max(0, Number(pin.mix[category.id]) || 0)}`).join('|') : '';
+        const lead = pin.role === 'supplier' ? categories.filter((category) => Number(pin.leadDays?.[category.id]) > 0).map((category) => `${category.name}:${Number(pin.leadDays[category.id])}`).join('|') : '';
+        return [pin.name, roleNames[pin.role], Number(pin.lat.toFixed(6)), Number(pin.lon.toFixed(6)), volume, own(pin, 'floorArea'), own(pin, 'population'), own(pin, 'capacity'), own(pin, 'cover'), from.join('|'), mix, lead, pin.role === 'supplier' ? own(pin, 'makes') : ''].map(quote).join(',');
     });
-    return `name,kind,latitude,longitude,teuPerDay,floorArea,population,capacity,cover,from\n${rows.join('\n')}\n`;
+    return `name,kind,latitude,longitude,teuPerDay,floorArea,population,capacity,cover,from,mix,leadDays,makes\n${rows.join('\n')}\n`;
 }
