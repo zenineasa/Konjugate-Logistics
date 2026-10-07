@@ -173,6 +173,7 @@
                         <button type="button" role="tab" data-scenario="supplierTrouble" hidden>Supplier</button>
                         <button type="button" role="tab" data-scenario="siteDown" hidden>Site down</button>
                         <button type="button" role="tab" data-scenario="weakestLink" hidden>Weakest link</button>
+                        <button type="button" role="tab" data-scenario="newSite" hidden>New site</button>
                     </div>
                     <div class="scenarioPanel" data-panel="chokepointDisruption">
                         <p class="muted small">Fewer ships through a strait or canal for a while: the ports that depend on it receive less.</p>
@@ -269,6 +270,11 @@
                         <label class="row small"><input type="checkbox" id="rankStoreRoads"> each road to a store, closed</label>
                         <div class="muted small" id="rankHint"></div>
                     </div>
+                    <div class="scenarioPanel" data-panel="newSite" hidden>
+                        <p class="muted small">Would a new warehouse help? Place it, tick <b>A candidate</b> on its card, and link it to the suppliers and stores it would take. The network as it is and the network with each candidate open are then built and run for the days below, in normal weeks and under the disruption chosen, and set side by side: what each costs a month with its fixed costs, what the disruption costs, and whether the candidate earns its keep. A comparison of designs, in your own figures for rent and the cost to open; not a forecast.</p>
+                        <label class="row small">Under <select id="siteStressSelect"></select></label>
+                        <div class="muted small" id="siteHint"></div>
+                    </div>
                     <div class="row small">
                         <label>from day <input type="number" id="startInput" min="0" step="1" value="10"></label>
                         <label>for <input type="number" id="durationInput" min="1" step="1" value="30"> days</label>
@@ -279,6 +285,7 @@
                     </div>
                     <div id="scenarioStatus"></div>
                     <div id="rankingResult" hidden></div>
+                    <div id="siteComparison" hidden></div>
                     <div id="scenarioResult"></div>
                 </div>
             </section>

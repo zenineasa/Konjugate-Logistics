@@ -126,6 +126,8 @@ details summary:hover { text-decoration: underline; }
 #map .portArea { fill: rgba(56, 189, 248, 0.14); stroke: rgba(56, 189, 248, 0.45); }
 #map .anchorage { fill: none; stroke: var(--port); stroke-dasharray: 2 2; }
 #map .site { cursor: pointer; }
+/* A candidate: not open, so drawn as an outline. */
+#map .site.candidate { fill-opacity: 0.15; stroke-dasharray: 3 2; }
 #map .site.port { fill: var(--port); stroke: var(--port); }
 #map .site.supplier { fill: var(--supplier); stroke: var(--supplier); }
 #map .site.warehouse { fill: var(--warehouse); stroke: var(--warehouse); }

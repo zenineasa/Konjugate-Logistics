@@ -765,6 +765,38 @@ try {
     assert.equal(await page.textContent('#runScenarioButton'), 'Run the scenario');
     noErrors();
 
+    // 7a5. A new site: a warehouse placed and ticked a candidate is drawn as an outline, takes a fixed cost and a cost to
+    // open, is linked from its card, stops nothing and is not built: the New site tab says what it would compare.
+    await page.click('#scenarioTabs [data-scenario="newSite"]');
+    assert.equal(await page.textContent('#runScenarioButton'), 'Build and compare them');
+    assert.equal(await page.textContent('#siteHint'), 'No candidate yet: place a warehouse, tick A candidate on its card, and link it.');
+    await page.click('[data-add="warehouse"]');
+    await clickAt({ lat: -29.88, lon: -19.6 });
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('#selectionCard:not([hidden]) #pinCandidate');
+    assert.equal(await page.inputValue('#pinName'), 'Warehouse 3');
+    await page.check('#pinCandidate');
+    assert.equal(await stateOf(() => window.logisticsToolboxState.pins.at(-1).candidate), true);
+    assert.equal(await page.locator('#map .site.candidate').count(), 1, 'drawn as an outline');
+    await change('#field-fixedCost', '2000');
+    await change('#field-openingCost', '50000');
+    // Its suppliers are suggested, as any warehouse's are; the store it would take is the user's to choose.
+    const candidateId = await stateOf(() => window.logisticsToolboxState.pins.at(-1).id);
+    assert.deepEqual((await links()).filter((link) => link.to === candidateId).map((link) => link.from).sort(), [placed[0].id, placed[1].id].sort());
+    assert.equal((await links()).filter((link) => link.from === candidateId).length, 0, 'no store is suggested to a candidate');
+    await page.selectOption('#selectionCard [data-add-link="out"]', placed[4].id, { timeout: 5000 });
+    assert.equal(await page.textContent('#siteHint'), '1 candidate to compare with the network as it is: Warehouse 3. 2 networks are built and run, one after another.');
+    assert.ok(!/Warehouse 3/.test(await page.textContent('#networkStatus')), await page.textContent('#networkStatus'));
+    assert.deepEqual(await page.$$eval('#siteStressSelect option', (options) => options.map((option) => option.value)), ['none', 'roadClosure', 'supplierTrouble', 'siteDown', 'demandSurge', 'fleetChange']);
+    // Built again (the canvas is kept in step), the model is as it was: the candidate is not in it.
+    await page.click('#buildButton');
+    await page.waitForFunction(() => document.querySelector('#buildStatus .notice.ok') && !window.logisticsToolboxState.busy, null, { timeout: 60000 }).catch(fail);
+    assert.ok(!(await stateOf(() => window.logisticsToolboxState.built.lanes.some((lane) => lane.fromSite === 'Warehouse 3' || lane.site === 'Warehouse 3'))), 'a candidate is left out of the model');
+    await page.keyboard.press('Escape');
+    await page.click('#scenarioTabs [data-scenario="roadClosure"]');
+    await page.selectOption('#closureLaneSelect', harbourLane.link);
+    noErrors();
+
     // 7b. With an engine (KONJUGATE_ENGINE=export runs the model as Konjugate's code export writes it): Harbour shop's
     // only lane closed for ten days, and the summary shows its shelves empty and its shoppers waiting.
     if (process.env.KONJUGATE_ENGINE === 'export') {
@@ -893,9 +925,34 @@ try {
         const alone = await stateOf(() => window.logisticsToolboxState.scenario.totals.lostValue);
         assert.ok(Math.abs(alone.scenario - alone.baseline - worst.lostValue) < 0.01 * worst.lostValue + 1, `run alone, it loses what it lost in the ranking (${alone.scenario - alone.baseline} against ${worst.lostValue})`);
         assert.deepEqual(await stateOf(() => window.logisticsToolboxState.runs.map((run) => run.number)), [1, 2, 3, 4, 5]);
+        // A new site: the network as it is and the network with Warehouse 3 open, each built and run with the road to
+        // Harbour shop closed for the ten days. With the candidate, which also restocks Harbour shop, the closure costs
+        // less; it is dearer to run by its fixed cost, and the verdict says how often such a closure must come to pay.
+        await page.click('#scenarioTabs [data-scenario="newSite"]');
+        await page.selectOption('#siteStressSelect', 'roadClosure');
+        await page.click('#runScenarioButton');
+        await page.waitForSelector('#siteTable, #scenarioStatus .notice.error', { timeout: 400000 }).catch(fail);
+        assert.equal(await page.locator('#scenarioStatus .notice.error').count(), 0, await page.textContent('#scenarioStatus'));
+        const sites = await stateOf(() => window.logisticsToolboxState.siteComparison);
+        assert.deepEqual(sites.rows.map((row) => [row.name, row.candidate, row.fixedMonthly, row.error ?? null]), [['As it is', null, 0, null], ['With Warehouse 3', 'Warehouse 3', 2000, null]]);
+        assert.match(sites.described, /^Warehouse 1 → Harbour shop closed from day 5 for 10 days/);
+        const [asIs, withSite] = sites.rows;
+        assert.ok(asIs.stress.lostValue > 0 && withSite.stress.lostValue < 0.8 * asIs.stress.lostValue, `the closure costs less with the candidate open (${withSite.stress.lostValue} against ${asIs.stress.lostValue})`);
+        assert.ok(withSite.extraMonthly > 1500, `dearer to run by its fixed cost and its own running (${withSite.extraMonthly} a month)`);
+        assert.match(withSite.verdict, /^Dearer to run by [\d,]+ a month, and one such disruption costs [\d,]+ less with it: it pays for its running if one comes more often than once every [\d.,]+ months\. Its cost to open, 50,000, is back after [\d.,]+ such disruptions\.$/);
+        assert.equal(await page.locator('#siteTable tbody tr').count(), 2);
+        assert.match(await page.textContent('#siteTable tbody tr:nth-child(2)'), /^With Warehouse 3Dearer to run by/);
+        // The network on the map is the one built again: the candidate is out of the model, and the runs are as they were.
+        assert.ok(!(await stateOf(() => window.logisticsToolboxState.built.lanes.some((lane) => lane.fromSite === 'Warehouse 3'))));
+        assert.deepEqual(await stateOf(() => window.logisticsToolboxState.runs.map((run) => run.number)), [1, 2, 3, 4, 5]);
         await page.click('#scenarioTabs [data-scenario="roadClosure"]');
         noErrors();
     }
+
+    // The candidate undone, step by step, the network is the ten sites it was.
+    for (let step = 0; step < 12 && await stateOf(() => window.logisticsToolboxState.pins.length) > placements.length; step += 1) await page.click('#undoButtonTool');
+    assert.equal(await stateOf(() => window.logisticsToolboxState.pins.length), placements.length);
+    assert.equal(await page.locator('#map .site.candidate').count(), 0);
 
     // 8. Suggestions, only when asked for: ports from the sample's data (nothing fetched), shown hollow, adopted by a click.
     assert.deepEqual(host.requests, [], 'the sample region fetches nothing');

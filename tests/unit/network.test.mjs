@@ -290,3 +290,62 @@ test('a site\'s own mix of categories, a supplier\'s own lead times and the most
     assert.deepEqual(farm.pins[0].leadDays, { chilled: 2 });
     assert.deepEqual(farm.problems, ['Farm names the category "Fresh", which this network does not have: add it under Categories and load the file again, or it is left out.']);
 });
+
+test('a candidate warehouse is left out of the network, with its links, until it is opened for a comparison', async () => {
+    const { isCandidate, openNetwork } = await import('../../packages/toolbox/lib/network.mjs');
+    const supplier = createPin('supplier', { lat: 25.1, lon: 55.1 }, { name: 'Mill' });
+    const depot = createPin('warehouse', { lat: 25.2, lon: 55.2 }, { name: 'Depot' });
+    const site = createPin('warehouse', { lat: 25.25, lon: 55.25 }, { name: 'New site', fields: { fixedCost: 9000, openingCost: 120000 } });
+    site.candidate = true;
+    const shop = createPin('store', { lat: 25.3, lon: 55.3 }, { name: 'Shop' });
+    const pins = [supplier, depot, site, shop];
+    const link = (from, to) => ({ id: linkId(from.id, to.id), from: from.id, to: to.id, basis: 'user' });
+    const links = [link(supplier, depot), link(depot, shop), link(supplier, site), link(site, shop)];
+    assert.deepEqual([isCandidate(site), isCandidate(depot), isCandidate({ role: 'store', candidate: true })], [true, false, false]);
+    assert.deepEqual(site.fields.fixedCost, { value: 9000, basis: 'user' });
+    assert.deepEqual(depot.fields.fixedCost, { value: null, basis: null }, 'no fixed cost until one is given');
+    // As it is: the candidate and both its links are not there.
+    const asIs = openNetwork(pins, links);
+    assert.deepEqual([asIs.pins.map((pin) => pin.name), asIs.links.length], [['Mill', 'Depot', 'Shop'], 2]);
+    assert.deepEqual(networkSelection(pins, links).selection.zones.map((zone) => zone.name), ['Depot']);
+    assert.deepEqual(networkSelection(pins, links).links.serve.length, 1);
+    assert.deepEqual(networkProblems(pins, links), [], 'the network as it is has nothing wrong, and neither has the candidate');
+    // Opened: it is a warehouse like the other, the shop restocked from both.
+    const opened = networkSelection(pins, links, { open: [site.id] });
+    assert.deepEqual(opened.selection.zones.map((zone) => zone.name), ['Depot', 'New site']);
+    assert.deepEqual([opened.links.supply.length, opened.links.serve.length], [2, 2]);
+    // A candidate with nothing to supply, or nothing to restock it, says so, and stops nothing.
+    assert.deepEqual(networkProblems(pins, links.slice(0, 3)), [{ level: 'warning', text: 'New site is a candidate with no store or warehouse to supply: link it to those it would take, to compare it.', pins: [site.id] }]);
+    assert.deepEqual(networkProblems(pins, [links[0], links[1], links[3]]).map((problem) => problem.text), ['New site is a candidate with no supplier, port or warehouse to restock it: link one to it, to compare it.']);
+    // A store is suggested its nearest open warehouse, never a candidate; a candidate is suggested suppliers as any warehouse is.
+    const near = { nearestSources: (sources) => () => sources.at(-1), route: () => ({ hours: 1 }) };
+    const suggested = suggestLinks(pins, [], near);
+    assert.ok(suggested.some((item) => item.from === depot.id && item.to === shop.id) && !suggested.some((item) => item.from === site.id));
+    assert.ok(suggested.some((item) => item.from === supplier.id && item.to === site.id));
+});
+
+test('candidate sites compared: what each changes a month against the network as it is, and whether it earns its keep', async () => {
+    const { compareSites } = await import('../../packages/toolbox/lib/siteComparison.mjs');
+    const asIs = { name: 'As it is', candidate: null, days: 60, running: 60000, fixedMonthly: 5000, lostNormal: 0, stress: { lostValue: 40000, storesOut: 4, longest: 6, running: 61000 } };
+    const rows = compareSites([
+        asIs,
+        // Dearer to run (2,000 a month more in transport and 9,000 in rent), and a disruption costs 33,000 less with it.
+        { name: 'With North', candidate: 'North', days: 60, running: 64000, fixedMonthly: 14000, openingCost: 120000, lostNormal: 0, stress: { lostValue: 7000, storesOut: 1, longest: 2, running: 66000 } },
+        // Cheaper to run by 3,000 a month, rent included, with no cost to open given.
+        { name: 'With South', candidate: 'South', days: 60, running: 50000, fixedMonthly: 7000, openingCost: null, lostNormal: 0, stress: { lostValue: 40000, storesOut: 4, longest: 6, running: 51000 } },
+        { name: 'With East', candidate: 'East', error: 'East has no supplier linked to it.' }
+    ]);
+    assert.deepEqual(rows.map((row) => row.monthlyCost), [35000, 46000, 32000, undefined]);
+    assert.deepEqual([rows[1].extraMonthly, rows[1].savedPerDisruption], [11000, 33000]);
+    assert.equal(rows[0].verdict, 'The network as it is.');
+    assert.equal(rows[1].verdict, 'Dearer to run by 11,000 a month, and one such disruption costs 33,000 less with it: it pays for its running if one comes more often than once every 3 months. Its cost to open, 120,000, is back after 3.6 such disruptions.');
+    assert.equal(rows[2].verdict, 'Cheaper to run by 3,000 a month. Give its cost to open to see how long that takes to earn back.');
+    assert.equal(rows[3].verdict, 'Could not be compared: East has no supplier linked to it.');
+    // In normal weeks alone, a dearer site has nothing to show for itself yet; a cheaper one pays back in months.
+    const calm = compareSites([{ ...asIs, stress: null }, { ...rows[1], stress: null }, { name: 'With South', candidate: 'South', days: 60, running: 50000, fixedMonthly: 7000, openingCost: 60000, lostNormal: 0, stress: null }]);
+    assert.equal(calm[1].verdict, 'Dearer to run by 11,000 a month in normal weeks: choose a disruption to see what it saves then.');
+    assert.equal(calm[2].verdict, 'Cheaper to run by 3,000 a month. Its cost to open, 60,000, is back after 20 months.');
+    // A site that makes the disruption worse says so.
+    const worse = compareSites([asIs, { name: 'With West', candidate: 'West', days: 60, running: 60000, fixedMonthly: 5000, stress: { lostValue: 46000, storesOut: 5, longest: 7, running: 61000 } }]);
+    assert.equal(worse[1].verdict, 'As dear to run, but one such disruption costs 6,000 more with it.');
+});

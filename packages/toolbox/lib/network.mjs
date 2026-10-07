@@ -50,7 +50,10 @@ export const roles = {
             { key: 'floorArea', label: 'Floor area', unit: 'm²', value: null, detail: 'Weights how much of a demand pin linked to several warehouses it serves. Empty: a typical warehouse.' },
             capacityField('The most it can hold. It never orders more than it has room for. Empty: no limit.'),
             coverField(3, 'The stock it aims to hold, in days of what it sends out, on top of what is on its way.'),
-            { key: 'holdingCost', label: 'Holding cost', unit: 'a pallet a day', value: 0.5, detail: 'What a pallet in stock costs a day (space, capital, insurance).' }
+            { key: 'holdingCost', label: 'Holding cost', unit: 'a pallet a day', value: 0.5, detail: 'What a pallet in stock costs a day (space, capital, insurance).' },
+            // Not in the model: added to the running cost when sites are compared, and what a candidate must earn back.
+            { key: 'fixedCost', label: 'Fixed cost', unit: 'a month', value: null, positive: true, detail: 'Rent, staff and the rest of what it costs to have, whatever it handles. Counted when candidate sites are compared. Empty: nothing.' },
+            { key: 'openingCost', label: 'Cost to open', unit: 'once', value: null, positive: true, detail: 'For a candidate: what opening it costs, once. Its payback is counted against this. Empty: nothing.' }
         ]
     },
     store: {
@@ -149,6 +152,17 @@ export function linkProblem(from, to) {
 
 export const linkId = (from, to) => `${from}>${to}`;
 
+// A candidate: a warehouse that is not open, placed and linked to be compared with the network as it is. It is left
+// out of the network (and its links with it) unless it is opened for a comparison.
+export const isCandidate = (pin) => pin?.role === 'warehouse' && pin.candidate === true;
+// The network with these candidates open (by pin id) and the rest left out: the pins and links a build takes.
+export function openNetwork(pins, links, open = []) {
+    const opened = new Set(open);
+    const kept = pins.filter((pin) => !isCandidate(pin) || opened.has(pin.id));
+    const ids = new Set(kept.map((pin) => pin.id));
+    return { pins: kept, links: links.filter((link) => ids.has(link.from) && ids.has(link.to)) };
+}
+
 // Links suggested for the pins, keeping every link the user drew. `dismissed` holds the ids of suggested links the user
 // deleted; `router` is createNetworkRouter's. A suggested link that is suggested again keeps its object (and its leg).
 export function suggestLinks(pins, links, router, dismissed = new Set()) {
@@ -166,9 +180,11 @@ export function suggestLinks(pins, links, router, dismissed = new Set()) {
     };
     const warehouses = pins.filter((pin) => kindOf(pin.role) === 'warehouse');
     const sources = pins.filter((pin) => kindOf(pin.role) === 'source');
-    // Each demand pin with no link of the user's: from its nearest warehouse.
-    if (warehouses.length) {
-        const nearest = router.nearestSources(warehouses.map((pin) => ({ id: pin.id, lat: pin.lat, lon: pin.lon })));
+    // Each demand pin with no link of the user's: from its nearest warehouse that is open (a candidate's stores are the
+    // user's to choose; its suppliers are suggested as any warehouse's are, so it is supplied once it opens).
+    const working = warehouses.filter((pin) => !isCandidate(pin));
+    if (working.length) {
+        const nearest = router.nearestSources(working.map((pin) => ({ id: pin.id, lat: pin.lat, lon: pin.lon })));
         for (const pin of pins.filter((item) => kindOf(item.role) === 'demand')) {
             if (user.some((link) => link.to === pin.id)) continue;
             const found = nearest(pin);
@@ -213,8 +229,15 @@ export function routeLinks(pins, links, router) {
 
 // What stops the network from being built (errors) and what the user should know (warnings), each naming its pins.
 // `catalogue`: the vehicle types, when the network runs on them; `categories`: the product categories it carries.
-export function networkProblems(pins, links, catalogue = null, categories = null) {
+export function networkProblems(allPins, allLinks, catalogue = null, categories = null) {
     const problems = [];
+    // The network as it is: its candidates are judged apart, below, as they would be once open.
+    const { pins, links } = openNetwork(allPins, allLinks);
+    for (const candidate of allPins.filter(isCandidate)) {
+        const its = allLinks.filter((link) => link.from === candidate.id || link.to === candidate.id);
+        if (!its.some((link) => link.from === candidate.id)) problems.push({ level: 'warning', text: `${candidate.name} is a candidate with no store or warehouse to supply: link it to those it would take, to compare it.`, pins: [candidate.id] });
+        else if (!its.some((link) => link.to === candidate.id && !link.backup)) problems.push({ level: 'warning', text: `${candidate.name} is a candidate with no supplier, port or warehouse to restock it: link one to it, to compare it.`, pins: [candidate.id] });
+    }
     const byId = new Map(pins.map((pin) => [pin.id, pin]));
     const add = (level, text, ids = []) => problems.push({ level, text, pins: ids });
     const of = (kind) => pins.filter((pin) => kindOf(pin.role) === kind);
@@ -275,7 +298,9 @@ export function networkProblems(pins, links, catalogue = null, categories = null
 // so the importer reads its sourced data again), the links with their legs and vehicles, and the vehicle catalogue.
 // `paths: false` leaves the supply links' roads out, when they would be more than the host accepts in one request: the
 // lanes are then drawn straight. With no `catalogue`, links carry no vehicles and the model runs on two truck sizes.
-export function networkSelection(pins, links, { paths = true, catalogue = null, categories = null } = {}) {
+export function networkSelection(allPins, allLinks, { paths = true, catalogue = null, categories = null, open = [] } = {}) {
+    // Candidates are left out, and their links with them, but those opened for a comparison (`open`, by pin id).
+    const { pins, links } = openNetwork(allPins, allLinks, open);
     const selection = { ports: [], zones: [], towns: [] };
     const byId = new Map(pins.map((pin) => [pin.id, pin]));
     const siteId = (pin) => pin.candidate?.id ?? pin.id;

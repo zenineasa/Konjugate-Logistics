@@ -309,7 +309,7 @@ export class MapView {
             const { name, attributes } = this.shape(site.role, x, y, r);
             const highlighted = this.highlight === site.id;
             const selected = this.isSelected('pin', site.id);
-            const classes = ['site', site.role, site.kept ? 'pin' : 'dropped', highlighted ? 'highlight' : '', selected ? 'selected' : '', site.problem ? 'problem' : '', site.far ? 'far' : ''].filter(Boolean).join(' ');
+            const classes = ['site', site.role, site.kept ? 'pin' : 'dropped', highlighted ? 'highlight' : '', selected ? 'selected' : '', site.problem ? 'problem' : '', site.far ? 'far' : '', site.candidate ? 'candidate' : ''].filter(Boolean).join(' ');
             if (site.far && site.kept) element('circle', { cx: x, cy: y, r: r * 2.2, class: 'farRing', 'stroke-width': 1.2 * unit, 'stroke-dasharray': `${2 * unit} ${2 * unit}` }, this.siteLayer);
             const node = element(name, { ...attributes, class: classes, 'stroke-width': (highlighted || selected ? 2.5 : 1.5) * unit, 'data-id': site.id }, this.siteLayer);
             element('title', {}, node).textContent = `${site.name}${site.kept ? '' : ' (a suggestion: click to adopt it)'}${site.far ? ` (${site.far})` : ''}`;

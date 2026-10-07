@@ -87,7 +87,7 @@ test('a site\'s storage capacity and cover: nothing is the default, as empty is;
     assert.deepEqual(store.fields.demand, { value: 0, basis: 'user' }, 'a store may sell nothing');
     const old = { role: 'warehouse', fields: { floorArea: { value: 9000, basis: 'user' } } };
     completeFields(old);
-    assert.deepEqual(Object.keys(old.fields), ['floorArea', 'capacity', 'cover', 'holdingCost']);
+    assert.deepEqual(Object.keys(old.fields), ['floorArea', 'capacity', 'cover', 'holdingCost', 'fixedCost', 'openingCost']);
     assert.deepEqual(old.fields.cover, { value: 3, basis: 'assumed' });
 });
 

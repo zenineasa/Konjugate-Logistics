@@ -13,7 +13,8 @@ import { chokepointById, chokepointDependence, chokepointRecentUrl, chokepoints,
 import { portwatchActivityUrl, portwatchPortsUrl } from './lib/portwatch.mjs';
 import { closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan, mostLateDays, siteDownPlan, supplierPlan } from './lib/scenarios.mjs';
 import { createNetworkRouter } from './lib/routing.mjs';
-import { completeFields, createPin, kindOf, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
+import { compareSites } from './lib/siteComparison.mjs';
+import { completeFields, createPin, isCandidate, kindOf, openNetwork, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
 import { calibration, calibrationAdvised, calibrationMinimum, formatDuration, googleMapsUrl, howLabels, modelHours, openStreetMapUrl, parseTravelTimes, suspectTime, timeFrom, whenLabels, writeTravelTimes } from './lib/travelTimes.mjs';
 import { affectedAcross, closureAcross, diversionAcross, mergeSeries, siteView } from './lib/builtView.mjs';
 import { categoryFields, clearMix, completeCategories, createCategory, defaultCategoryCatalogue, hasMix, mixOf, mostCategories, setCategoryField, setLeadDays, setMix } from './lib/categories.mjs';
@@ -566,6 +567,8 @@ function snapOf(pin) {
 // Everything that follows a change to the network: links suggested and routed again (only the legs whose ends moved),
 // the map, the lists and the card redrawn and the model marked out of date (and rebuilt, when kept in step).
 function networkChanged({ rebuild = true } = {}) {
+    // The candidates named in the New site tab follow the map.
+    renderSiteHint();
     if (state.router) {
         state.links = suggestLinks(state.pins, state.links, state.router, state.dismissed);
         const started = performance.now();
@@ -603,7 +606,7 @@ function renderNetwork() {
         ...state.pins.map((pin) => {
             const metres = snapOf(pin);
             const far = !state.router ? null : metres === null ? 'too far from any road: its legs are straight-line estimates' : metres > farMetres ? `${number(metres / 1000, 1)} km from the nearest road` : null;
-            return { id: pin.id, role: pin.role, name: pin.name, lat: pin.lat, lon: pin.lon, kept: true, problem: troubled.has(pin.id), far };
+            return { id: pin.id, role: pin.role, name: pin.name, lat: pin.lat, lon: pin.lon, kept: true, problem: troubled.has(pin.id), far, candidate: isCandidate(pin) };
         })
     ]);
     const unused = new Set((state.built?.unusedLinks ?? []).map((item) => `${item.from}>${item.to}`));
@@ -1586,6 +1589,7 @@ function renderCard() {
                 return `<div class="field"><label for="field-${field.key}">${escape(field.label)}</label><span><input type="number" min="0"${field.max ? ` max="${field.max}"` : ''} step="any" id="field-${field.key}" data-field="${field.key}" value="${value.value ?? ''}" placeholder="${escape(placeholder)}"> <span class="muted">${escape(field.unit)}</span></span><span class="basis ${value.basis ?? ''}">${escape(basisLabel[value.basis] ?? '')}</span></div><div class="detail">${escape(field.detail)}</div>`;
             }).join('')}
             ${renderMix(pin)}
+            ${pin.role === 'warehouse' ? `<label class="row small" title="A candidate is not built into the model: the New site tab of the Scenarios step compares the network as it is with the network with it open"><input type="checkbox" id="pinCandidate" ${isCandidate(pin) ? 'checked' : ''}> A candidate: not open yet, to compare</label>` : ''}
             <div class="detail road">${escape(roadText(pin))}</div>
             ${found ? `<div class="detail">Adopted from OpenStreetMap${found.activity ? `; IMF PortWatch: about ${number(found.activity.importTonnesPerDay)} t of container imports a day, ${found.activity.from} to ${found.activity.to}` : ''}${found.population ? `; population ${number(found.population)}` : ''}${found.floorAreaSquareMetres ? `; ${number(found.floorAreaSquareMetres)} m² of floor area` : ''}.</div>` : ''}
             ${linkList('in')}${linkList('out')}
@@ -1599,6 +1603,12 @@ function renderCard() {
             networkChanged();
         }));
         wireMix(pin, card);
+        $('#pinCandidate')?.addEventListener('change', (event) => {
+            checkpoint(event.target.checked ? `making ${pin.name} a candidate` : `opening ${pin.name}`);
+            if (event.target.checked) pin.candidate = true; else delete pin.candidate;
+            card.dataset.for = '';
+            networkChanged();
+        });
         card.querySelectorAll('[data-select-link]').forEach((button) => button.addEventListener('click', () => select({ kind: 'link', id: button.dataset.selectLink })));
         card.querySelectorAll('[data-remove-link]').forEach((button) => button.addEventListener('click', () => {
             const item = state.links.find((each) => each.id === button.dataset.removeLink);
@@ -2275,7 +2285,7 @@ function sessionState() {
         operator: $('#operatorSelect').value || null, operatorFile: Boolean(state.operatorFile), standby: [...state.standby],
         disruption: { ...disruptionSettings(), dependence: [...state.dependence], transits: [...state.transits].filter(([, value]) => value && !value.error) },
         scenarioTab: state.scenarioTab, scenarioSettings: scenarioSettings(), scenario: state.scenario,
-        runs: state.runs, compareWith: state.compareWith ?? null, ranking: state.ranking ?? null,
+        runs: state.runs, compareWith: state.compareWith ?? null, ranking: state.ranking ?? null, siteComparison: state.siteComparison ?? null, siteStress: $('#siteStressSelect').value || 'none',
         rank: { suppliers: $('#rankSuppliers').checked, warehouses: $('#rankWarehouses').checked, roads: $('#rankRoads').checked, storeRoads: $('#rankStoreRoads').checked }
     };
 }
@@ -2383,6 +2393,8 @@ async function restoreSession() {
             $('#showButton').disabled = false;
             state.scenario = saved.scenario ?? null;
             state.ranking = saved.ranking ?? null;
+            state.siteComparison = saved.siteComparison ?? null;
+            state.savedSiteStress = saved.siteStress ?? null;
             if (saved.rank) for (const [key, id] of [['suppliers', '#rankSuppliers'], ['warehouses', '#rankWarehouses'], ['roads', '#rankRoads'], ['storeRoads', '#rankStoreRoads']]) $(id).checked = Boolean(saved.rank[key]);
             state.runs = Array.isArray(saved.runs) ? saved.runs : [];
             state.compareWith = saved.compareWith ?? undefined;
@@ -2504,6 +2516,9 @@ function renderScenario({ fetchTransits = false } = {}) {
     // And failures are ranked where a site can go down: a network placed on the map.
     $('#scenarioTabs [data-scenario="weakestLink"]').hidden = !downSites().length;
     if (!downSites().length && state.scenarioTab === 'weakestLink') state.scenarioTab = 'roadClosure';
+    // And candidate sites are compared there too.
+    $('#scenarioTabs [data-scenario="newSite"]').hidden = !downSites().length;
+    if (!downSites().length && state.scenarioTab === 'newSite') state.scenarioTab = 'roadClosure';
     if (!downSites().length && state.scenarioTab === 'siteDown') state.scenarioTab = 'roadClosure';
     renderDependence();
     // After a fresh build, fetch the chokepoint's transits; when restoring a session (perhaps offline), show only what was kept.
@@ -2608,13 +2623,14 @@ $('#chokepointSelect').addEventListener('change', () => { renderDependence(); re
 // ---- the scenarios: choosing one ----------------------------------------------------------------------------------
 // Six scenarios share the days they run for and the summary of what they changed: a chokepoint disruption (above), a
 // road closed, the fleet changed, demand stepped up, a supplier short or late and a site down.
-const scenarioIds = ['chokepointDisruption', 'roadClosure', 'fleetChange', 'demandSurge', 'supplierTrouble', 'siteDown', 'weakestLink'];
+const scenarioIds = ['chokepointDisruption', 'roadClosure', 'fleetChange', 'demandSurge', 'supplierTrouble', 'siteDown', 'weakestLink', 'newSite'];
 
 function showScenarioTab() {
     document.querySelectorAll('#scenarioTabs button').forEach((button) => button.classList.toggle('active', button.dataset.scenario === state.scenarioTab));
     document.querySelectorAll('.scenarioPanel').forEach((panel) => { panel.hidden = panel.dataset.panel !== state.scenarioTab; });
-    $('#runScenarioButton').textContent = state.scenarioTab === 'weakestLink' ? 'Run them all and rank' : 'Run the scenario';
+    $('#runScenarioButton').textContent = { weakestLink: 'Run them all and rank', newSite: 'Build and compare them' }[state.scenarioTab] ?? 'Run the scenario';
     renderRanking();
+    renderSiteComparison();
     renderMarks();
 }
 document.querySelectorAll('#scenarioTabs button').forEach((button) => button.addEventListener('click', () => {
@@ -2622,6 +2638,106 @@ document.querySelectorAll('#scenarioTabs button').forEach((button) => button.add
     if (state.scenarioTab === 'roadClosure') state.closureChosen = true;
     showScenarioTab();
 }));
+
+// ---- a new site: the network as it is and with each candidate open, built, run and set side by side -----------------
+// The disruptions a comparison can run under: normal weeks alone, or one of the scenarios as its own tab has it set.
+const siteStresses = [['none', 'normal weeks only'], ['roadClosure', 'the road closure, as its tab has it'], ['supplierTrouble', 'the supplier short or late, as its tab has it'], ['siteDown', 'the site down, as its tab has it'], ['demandSurge', 'the change in demand, as its tab has it'], ['fleetChange', 'the change in vehicles, as its tab has it']];
+function renderSiteHint() {
+    const select = $('#siteStressSelect');
+    const chosen = select.value || state.savedSiteStress || 'none';
+    state.savedSiteStress = null;
+    select.innerHTML = siteStresses.filter(([id]) => id !== 'supplierTrouble' || builtSuppliers().length).map(([id, label]) => `<option value="${id}">${label}</option>`).join('');
+    if ([...select.options].some((option) => option.value === chosen)) select.value = chosen;
+    const candidates = state.pins.filter(isCandidate);
+    $('#siteHint').textContent = candidates.length
+        ? `${candidates.length} candidate${candidates.length === 1 ? '' : 's'} to compare with the network as it is: ${candidates.map((pin) => pin.name).join(', ')}. ${candidates.length + 1} networks are built and run, one after another.`
+        : 'No candidate yet: place a warehouse, tick A candidate on its card, and link it.';
+}
+// The model of the network with these candidates open, built in the host (not shown in the canvas).
+async function importVariant(open) {
+    if (state.router) routeLinks(state.pins, state.links, state.router);
+    const choose = (paths) => networkSelection(state.pins, state.links, { paths, catalogue: state.vehicles, categories: state.categories, open });
+    let network = choose(true);
+    if (JSON.stringify(network).length > maximumNetworkBytes) network = choose(false);
+    const answer = await call(api.runImport(importerId, {
+        step: 'buildNetwork', ...(state.bbox ? { bbox: state.bbox } : {}), network,
+        settings: { portTeuPerDay: state.portVolume, arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(), operator: null, standbyPorts: [...state.standby], timeFactor: timeFactor() }
+    }));
+    if (!answer.imported) throw new Error((answer.report?.errors ?? ['The model could not be built.']).join(' '));
+    return answer.data;
+}
+// A run that changes nothing, for normal weeks: one site's demand held as it is.
+function quietRun(common) {
+    const [town] = state.built.towns;
+    return { id: 'demandSurge', supplied: { byParameter: { baseDemand: { entities: [town.name], samples: { [town.name]: heldPath({ outside: town.demand, inside: town.demand, ...common }) } } } }, lanes: [], describe: 'Normal weeks.' };
+}
+async function compareCandidates(start, runTime, status) {
+    const candidates = state.pins.filter(isCandidate);
+    if (!candidates.length) throw new Error('Place a warehouse, tick A candidate on its card and link it first: there is no candidate to compare.');
+    const stress = $('#siteStressSelect').value;
+    const duration = Number($('#durationInput').value) * day;
+    const common = { start, duration, forkAt: start, runTime };
+    const fixedOf = (open) => openNetwork(state.pins, state.links, open).pins.reduce((sum, pin) => sum + (Number(pin.fields?.fixedCost?.value) > 0 ? Number(pin.fields.fixedCost.value) : 0), 0);
+    const variants = [{ name: 'As it is', candidate: null, open: [] }, ...candidates.map((pin) => ({ name: `With ${pin.name}`, candidate: pin.name, open: [pin.id], openingCost: Number(pin.fields?.openingCost?.value) > 0 ? Number(pin.fields.openingCost.value) : null }))];
+    const kept = state.built;
+    const rows = [];
+    let described = null;
+    try {
+        for (const [index, variant] of variants.entries()) {
+            status.innerHTML = notice('', `Building and running network ${index + 1} of ${variants.length}: ${variant.name.toLowerCase()}…`);
+            const row = { name: variant.name, candidate: variant.candidate, openingCost: variant.openingCost ?? null, fixedMonthly: fixedOf(variant.open) };
+            try {
+                state.built = await importVariant(variant.open);
+                state.imported = true;
+                // The choices of the scenario tabs, for this network: what was chosen is kept where it is still there.
+                renderScenarioChoices();
+                const run = stress === 'none' ? quietRun(common) : scenarioRun(stress, start, runTime, status);
+                if (!run) throw new Error('the disruption chosen needs an answer in its own tab first.');
+                const id = run.id ?? stress;
+                const answer = await call(api.runScenario(id, { supplied: run.supplied, forkAt: start, runTime, signals: summarySignals, retain: false }));
+                const result = summariseRun(answer, id, run, start, duration);
+                described ??= stress === 'none' ? null : run.describe;
+                const out = (result.stores ?? []).map((item) => item.emptyDays.scenario - item.emptyDays.baseline).filter((span) => span > outNoise);
+                const cost = runningCost(result.totals);
+                Object.assign(row, {
+                    days: result.days, running: cost.baseline, lostNormal: result.totals.lostValue?.baseline ?? 0,
+                    stress: stress === 'none' ? null : { lostValue: result.totals.lostValue?.scenario ?? 0, lost: result.totals.lost?.scenario ?? 0, storesOut: out.length, longest: Math.max(0, ...out), running: cost.scenario }
+                });
+            } catch (error) {
+                row.error = error.message;
+            }
+            rows.push(row);
+        }
+    } finally {
+        state.built = kept;
+    }
+    state.siteComparison = { start: start / day, days: duration / day, stress, described, rows: compareSites(rows) };
+    status.innerHTML = notice('', 'Building the network as it is again…');
+    // The host holds the last network built: build the one on the map again, so the canvas and the scenarios are its own.
+    setBusy(false);
+    await build();
+    status.innerHTML = '';
+    state.scenarioTab = 'newSite';
+    showScenarioTab();
+    keepSessionSoon();
+}
+function renderSiteComparison() {
+    const panel = $('#siteComparison');
+    const comparison = state.siteComparison;
+    panel.hidden = !comparison || state.scenarioTab !== 'newSite';
+    if (panel.hidden) { panel.innerHTML = ''; return; }
+    const stressed = comparison.rows.some((row) => row.stress);
+    const [asIs] = comparison.rows;
+    const mark = (row, value, base, lowerIsBetter = true) => (row === asIs || base === undefined ? '' : Math.abs(value - base) <= 1e-6 * Math.max(1, Math.abs(base)) ? '' : (value < base) === lowerIsBetter ? ' better' : ' worse');
+    panel.innerHTML = `
+        <p class="small">${comparison.described ? `Under: ${escape(comparison.described)}` : `Normal weeks, from day ${number(comparison.start)} to the end of the run.`}</p>
+        <table class="business" id="siteTable"><thead><tr><th>Network</th><th class="number" title="Transport, fleet and holding costs in normal weeks, scaled to 30 days, with the fixed costs of its sites">cost a month</th><th class="number" title="Of that: the fixed costs you gave its sites">fixed</th>${stressed ? `<th class="number">stores out</th><th class="number" title="In the disruption, from the day it starts to the end of the run">sales lost (value)</th>` : ''}</tr></thead>
+            <tbody>${comparison.rows.map((row) => (row.error
+        ? `<tr><td>${escape(row.name)}</td><td colspan="${stressed ? 4 : 2}" class="muted">${escape(row.verdict)}</td></tr>`
+        : `<tr><td>${escape(row.name)}${row === asIs ? '' : `<div class="basis">${escape(row.verdict)}</div>`}</td><td class="number${mark(row, row.monthlyCost, asIs.monthlyCost)}">${number(row.monthlyCost)}</td><td class="number">${number(row.fixedMonthly)}</td>${stressed ? `<td class="number${mark(row, row.stress.storesOut, asIs.stress?.storesOut)}">${number(row.stress.storesOut)}</td><td class="number${mark(row, row.stress.lostValue, asIs.stress?.lostValue)}">${number(row.stress.lostValue)}</td>` : ''}</tr>`)).join('')}</tbody></table>
+        <p class="muted small">Each network was built and run on its own over the same days. A store linked to a candidate and to another warehouse draws on both, by their size and nearness. Fixed costs and the cost to open are your figures: a site with none given counts for nothing. Costs are in the model's cost units.</p>`;
+}
+$('#siteStressSelect').addEventListener('change', () => keepSessionSoon());
 
 // ---- the weakest link: every failure run in turn, and ranked -------------------------------------------------------
 // The failures the Weakest link tab runs, as ticked: each supplier making nothing, each warehouse down, each road into
@@ -2895,6 +3011,7 @@ function renderScenarioHints() {
     }
     renderSupplierHint(settings.supplier);
     renderDownHint(settings.down);
+    renderSiteHint();
     const failures = failuresToRank();
     const counted = ['supplier', 'warehouse', 'road'].map((kind) => [failures.filter((item) => item.kind === kind).length, kind]).filter(([count]) => count).map(([count, kind]) => `${count} ${kind}${count === 1 ? '' : 's'}`);
     $('#rankHint').textContent = failures.length ? `${failures.length} failure${failures.length === 1 ? '' : 's'} to run, one after another: ${counted.join(', ')}.` : 'Tick what may fail.';
@@ -3145,6 +3262,12 @@ $('#runScenarioButton').addEventListener('click', async () => {
                 if (state.imported && !needsStandby.some((port) => !state.built?.standbyPorts?.includes(port))) break;
             }
             if (!state.imported || needsStandby.some((port) => !state.built?.standbyPorts?.includes(port))) throw new Error('The model could not be built; see Model above.');
+        }
+        if (id === 'newSite') {
+            setBusy(true);
+            $('#runScenarioButton').disabled = true;
+            await compareCandidates(start, runTime, status);
+            return;
         }
         if (id === 'weakestLink') {
             setBusy(true);
