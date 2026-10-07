@@ -11,7 +11,7 @@ import {
 } from '../../packages/toolbox/lib/categories.mjs';
 import { affectedAcross, closureAcross, mergeSeries, mergeSupplied, siteView } from '../../packages/toolbox/lib/builtView.mjs';
 import { createPin, networkProblems, networkSelection, routeLinks, suggestLinks } from '../../packages/toolbox/lib/network.mjs';
-import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
+import { buildRegionModel, categoryShifts } from '../../packages/toolbox/lib/regionModel.mjs';
 import { buildRoadGraph } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { compactRoadGraph, createNetworkRouter } from '../../packages/toolbox/lib/routing.mjs';
 import { fleetPlan, siteDownPlan, supplierPlan } from '../../packages/toolbox/lib/scenarios.mjs';
@@ -152,6 +152,34 @@ test('a network with categories is a copy of itself for each: named after both, 
     // Model-wide constants are said once, and a vehicle type's figures once.
     assert.equal(built.provenance.filter((entry) => entry.entity === 'Refrigerated truck' && entry.parameter === 'Capacity').length, 1);
     assert.equal(built.provenance.filter((entry) => entry.entity === 'Every component' && entry.parameter === 'Order handling time').length, 1);
+});
+
+test('each category\'s copy of the network has its own place on the canvas, clear of the others, laid out alike', () => {
+    const { built, document } = placed();
+    const boxOf = (category) => {
+        const nodes = document.nodes.filter((node) => node.name.endsWith(`: ${category}`));
+        const [xs, ys] = [0, 1].map((axis) => nodes.map((node) => node.position[axis]));
+        return { left: Math.min(...xs), right: Math.max(...xs), bottom: Math.min(...ys), top: Math.max(...ys), count: nodes.length };
+    };
+    const boxes = built.categories.map((category) => boxOf(category.name));
+    assert.deepEqual(boxes.map((box) => box.count), [9, 9, 9]);
+    // No two copies overlap: there is room between them, across or up and down, for their names.
+    const apart = (a, b) => Math.max(b.left - a.right, a.left - b.right, b.bottom - a.top, a.bottom - b.top);
+    for (const [index, box] of boxes.entries()) for (const other of boxes.slice(index + 1)) assert.ok(apart(box, other) >= 12, `two copies lie ${apart(box, other)} apart`);
+    // A site is in the same place in each copy.
+    const at = (name) => document.nodes.find((node) => node.name === name).position;
+    const offset = (category) => [0, 1].map((axis) => Number((at(`Store 1: ${category}`)[axis] - at(`Warehouse 1: ${category}`)[axis]).toFixed(3)));
+    assert.deepEqual(offset('Chilled'), offset('Ambient'));
+    assert.deepEqual(offset('Frozen'), offset('Ambient'));
+    assert.ok(document.nodes.every((node) => node.position.every(Number.isFinite)));
+    // The most compact grid: a network wider than tall has its copies one above the other, a taller one side by side;
+    // four are two rows of two, six two columns of three; one is where it would be alone.
+    const wide = { width: 60, height: 40 };
+    assert.deepEqual(categoryShifts(1, wide), [[0, 0]]);
+    assert.deepEqual(categoryShifts(3, wide), [[0, 54], [0, 0], [0, -54]]);
+    assert.deepEqual(categoryShifts(3, { width: 40, height: 60 }), [[-54, 0], [0, 0], [54, 0]]);
+    assert.deepEqual(categoryShifts(4, wide), [[-37, 27], [37, 27], [-37, -27], [37, -27]]);
+    assert.deepEqual(categoryShifts(6, wide), [[-37, 54], [37, 54], [-37, 0], [37, 0], [-37, -54], [37, -54]]);
 });
 
 test('a site\'s own mix and a supplier\'s own lead time reach the model; a category no source supplies is refused, naming it', () => {

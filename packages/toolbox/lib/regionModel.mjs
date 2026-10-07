@@ -442,12 +442,12 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         .map((link) => ({ from: portById.get(link.port).name, to: zoneById.get(link.zone).name, why: !(zoneDemand.get(link.zone) > 0) ? 'serves no one' : !(supply.get(link.port) > 0) ? 'supplies nothing' : 'carries too little' }));
 
     // ---- layout: north up, the region spread over about 80 units so names on the canvas stay apart
-    // A category's copy sits a little below the one before it, so the copies of a site can be told apart.
+    // A category's copy of the network has a place of its own on the canvas, beside the others (see categoryShifts).
     const { origin, scale } = scope?.layout ?? layoutOf([...ports, ...usedZones, ...towns]);
-    const drop = scope ? scope.index * 1.1 : 0;
+    const [shiftX, shiftY] = scope?.shift ?? [0, 0];
     const position = (item) => {
         const point = toLocal(item, origin);
-        return [Number((point.x * scale).toFixed(3)), Number((point.y * scale - drop).toFixed(3)), 0];
+        return [Number((point.x * scale + shiftX).toFixed(3)), Number((point.y * scale + shiftY).toFixed(3)), 0];
     };
     const between = (a, b, offset = 0) => {
         const p = position(a);
@@ -970,7 +970,26 @@ function layoutOf(everything) {
     const origin = { lat: everything.reduce((total, item) => total + item.lat, 0) / everything.length, lon: everything.reduce((total, item) => total + item.lon, 0) / everything.length };
     const local = everything.map((item) => toLocal(item, origin));
     const extent = Math.max(1, ...local.map((point) => Math.max(Math.abs(point.x), Math.abs(point.y))));
-    return { origin, scale: 40 / extent };
+    const scale = 40 / extent;
+    const span = (axis) => (Math.max(...local.map((point) => point[axis])) - Math.min(...local.map((point) => point[axis]))) * scale;
+    return { origin, scale, width: span('x'), height: span('y') };
+}
+
+// Where each category's copy of the network goes on the canvas: in a grid, left to right then top to bottom, each the
+// network's own width and height apart with room between for its names, the whole centred where one network would be.
+// With the copies on top of each other their names could not be told apart. The grid is the one that keeps the model
+// most compact (the shortest diagonal): Konjugate fits a model to the window by its size, and names are drawn at one
+// size however far the camera stands, so a long thin row of copies would be shown small under a pile of names. A
+// network wider than it is tall has its copies one above the other. One category has the canvas to itself.
+export function categoryShifts(count, { width, height }, gap = 14) {
+    const [stepX, stepY] = [width + gap, height + gap];
+    const diagonal = (columns) => Math.hypot(columns * stepX, Math.ceil(count / columns) * stepY);
+    const columns = Array.from({ length: count }, (_, index) => index + 1).reduce((best, candidate) => (diagonal(candidate) < diagonal(best) - 1e-9 ? candidate : best), 1);
+    const rows = Math.ceil(count / columns);
+    return Array.from({ length: count }, (_, index) => {
+        const [column, row] = [index % columns, Math.floor(index / columns)];
+        return [Number(((column - (columns - 1) / 2) * stepX).toFixed(3)), Number((((rows - 1) / 2 - row) * stepY).toFixed(3))];
+    });
 }
 
 // The model from its parts: one network, or one copy of it per category.
@@ -1058,6 +1077,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
     }
     const everything = [...(selection.ports ?? []), ...(selection.zones ?? []), ...(selection.towns ?? [])];
     const layout = everything.length ? layoutOf(everything) : null;
+    const shifts = layout ? categoryShifts(categories.length, layout) : [];
     const scopes = categories.map((category, index) => {
         const its = shares.get(category.id);
         const ports = (selection.ports ?? []).filter((port) => its.get(port.id) > 0).map((port) => {
@@ -1067,7 +1087,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         const towns = (selection.towns ?? []).filter((town) => its.get(town.id) > 0);
         const kept = new Set([...ports, ...towns].map((site) => site.id));
         return {
-            category, index, single, shares: its, mixBasis, layout,
+            category, index, single, shares: its, mixBasis, layout, shift: shifts[index] ?? [0, 0],
             selection: { ports, zones: selection.zones ?? [], towns },
             links: { supply: links.supply.filter((link) => kept.has(link.port)), serve: links.serve.filter((link) => kept.has(link.town)) }
         };
