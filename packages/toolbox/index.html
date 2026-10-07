@@ -183,32 +183,32 @@
                             <label>Of the cargo kept out, <input type="number" id="delayedInput" min="0" max="100" step="10" value="0"> % arrives later,</label>
                             <label>over <input type="number" id="catchUpInput" min="1" step="1" value="20"> days</label>
                         </div>
-                        <div class="row small" title="Ships that can't pass may land their cargo at a port outside the chokepoint instead, to be trucked inland from there. Its warehouses order that cargo from it, over a standby lane where they have no lane from it yet, and those lanes hire trucks for it.">
+                        <div class="row small" title="Ships that can't pass may land their cargo at a port outside the chokepoint instead, to be carried inland by road from there. Its warehouses order that cargo from it, over a standby lane where they have no lane from it yet, and those lanes hire vehicles for it.">
                             <label><input type="number" id="divertedInput" min="0" max="100" step="10" value="0"> % is diverted to</label>
                             <select id="divertToSelect"></select>
                         </div>
                         <div class="row small" id="diversionRow" hidden>
-                            <label title="Of the trucks the diverted cargo needs on its lanes, the share that can be found and hired">trucks found <input type="number" id="trucksFoundInput" min="0" max="100" step="10" value="100"> %</label>
+                            <label title="Of the vehicles the diverted cargo needs on its lanes, the share that can be found and hired"><span id="trucksFoundLabel">trucks found</span> <input type="number" id="trucksFoundInput" min="0" max="100" step="10" value="100"> %</label>
                             <label title="The model sizes a port's berths for the cargo it hands inland. A port that is mostly transhipment may have far more; leave empty to keep its own.">its berths take <input type="number" id="divertBerthsInput" min="1" step="100" placeholder=""> TEU/day</label>
                         </div>
-                        <div class="row small" id="diversionRow2" hidden title="Part of the cargo kept out may land at a second port outside the chokepoint, with its own berths and standby lanes. The trucks found apply to both.">
+                        <div class="row small" id="diversionRow2" hidden title="Part of the cargo kept out may land at a second port outside the chokepoint, with its own berths and standby lanes. The vehicles found apply to both.">
                             <label>and <input type="number" id="divertedInput2" min="0" max="100" step="5" value="0"> % to</label>
                             <select id="divertToSelect2"></select>
                             <label>its berths take <input type="number" id="divertBerthsInput2" min="1" step="100" placeholder=""> TEU/day</label>
                         </div>
-                        <div class="row small" title="People buy less in a crisis, wait, or get goods another way (by road from a neighbouring country, by air). Every town's orders change by this much while the cut lasts; nothing published says by how much, so the figure is yours.">
+                        <div class="row small" title="People buy less in a crisis, wait, or get goods another way (by road from a neighbouring country, by air). Demand everywhere (every store, customer area or town) changes by this much while the cut lasts; nothing published says by how much, so the figure is yours.">
                             <label>Demand while the cut lasts <input type="number" id="demandDuringInput" min="-90" max="100" step="10" value="0"> %</label>
                         </div>
                         <table class="dependence" id="dependenceTable"></table>
                     </div>
                     <div class="scenarioPanel" data-panel="roadClosure" hidden>
-                        <p class="muted small">A road lane closed, or restricted, for a while. Trucks already on it finish their trips.</p>
-                        <label class="row small">Lane <select id="closureLaneSelect"></select></label>
-                        <label class="row small" title="Wait: orders queue on the lane until it reopens, and the cargo waits at the port. Detour: the lane stays open, but every trip is longer. Other ports: the warehouse orders from its other ports">Its trucks
+                        <p class="muted small">A road closed, or restricted, for a while. Vehicles already on it finish their trips.</p>
+                        <label class="row small">Road <select id="closureLaneSelect"></select></label>
+                        <label class="row small" title="Wait: orders queue until the road reopens, and the goods wait where they are. Detour: the road stays open, but every trip is longer. Elsewhere: what the road cannot carry is ordered over the other roads into the same site, from where they come."><span id="closureVehiclesLabel">Its vehicles</span>
                             <select id="closureModeSelect">
                                 <option value="wait">wait for it to reopen</option>
                                 <option value="detour">take a detour</option>
-                                <option value="otherPorts">the warehouse orders from its other ports</option>
+                                <option value="otherPorts">its site orders from its other sources</option>
                             </select></label>
                         <div class="row small" id="closureOpenRow">
                             <label>Open <input type="number" id="closureOpenInput" min="0" max="95" step="5" value="0"> % of the way</label>

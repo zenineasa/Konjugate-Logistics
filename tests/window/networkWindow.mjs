@@ -609,6 +609,18 @@ try {
     await page.selectOption('#closureLaneSelect', harbourLane.link);
     assert.equal(await marks('planned'), 1);
     assert.match(await page.textContent('#map .roadMark.planned title'), /^Warehouse 1 → Harbour shop: to be closed when the scenario runs$/);
+    // The tab speaks of this network: vehicles, a store ordering from its other warehouses, a warehouse from its other
+    // suppliers, which ship what they can make. No trucks, ports or towns.
+    assert.equal(await page.textContent('#closureVehiclesLabel'), 'Its vehicles');
+    assert.equal(await page.textContent('#closureModeSelect option[value="otherPorts"]'), 'Harbour shop orders from its other warehouses');
+    const fromSupplier = await stateOf(() => window.logisticsToolboxState.built.lanes.find((lane) => lane.kind === 'supply' && lane.fromSite === 'Supplier 1').link);
+    await page.selectOption('#closureLaneSelect', fromSupplier);
+    await page.selectOption('#closureModeSelect', 'otherPorts');
+    assert.match(await page.textContent('#closureModeSelect option[value="otherPorts"]'), /^Warehouse \d orders from its other suppliers$/);
+    assert.match(await page.textContent('#closureHint'), /^Warehouse \d also orders over Supplier 2 \([\d,.]+ pallets\/day\), which ships only what its supplier can make\.$/);
+    assert.ok(!/truck|port|town|TEU/i.test(await page.evaluate(() => document.querySelector('.scenarioPanel[data-panel="roadClosure"]').innerText)), 'the road closure tab speaks of this network');
+    await page.selectOption('#closureModeSelect', 'wait');
+    await page.selectOption('#closureLaneSelect', harbourLane.link);
     assert.equal(await page.isVisible('#legendClosed'), true);
     assert.equal(await page.textContent('#legendClosedText'), 'Road to close');
     // On the road: the X's centre is on the link's own path.

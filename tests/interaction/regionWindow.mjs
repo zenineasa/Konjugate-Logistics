@@ -271,7 +271,7 @@ try {
         assert.deepEqual(await toolbox.evaluate(() => [...document.querySelectorAll('#divertToSelect option')].map((option) => option.value)), ['Birch Harbour'], 'only ports outside the chokepoint');
         await toolbox.fill('#divertBerthsInput', '400');
         await toolbox.click('#runScenarioButton');
-        await toolbox.waitForFunction(() => /50% of it is diverted to Birch Harbour \(1,688 pallets\), whose berths take 4,000 pallets\/day, and trucked inland over \d lanes? with \d+ trucks/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
+        await toolbox.waitForFunction(() => /50% of it is diverted to Birch Harbour \(1,688 pallets\), whose berths take 4,000 pallets\/day, and carried inland over \d lanes? with \d+ vehicles/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
         // Birch Harbour shows the cargo it received as diverted here, not as a negative loss.
         const birchRow = await toolbox.evaluate(() => {
             const table = [...document.querySelectorAll('#scenarioResult table')].find((item) => /Kept out/.test(item.textContent));
@@ -291,12 +291,12 @@ try {
         assert.equal(await toolbox.locator('#map .lane.rose, #map .lane.fell, #map .lane.stopped').count(), 0, 'the baseline is the model as built');
         await toolbox.click('#flowView [data-flows="scenario"]');
         assert.ok(await toolbox.locator('#map .lane.rose').count() > 0);
-        // People buy less while the cut lasts: the same diversion with every town ordering half as much, so less is owed.
+        // People buy less while the cut lasts: the same diversion with every store and customer area ordering half as much, so less is owed.
         const backlogCost = () => toolbox.evaluate(() => Number([...document.querySelectorAll('#scenarioResult tr')].find((row) => row.cells[0]?.textContent === 'Backlog cost').cells[1].textContent.replace(/,/g, '')));
         const backlogBefore = await backlogCost();
         await toolbox.fill('#demandDuringInput', '-50');
         await toolbox.click('#runScenarioButton');
-        await toolbox.waitForFunction(() => /every town's orders fall 50% while it lasts/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
+        await toolbox.waitForFunction(() => /every store's, dark store's and customer area's orders fall 50% while it lasts/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
         const backlogAfter = await backlogCost();
         assert.ok(backlogAfter < backlogBefore, `with half the orders the backlog should cost less (${backlogAfter} against ${backlogBefore})`);
         await toolbox.fill('#demandDuringInput', '0');
@@ -329,6 +329,9 @@ try {
         // The busiest lane closed for 3 days from day 2, its trucks waiting: the cargo waits at the port, and its
         // warehouse lives on its stock (three days' cover, so its towns are still served).
         await runTab('roadClosure', /closed from day 2 for 3 days: [\d,.]+ pallets a day it no longer carries, its orders waiting/);
+        // A network of ports: the warehouse orders from its other ports, on vehicles.
+        assert.match(await toolbox.textContent('#closureModeSelect option[value="otherPorts"]'), / orders from its other ports$/);
+        assert.equal(await toolbox.textContent('#closureVehiclesLabel'), 'Its vehicles');
         const lowest = () => toolbox.evaluate(() => [...document.querySelectorAll('#scenarioResult table')].find((table) => /Lowest stock/.test(table.textContent))
             .querySelectorAll('td.worse').length);
         assert.ok(await lowest() >= 1, 'the closed lane\'s warehouse runs down its stock');

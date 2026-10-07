@@ -2660,6 +2660,17 @@ const fleetLanes = (choice) => {
 // A build saved before demand could be changed has no towns: rebuild to change it.
 const demandTowns = (choice) => (choice === 'all' ? view().towns ?? [] : (view().towns ?? []).filter((town) => `town:${town.name}` === choice));
 
+// Where a lane's goods come from, in the user's word: a warehouse (to a store), a supplier or a port.
+const sourceKind = (lane) => (lane.kind === 'store' ? 'warehouse' : view().ports.find((port) => port.name === lane.from)?.supplier ? 'supplier' : 'port');
+// What limits the lanes orders are moved to: a warehouse or a port ships what it holds, a supplier what it can make.
+function sourcesHave(lanes) {
+    const kinds = [...new Set(lanes.map(sourceKind))];
+    const one = lanes.length === 1;
+    if (kinds.length > 1) return 'their suppliers can make and their ports hold';
+    if (kinds[0] === 'supplier') return one ? 'its supplier can make' : 'their suppliers can make';
+    return one ? `its ${kinds[0]} holds` : `their ${kinds[0]}s hold`;
+}
+
 // What each choice means, in a line under it.
 function renderScenarioHints() {
     if (!view()?.lanes?.length) return;
@@ -2668,13 +2679,19 @@ function renderScenarioHints() {
     const mode = settings.closure.mode;
     $('#closureOpenRow').hidden = mode === 'detour';
     $('#closureDetourRow').hidden = mode !== 'detour';
+    $('#closureVehiclesLabel').textContent = state.built.vehicles ? 'Its vehicles' : 'Its trucks';
+    $('#trucksFoundLabel').textContent = state.built.vehicles ? 'vehicles found' : 'trucks found';
     if (lane) {
         const others = view().lanes.filter((item) => item.to === lane.to && item !== lane);
+        // Who orders elsewhere, and from whom: a store from its other warehouses, a warehouse from its other suppliers or ports.
+        const kinds = [...new Set((others.length ? others : [lane]).map(sourceKind))];
+        const elsewhere = `its other ${kinds.length === 1 ? `${kinds[0]}s` : 'suppliers and ports'}`;
+        $('#closureModeSelect option[value="otherPorts"]').textContent = `${lane.site ?? lane.to} orders from ${elsewhere}`;
         $('#closureHint').textContent = {
             wait: `${number(lane.leadTime * 24, 1)} h a trip today. ${lane.site ?? lane.to}'s orders over it queue until it reopens.`,
             detour: `${number(lane.leadTime * 24, 1)} h a trip today, over ${number(lane.kilometres)} km: the detour adds as many kilometres in proportion.`,
             otherPorts: others.length
-                ? `${lane.site ?? lane.to} also orders over ${others.map((item) => `${item.from} (${number(item.rate)} ${goods()}/day)`).join(', ')}, which ship${others.length === 1 ? 's' : ''} only what ${others.length === 1 ? (lane.kind === 'store' ? 'its warehouse holds' : 'its port holds') : (lane.kind === 'store' ? 'their warehouses hold' : 'their ports hold')}.`
+                ? `${lane.site ?? lane.to} also orders over ${others.map((item) => `${item.from} (${number(item.rate)} ${goods()}/day)`).join(', ')}, which ship${others.length === 1 ? 's' : ''} only what ${sourcesHave(others)}.`
                 : `${lane.site ?? lane.to} has no other lane: its orders wait for the road to reopen.`
         }[mode];
     }
@@ -2768,7 +2785,7 @@ function chokepointRun(settings, start, runTime, status) {
     const baseDemand = settings.demandDuring
         ? demandPlan({ towns, change: settings.demandDuring / 100, start, duration: settings.days * day, forkAt: start, runTime }).supplied.baseDemand
         : { entities: towns.map((town) => town.name), samples: Object.fromEntries(towns.map((town) => [town.name, heldPath({ outside: town.demand, inside: town.demand, start, duration: settings.days * day, forkAt: start, runTime })])) };
-    const demandNote = settings.demandDuring ? `; every town's orders ${settings.demandDuring < 0 ? 'fall' : 'rise'} ${Math.abs(settings.demandDuring)}% while it lasts` : '';
+    const demandNote = settings.demandDuring ? `; ${view().stores ? 'every store\'s, dark store\'s and customer area\'s' : 'every town\'s'} orders ${settings.demandDuring < 0 ? 'fall' : 'rise'} ${Math.abs(settings.demandDuring)}% while it lasts` : '';
     const reached = affected.map((item) => ({ port: item.port.name, share: item.share }));
     if (!targets.length) {
         // The cargo kept out is lost (or arrives later): the warehouses stop ordering what will not come while the cut lasts.
@@ -2791,7 +2808,7 @@ function chokepointRun(settings, start, runTime, status) {
     const over = [...new Set(diversion.lanes.map(view().siteOf))];
     return {
         id: 'chokepointDiversion', supplied: { byParameter }, lanes: over,
-        describe: `${reaching}${later}; ${where} trucked inland over ${over.length} lane${over.length === 1 ? '' : 's'} with ${number(diversion.trucks)} trucks${settings.trucksFound < 100 ? ` (${settings.trucksFound}% of those needed)` : ''}${unreachable.length ? `; ${unreachable.join(', ')} ${unreachable.length === 1 ? 'has' : 'have'} no lane from ${diversion.targets.length > 1 ? 'one of them' : 'it'}, so ${unreachable.length === 1 ? 'its' : 'their'} share stays kept out` : ''}${demandNote}.`,
+        describe: `${reaching}${later}; ${where} ${state.built.vehicles ? 'carried' : 'trucked'} inland over ${over.length} lane${over.length === 1 ? '' : 's'} with ${number(diversion.trucks)} ${state.built.vehicles ? 'vehicles' : 'trucks'}${settings.trucksFound < 100 ? ` (${settings.trucksFound}% of those needed)` : ''}${unreachable.length ? `; ${unreachable.join(', ')} ${unreachable.length === 1 ? 'has' : 'have'} no lane from ${diversion.targets.length > 1 ? 'one of them' : 'it'}, so ${unreachable.length === 1 ? 'its' : 'their'} share stays kept out` : ''}${demandNote}.`,
         extra: { ...extra, diversion: { to: diversion.targets.map((item) => item.to), teu: diversion.divertedTeu } }
     };
 }

@@ -57,10 +57,10 @@
             {
                 "scenarioId": "chokepointDisruption",
                 "name": "Chokepoint disruption",
-                "description": "Fewer ships come through a strait or canal for a while, and the ports that depend on it receive less. Watch warehouse stock fall and towns' orders wait, then recover.",
+                "description": "Fewer ships come through a strait or canal for a while, and the ports that depend on it receive less. Watch warehouse stock fall and customers' orders wait, then recover.",
                 "forkAt": 864000,
                 "runTime": 7776000,
-                "effects": ["Each port's arrivals fall by its share of ships through the chokepoint times the cut, for the chosen days.", "Its warehouses stop ordering the cargo that will not come while the cut lasts.", "Every town's orders change by the share given while the cut lasts (none by default)."],
+                "effects": ["Each port's arrivals fall by its share of ships through the chokepoint times the cut, for the chosen days.", "Its warehouses stop ordering the cargo that will not come while the cut lasts.", "Demand everywhere changes by the share given while the cut lasts (none by default)."],
                 "interventions": [
                     { "parameter": "vesselArrivals", "target": "supplied", "samples": true },
                     { "parameter": "orderShare", "target": "supplied", "samples": true },
@@ -70,10 +70,10 @@
             {
                 "scenarioId": "chokepointDiversion",
                 "name": "Chokepoint disruption, cargo diverted",
-                "description": "Fewer ships come through a strait or canal for a while, and part of the cargo kept out lands at one or two ports outside it instead and is trucked inland from there. Watch that port's anchorage and yard, and the trucks on its lanes.",
+                "description": "Fewer ships come through a strait or canal for a while, and part of the cargo kept out lands at one or two ports outside it instead and is carried inland by road from there. Watch that port's anchorage and yard, and the vehicles on its lanes.",
                 "forkAt": 864000,
                 "runTime": 7776000,
-                "effects": ["Each port's arrivals fall by its share of ships through the chokepoint times the cut.", "The diverted cargo arrives at the chosen port; its warehouses order it from there, and those lanes hire trucks for it.", "The chosen port's berths keep their capacity, or take the capacity given from the disruption's first day to the end of the run.", "Every town's orders change by the share given while the cut lasts (none by default)."],
+                "effects": ["Each port's arrivals fall by its share of ships through the chokepoint times the cut.", "The diverted cargo arrives at the chosen port; its warehouses order it from there, and those lanes hire vehicles for it.", "The chosen port's berths keep their capacity, or take the capacity given from the disruption's first day to the end of the run.", "Demand everywhere changes by the share given while the cut lasts (none by default)."],
                 "interventions": [
                     { "parameter": "vesselArrivals", "target": "supplied", "samples": true },
                     { "parameter": "orderShare", "target": "supplied", "samples": true },
@@ -86,10 +86,10 @@
             {
                 "scenarioId": "roadClosure",
                 "name": "Road closure",
-                "description": "A road lane is closed, or restricted, for a while. Its trucks wait for it to reopen, take a detour, or the warehouse orders from its other ports. Watch the warehouse's stock fall, the lane's trucks get busy and the cargo wait at the port.",
+                "description": "A road is closed, or restricted, for a while. Its vehicles wait for it to reopen, take a detour, or the site it leads to orders from its other sources. Watch that site's stock fall, the lane's vehicles get busy and the goods wait where they are.",
                 "forkAt": 864000,
                 "runTime": 7776000,
-                "effects": ["Closed, the lane loads only its open share; trucks already on the road finish their trips.", "On a detour, every trip takes longer over more kilometres.", "Ordering from other ports moves the lane's share of the warehouse's orders to its other lanes, which ship only what their own ports hold."],
+                "effects": ["Closed, the lane loads only its open share; vehicles already on the road finish their trips.", "On a detour, every trip takes longer over more kilometres.", "Ordering elsewhere moves the lane's share of its site's orders to the other lanes into it, which ship only what their own sources hold or make."],
                 "interventions": [
                     { "parameter": "laneOpen", "target": "supplied", "samples": true },
                     { "parameter": "orderShare", "target": "supplied", "samples": true },
@@ -100,10 +100,10 @@
             {
                 "scenarioId": "fleetChange",
                 "name": "Fleet change",
-                "description": "The trucks on some lanes change: drivers are short, or the operator adds trucks. Watch what the lanes carry, their utilisation and their costs.",
+                "description": "The vehicles on some lanes change: drivers are short, or more are hired. Watch what the lanes carry, their utilisation and their costs.",
                 "forkAt": 864000,
                 "runTime": 7776000,
-                "effects": ["Each lane's fleet of each size is hired or released towards the new number over its hiring time; only idle trucks are released."],
+                "effects": ["Each lane's fleet of each size is hired or released towards the new number over its hiring time; only idle vehicles are released."],
                 "interventions": [
                     { "parameter": "fleetSize", "target": "supplied", "samples": true },
                     { "parameter": "fleetSize2", "target": "supplied", "samples": true }
@@ -112,10 +112,10 @@
             {
                 "scenarioId": "demandSurge",
                 "name": "Demand surge",
-                "description": "Towns order more for a while, as on peak days. Watch warehouses run down, trucks fill up and orders wait.",
+                "description": "Stores, customer areas or towns order more for a while, as on peak days. Watch warehouses and stores run down, vehicles fill up and orders wait.",
                 "forkAt": 864000,
                 "runTime": 7776000,
-                "effects": ["Each chosen town's demand rises by the share given, for the days given."],
+                "effects": ["Each chosen site's demand rises by the share given, for the days given."],
                 "interventions": [{ "parameter": "baseDemand", "target": "supplied", "samples": true }]
             },
             {
