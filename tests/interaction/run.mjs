@@ -216,7 +216,7 @@ try {
         const [jobId] = await jobIds();
         appFinal = await window.evaluate(([id, time]) => window.engine.readResultSample(id, time), [jobId, days * day]);
     } finally {
-        await app.close().catch(() => {});
+        await app.close().catch(() => { });
     }
 
     // --- The app built what the templates say. --------------------------------------------------
@@ -286,7 +286,14 @@ try {
             }, String(10 * day));
             const branchesBefore = (await exampleJobs()).length;
             await openBranches();
-            await exampleWindow.click('#forkHereButton');
+            await exampleWindow.click('#forkHereButton').catch(async (error) => {
+                const shown = await exampleWindow.evaluate(() => ({
+                    status: document.querySelector('#statusText')?.textContent, forkHidden: document.querySelector('#forkHereButton').hidden,
+                    panelHidden: document.querySelector('#branchesPanel').hidden, branchesButtonHidden: document.querySelector('#branchesButton').hidden,
+                    branches: document.querySelectorAll('#branchTree .branchTreeButton').length, timeline: document.querySelector('#resultTimeline').value
+                })).catch(() => null);
+                throw new Error(`${error.message}\nThe app shows: ${JSON.stringify(shown)}`);
+            });
             await exampleWindow.waitForSelector('#forkParameterPanel:not([hidden])');
             assert.equal(await exampleWindow.locator('#forkParameterRows .liveParameterRow').count(), 4, 'The example should offer its four live controls.');
             for (const [name, value] of Object.entries(values)) {
@@ -355,7 +362,7 @@ try {
         assert.ok(hiredZone2 > 0.99, `More trucks: Zone 2 should receive over 99% of its orders (got ${hiredZone2}).`);
         console.log(`✓ logistics example: the baseline holds still; the berth outage queues 2,125 TEU at anchorage and serves Zone 1 (${(100 * zone1).toFixed(0)}%) ahead of Zone 2 (${(100 * zone2).toFixed(0)}%); in the demand surge 170 trucks serve Zone 2 ${(100 * surgeZone2).toFixed(0)}% while port dispatches swing to ${peak.toFixed(0)} TEU/day, and 210 trucks serve it ${(100 * hiredZone2).toFixed(0)}%.`);
     } finally {
-        await session.app.close().catch(() => {});
+        await session.app.close().catch(() => { });
     }
 } finally {
     await rm(scratch, { recursive: true, force: true });
