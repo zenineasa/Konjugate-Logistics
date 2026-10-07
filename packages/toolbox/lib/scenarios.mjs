@@ -178,6 +178,61 @@ export function supplierPlan({ lanes, suppliers, chosen, short = 0, lateDays = 0
     };
 }
 
+// A site down for a while (a warehouse out of action, a store closed): nothing goes into it or out of it by road, and
+// nothing is sold or delivered from it. `nodes` are the site's nodes in the model that hold its stock (one for each
+// category), `lanes` the build's lanes and `deliveries` its deliveries ({ name, from, share }).
+//   - Every lane into it and out of it is closed, and no order is placed over one: an order on a closed lane would
+//     count as on its way and hold back its site's other orders (see closurePlan). Goods bound for it wait where they
+//     are, and come when it reopens.
+//   - Every delivery from its stock stops: a closed store's shoppers are lost or wait as when its shelves are empty.
+//   - The sites it restocks 'wait', or with 'otherWarehouses' order what it sent them over their other lanes, in
+//     proportion to what those carry; one with no other lane waits, and is named.
+// The plan always holds the three parameters: with no delivery from the site, a delivery is named at its usual share.
+export const siteDownModes = ['wait', 'otherWarehouses'];
+export function siteDownPlan({ lanes, deliveries, nodes, mode = 'wait', start, duration, forkAt, runTime }) {
+    if (!nodes?.length) throw new Error('Choose a site that is down.');
+    if (!siteDownModes.includes(mode)) throw new Error(`The sites a site that is down restocks wait or order from their other warehouses, not "${mode}".`);
+    const hold = (outside, inside) => heldPath({ outside, inside, start, duration, forkAt, runTime });
+    const down = new Set(nodes);
+    const into = lanes.filter((lane) => down.has(lane.to));
+    const outOf = lanes.filter((lane) => down.has(lane.from));
+    if (!into.length && !outOf.length) throw new Error('The site has no lane in the model: nothing goes into it or out of it.');
+    const laneOpen = { entities: [], samples: {} };
+    const orderShare = { entities: [], samples: {} };
+    const set = (group, name, path) => { if (!group.samples[name]) group.entities.push(name); group.samples[name] = path; };
+    for (const lane of [...into, ...outOf]) set(laneOpen, lane.name, hold(1, 0));
+    const shareOf = (lane) => { const total = lanes.filter((item) => item.to === lane.to).reduce((sum, item) => sum + item.rate, 0); return total > 0 ? lane.rate / total : 0; };
+    // It orders nothing while it is down.
+    for (const lane of into) set(orderShare, lane.name, hold(shareOf(lane), 0));
+    // And nothing is ordered from it: by each site it restocks, from its other lanes or not at all.
+    const reroutedTo = new Set();
+    const waiting = new Set();
+    for (const destination of new Set(outOf.map((lane) => lane.to))) {
+        const siblings = lanes.filter((lane) => lane.to === destination);
+        const others = siblings.filter((lane) => !down.has(lane.from) && lane.rate > 0);
+        const othersTotal = others.reduce((sum, lane) => sum + lane.rate, 0);
+        const moving = mode === 'otherWarehouses' && othersTotal > 0;
+        const moved = siblings.filter((lane) => down.has(lane.from)).reduce((sum, lane) => sum + shareOf(lane), 0);
+        if (!moving) waiting.add(destination);
+        for (const lane of siblings) {
+            const share = shareOf(lane);
+            if (down.has(lane.from)) set(orderShare, lane.name, hold(share, 0));
+            else if (moving && others.includes(lane)) { set(orderShare, lane.name, hold(share, share + moved * lane.rate / othersTotal)); reroutedTo.add(lane.name); }
+        }
+    }
+    const stopped = deliveries.filter((delivery) => down.has(delivery.from));
+    const share = { entities: [], samples: {} };
+    for (const delivery of stopped) set(share, delivery.name, hold(delivery.share, 0));
+    if (!stopped.length && deliveries.length) set(share, deliveries[0].name, hold(deliveries[0].share, deliveries[0].share));
+    return {
+        supplied: { laneOpen, orderShare, share },
+        // What it sent out a day, the lanes closed, the deliveries stopped, where orders went and who waits.
+        perDay: outOf.reduce((sum, lane) => sum + lane.rate, 0),
+        lanes: [...into, ...outOf].map((lane) => lane.name), deliveries: stopped.map((delivery) => delivery.name),
+        reroutedTo: [...reroutedTo], waiting: [...waiting]
+    };
+}
+
 // A held path through `breaks` (seconds), valued `valueAt(time)` from each break to the next, counted from `forkAt`.
 function pathThrough(valueAt, breaks, forkAt, runTime) {
     const times = [...new Set(breaks.filter((time) => time >= forkAt && time <= runTime))].sort((a, b) => a - b);

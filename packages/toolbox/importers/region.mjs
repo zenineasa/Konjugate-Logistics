@@ -296,7 +296,7 @@ async function finishBuild({ templates, helpers, selection, route, links, option
         parameterIndex: built.parameterIndex,
         data: {
             step, lanes: built.lanes, served: built.served, provenance: built.provenance, warnings: built.warnings, histories: built.histories, ports: built.ports, days: built.days,
-            operator: built.operator, towns: built.towns, stores: built.stores, unit: built.unit, perTeu: built.perTeu, vehicles: built.vehicles, categories: built.categories, trucking: built.trucking, standbyPorts: built.standbyPorts, corridors: built.corridors,
+            operator: built.operator, towns: built.towns, stores: built.stores, deliveries: built.deliveries, unit: built.unit, perTeu: built.perTeu, vehicles: built.vehicles, categories: built.categories, trucking: built.trucking, standbyPorts: built.standbyPorts, corridors: built.corridors,
             unusedZones: built.unusedZones, unusedLinks: built.unusedLinks, nodes: built.document.nodes.length, edges: built.document.edges.length, lanesByBasis
         },
         report: {

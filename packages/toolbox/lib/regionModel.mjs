@@ -834,6 +834,14 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
     // catalogue, from its own stock, restocked by road from its warehouses.
     const serveLinkOf = new Map((links?.serve ?? []).map((link) => [`${link.zone}|${link.town}`, link]));
     const stores = [];
+    // Every delivery: a store's sales from its own stock, a customer area's or a town's deliveries from a warehouse. Its
+    // share of the stock it draws on is live, so a scenario can stop it (a store closed, a warehouse down).
+    const deliveries = [];
+    const placeDelivery = (entity, from, to, site, options) => {
+        bundle('delivery', entity, { warehouse: from, zone: to }, options);
+        makeLive(entity, 'share', 1);
+        deliveries.push({ name: entity, from: from.name, to: to.name, site, category: scope?.category.id ?? null, share: options.shared.share });
+    };
     for (const town of towns) {
         const townDemand = demand.get(town.id);
         const itsAllocations = allocations.filter((item) => item.town === town);
@@ -869,7 +877,7 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
             // user set it, else one for every store (or dark store), so it can be changed for all at once.
             const ownLost = Number.isFinite(town.lostShare) && town.lostShareBasis !== 'assumed';
             const lostShare = ownLost ? town.lostShare : town.role === 'darkStore' ? settings.darkStoreLostShare : settings.storeLostShare;
-            bundle('delivery', label(`${town.name} sales`), { warehouse: stockNode, zone: node }, {
+            placeDelivery(label(`${town.name} sales`), stockNode, node, town.name, {
                 shared: { share: 1, demandShare: 1 },
                 as: {
                     responseDays: { symbol: 'saleDays', name: 'Sale time at stores', value: settings.saleDays },
@@ -897,7 +905,7 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         }
         for (const allocation of itsAllocations) {
             const zoneTotal = zoneDemand.get(allocation.zone.id);
-            bundle('delivery', label(`${town.name} from ${allocation.zone.name}`), { warehouse: warehouses.get(allocation.zone.id), zone: node }, {
+            placeDelivery(label(`${town.name} from ${allocation.zone.name}`), warehouses.get(allocation.zone.id), node, town.name, {
                 shared: { share: allocation.share * townDemand / zoneTotal, demandShare: allocation.share }
             });
             if (itsAllocations.length > 1) {
@@ -929,7 +937,7 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
 
     const category = scope?.category.id ?? null;
     return {
-        provenance, warnings, parameterIndex, lanes, laneGeometry, stores, unusedLinks, unusedZones,
+        provenance, warnings, parameterIndex, lanes, laneGeometry, stores, deliveries, unusedLinks, unusedZones,
         // What each warehouse sends out and each store sells, by site id: what a category's share of a site's room goes by.
         totals: new Map([...zoneDemand, ...demand]),
         // Each port's arrivals as built: its average, and the held schedule it follows when it has one -- what a
@@ -1013,6 +1021,8 @@ function assemble(parts, { builder, settings, categories = null }) {
         // The stores and dark stores that hold stock, one entry for each category they sell: { name (its shoppers' node),
         // site, category, stock (its stock room's node), role, demand }.
         stores: all('stores'),
+        // Every delivery, a store's sales included: { name, from (the stock it draws on), to, site, category, share }.
+        deliveries: all('deliveries'),
         // What the model counts, how many of it a TEU is, the vehicle types its lanes run on (null for two truck sizes)
         // and the categories it carries (null for goods of one kind).
         unit: first.unit, perTeu: first.perTeu, vehicles: first.vehicles,

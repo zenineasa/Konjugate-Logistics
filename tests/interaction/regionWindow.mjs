@@ -347,6 +347,10 @@ try {
             await toolbox.fill('#fleetChangeInput', '-40');
         });
         // Demand up by half everywhere.
+        // A warehouse down, in the real app: the host takes the scenario's three parameters, a delivery's share among them.
+        const down = await runTab('siteDown', / down from day 2 for 3 days: nothing goes into it or out of it \([\d,.]+ pallets a day it no longer sends out\); the sites it restocks wait for it\./);
+        assert.equal(await toolbox.locator('#map .siteMark.down').count(), 1, 'the warehouse is ringed on the map');
+        assert.match(down, /Share of demand met/);
         // A supplier short, in the real app: this network has ports alone, so the tab is hidden until a supplier is placed;
         // the host takes the scenario's three parameters; and with the supplier deleted the tab goes again.
         assert.equal(await toolbox.locator('#scenarioTabs [data-scenario="supplierTrouble"]').isVisible(), false, 'no supplier, no Supplier tab');
@@ -438,7 +442,7 @@ try {
         } finally {
             await offline.close().catch(() => {});
         }
-        console.log(`✓ logistics region window: the sample region and a searched region load their roads alone; ports, warehouses and towns are fetched and suggested only when asked for, and adopted; the model (${nodes} nodes, ${edges} relationships) is built from the pins and links and opens in the canvas; dragging Alder Industrial Park moves its lane from ${before} to ${after}; a customer area placed on the map is served; a chokepoint's cargo is diverted to Birch Harbour; the lanes run on heavy trucks, counted in pallets; a road closure, a detour, a cut in heavy trucks, a supplier short and a demand surge run from their tabs; the session is kept with the project (and a scenario runs straight after it is restored), saved with it, and restored from it with no network.`);
+        console.log(`✓ logistics region window: the sample region and a searched region load their roads alone; ports, warehouses and towns are fetched and suggested only when asked for, and adopted; the model (${nodes} nodes, ${edges} relationships) is built from the pins and links and opens in the canvas; dragging Alder Industrial Park moves its lane from ${before} to ${after}; a customer area placed on the map is served; a chokepoint's cargo is diverted to Birch Harbour; the lanes run on heavy trucks, counted in pallets; a road closure, a detour, a cut in heavy trucks, a warehouse down, a supplier short and a demand surge run from their tabs; the session is kept with the project (and a scenario runs straight after it is restored), saved with it, and restored from it with no network.`);
     } finally {
         await app?.close().catch(() => {});
     }

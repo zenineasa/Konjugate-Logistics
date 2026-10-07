@@ -171,6 +171,7 @@
                         <button type="button" role="tab" data-scenario="fleetChange">Fleet</button>
                         <button type="button" role="tab" data-scenario="demandSurge">Demand</button>
                         <button type="button" role="tab" data-scenario="supplierTrouble" hidden>Supplier</button>
+                        <button type="button" role="tab" data-scenario="siteDown" hidden>Site down</button>
                     </div>
                     <div class="scenarioPanel" data-panel="chokepointDisruption">
                         <p class="muted small">Fewer ships through a strait or canal for a while: the ports that depend on it receive less.</p>
@@ -250,6 +251,15 @@
                         </select></label>
                         <div class="muted small" id="supplierHint"></div>
                     </div>
+                    <div class="scenarioPanel" data-panel="siteDown" hidden>
+                        <p class="muted small">A warehouse out of action, or a store closed, for a while: nothing goes into it or out of it by road, and nothing is sold or delivered from it. Goods bound for it wait where they are, and come when it reopens.</p>
+                        <label class="row small">Site <select id="downSiteSelect"></select></label>
+                        <label class="row small" id="downModeRow">Meanwhile the sites it restocks <select id="downModeSelect">
+                            <option value="wait">wait for it</option>
+                            <option value="otherWarehouses">order from their other warehouses</option>
+                        </select></label>
+                        <div class="muted small" id="downHint"></div>
+                    </div>
                     <div class="row small">
                         <label>from day <input type="number" id="startInput" min="0" step="1" value="10"></label>
                         <label>for <input type="number" id="durationInput" min="1" step="1" value="30"> days</label>
@@ -309,7 +319,7 @@
                 <span><i class="swatch lane"></i>Road lane, as built</span>
                 <span id="legendFell" hidden><i class="swatch lane fell"></i>Carried less</span>
                 <span id="legendRose" hidden><i class="swatch lane rose"></i>Carried more</span>
-                <span id="legendSupplier" hidden><i class="swatch supplierMark"></i>Supplier short or late</span><span id="legendClosed" hidden><i class="swatch closedMark">✕</i><span id="legendClosedText">Road closed</span></span>
+                <span id="legendDown" hidden><i class="swatch downMark"></i>Site down</span><span id="legendSupplier" hidden><i class="swatch supplierMark"></i>Supplier short or late</span><span id="legendClosed" hidden><i class="swatch closedMark">✕</i><span id="legendClosedText">Road closed</span></span>
                 <span id="legendBorder" hidden><i class="swatch border"></i>Border</span>
                 <span id="legendUnsettled" hidden title="Disputed, indefinite or a line of control, as Natural Earth classes it"><i class="swatch border unsettled"></i>Disputed or undefined</span>
                 <span class="attribution" id="attribution">Map data © OpenStreetMap contributors</span>

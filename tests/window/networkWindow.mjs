@@ -646,11 +646,22 @@ try {
     // map the tab opens with that supplier chosen, and the hint says what the choice comes to.
     assert.equal(await page.isVisible('#scenarioTabs [data-scenario="supplierTrouble"]'), true);
     assert.equal(await page.isVisible('#scenarioTabs [data-scenario="chokepointDisruption"]'), false, 'no port, no chokepoint');
-    await page.keyboard.press('Escape');
-    const onSupplier = await screenOf(placements[1][1]);
-    await page.mouse.click(onSupplier.x, onSupplier.y, { button: 'right' });
-    await page.waitForSelector('#contextMenu:not([hidden])');
-    await page.click('#contextMenu button:has-text("Make it late or short")');
+    // Where a site is now (some were moved since they were placed), and its menu there. The map is drawn again after
+    // Escape clears the selection: a right click sent before it has been would land on a site about to be replaced, so
+    // the menu is asked for once the window has drawn (twice over, a frame each).
+    const whereIs = (name) => page.evaluate((wanted) => { const pin = window.logisticsToolboxState.pins.find((item) => item.name === wanted); return { lat: pin.lat, lon: pin.lon }; }, name);
+    const openMenuOn = async (name) => {
+        await page.keyboard.press('Escape');
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const at = await screenOf(await whereIs(name));
+        await page.mouse.click(at.x, at.y, { button: 'right' });
+        await page.waitForSelector('#contextMenu:not([hidden])');
+    };
+    const menuOn = async (name, label) => {
+        await openMenuOn(name);
+        await page.click(`#contextMenu button:has-text("${label}")`);
+    };
+    await menuOn('Supplier 2', 'Make it late or short');
     assert.equal(await page.evaluate(() => document.querySelector('#scenarioTabs .active').dataset.scenario), 'supplierTrouble');
     assert.equal(await page.isVisible('.scenarioPanel[data-panel="supplierTrouble"]'), true);
     assert.equal(await page.inputValue('#supplierSelect'), 'supplier:Supplier 2');
@@ -662,10 +673,31 @@ try {
     await page.selectOption('#supplierModeSelect', 'otherSuppliers');
     assert.match(await page.textContent('#supplierHint'), /^Supplier 2 makes [\d.]+ of the [\d.]+ pallets a day ordered from it and its orders take 3 days in place of 1\./);
     assert.deepEqual(await stateOf(() => window.logisticsToolboxState.built && { ...JSON.parse(JSON.stringify({ tab: window.logisticsToolboxState.scenarioTab })) }), { tab: 'supplierTrouble' });
-    const onStore = await screenOf(placements[4][1]);
-    await page.mouse.click(onStore.x, onStore.y, { button: 'right' });
-    await page.waitForSelector('#contextMenu:not([hidden])');
+    await openMenuOn('Harbour shop');
     assert.ok(!/late or short/.test(await page.textContent('#contextMenu')));
+    await page.keyboard.press('Escape');
+    await page.click('#scenarioTabs [data-scenario="roadClosure"]');
+    noErrors();
+
+    // 7a3. A site down: from a warehouse's menu on the map ("Take it down…") or a store's ("Close it…"), the tab opens
+    // with that site chosen; a warehouse says whom it restocks and offers them their other warehouses, a store what it
+    // sells and loses.
+    assert.equal(await page.isVisible('#scenarioTabs [data-scenario="siteDown"]'), true);
+    await menuOn('Warehouse 1', 'Take it down');
+    assert.equal(await page.evaluate(() => document.querySelector('#scenarioTabs .active').dataset.scenario), 'siteDown');
+    assert.equal(await page.inputValue('#downSiteSelect'), 'site:Warehouse 1');
+    assert.deepEqual(await page.$$eval('#downSiteSelect optgroup', (groups) => groups.map((group) => [group.label, group.children.length])), [['Warehouses', 2], ['Stores and dark stores', 5]]);
+    assert.equal(await page.isVisible('#downModeRow'), true);
+    assert.match(await page.textContent('#downHint'), /^Warehouse 1 restocks \d stores? with [\d.]+ pallets a day/);
+    await menuOn('Harbour shop', 'Close it');
+    assert.equal(await page.inputValue('#downSiteSelect'), 'site:Harbour shop');
+    assert.equal(await page.isVisible('#downModeRow'), false, 'a store restocks no one');
+    assert.match(await page.textContent('#downHint'), /^Harbour shop sells [\d.]+ pallets a day: closed, 80% of that is lost and the rest waits for it to open\. It keeps its stock, and receives nothing\.$/);
+    // A supplier and a customer area cannot go down here: no such item in their menus.
+    for (const name of ['Supplier 1', await stateOf(() => window.logisticsToolboxState.pins.find((pin) => pin.role === 'customerArea').name)]) {
+        await openMenuOn(name);
+        assert.ok(!/Take it down|Close it/.test(await page.textContent('#contextMenu')));
+    }
     await page.keyboard.press('Escape');
     await page.click('#scenarioTabs [data-scenario="roadClosure"]');
     noErrors();
@@ -746,6 +778,22 @@ try {
         assert.equal(await page.locator('#map .siteMark.supplier').count(), 0, 'no ring on the baseline');
         await page.click('#flowView [data-flows="scenario"]');
         assert.deepEqual(await stateOf(() => window.logisticsToolboxState.runs.map((run) => run.number)), [1, 2, 3]);
+        // Harbour shop closed for the ten days: it keeps its stock, so it is not out of anything, and loses its sales;
+        // the summary says it was closed, and the map rings it.
+        await page.click('#scenarioTabs [data-scenario="siteDown"]');
+        assert.equal(await page.inputValue('#downSiteSelect'), 'site:Harbour shop');
+        await page.click('#runScenarioButton');
+        await page.waitForFunction(() => /^Harbour shop closed/.test(document.querySelector('#scenarioResult p')?.textContent ?? '') || document.querySelector('#scenarioStatus .notice.error'), null, { timeout: 120000 }).catch(fail);
+        assert.equal(await page.locator('#scenarioStatus .notice.error').count(), 0, await page.textContent('#scenarioStatus'));
+        assert.equal(await page.textContent('#scenarioResult p'), 'Harbour shop closed from day 5 for 10 days: nothing goes into it or out of it, and it sells nothing.');
+        const shut = await stateOf(() => window.logisticsToolboxState.scenario.stores.find((item) => item.name === 'Harbour shop'));
+        assert.ok(shut.lost.scenario > 1 && shut.emptyDays.scenario - shut.emptyDays.baseline < 0.05, `closed, it loses sales with stock on its shelves (${JSON.stringify([shut.lost, shut.emptyDays])})`);
+        const shutRow = await page.evaluate(() => [...document.querySelectorAll('#scenarioResult table')].find((table) => /^Store/.test(table.tHead.textContent))?.querySelector('tbody tr')?.textContent);
+        assert.match(shutRow ?? '', /^Harbour shopclosed for 10 days: its stock stayed, its sales did not/);
+        assert.equal(await page.locator('#map .siteMark.down').count(), 1);
+        assert.match(await page.textContent('#map .siteMark.down title'), /^Harbour shop: closed from day 5 for 10 days$/);
+        assert.equal(await page.locator('#map .siteMark.supplier').count(), 0, 'the supplier\'s ring goes with its scenario');
+        assert.equal(await page.isVisible('#legendDown'), true);
         await page.click('#scenarioTabs [data-scenario="roadClosure"]');
         noErrors();
     }
@@ -940,7 +988,7 @@ try {
     await macPage.close();
     noErrors();
 
-    console.log(`✓ logistics network window: the sample region loads its roads alone; ${placements.length} pins placed from the palette are linked and routed as suggested; every action works from a button or menu, a drag or a right click, and the keyboard, and undoes; a moved store re-routes its one link in ${routing.milliseconds < 1 ? 'under a millisecond' : `${routing.milliseconds.toFixed(0)} ms`}; links are drawn, refused with a reason, deleted and not suggested again; the model is built from the pins and links, a copy for each of its three categories (${built.match(/\d+ nodes/)[0]}), its stores holding stock and its links on the vehicles chosen on their cards, from their menus and with V;${process.env.KONJUGATE_ENGINE === 'export' ? ' a store whose road closes runs out of stock and a supplier short and late is ringed on the map;' : ''} ports and towns are suggested only when asked for and adopted; the network saves as a CSV and loads back; the session restores it, and an earlier session is migrated; shortcuts behave and read as Windows and Linux users and Mac users expect; a network is kept with the project before any build; an area loaded is kept on the computer and loads again with nothing fetched, fresh on request, and the cache clears; a searched region fetches its roads and place names alone, and ports only when asked for.`);
+    console.log(`✓ logistics network window: the sample region loads its roads alone; ${placements.length} pins placed from the palette are linked and routed as suggested; every action works from a button or menu, a drag or a right click, and the keyboard, and undoes; a moved store re-routes its one link in ${routing.milliseconds < 1 ? 'under a millisecond' : `${routing.milliseconds.toFixed(0)} ms`}; links are drawn, refused with a reason, deleted and not suggested again; the model is built from the pins and links, a copy for each of its three categories (${built.match(/\d+ nodes/)[0]}), its stores holding stock and its links on the vehicles chosen on their cards, from their menus and with V;${process.env.KONJUGATE_ENGINE === 'export' ? ' a store whose road closes runs out of stock a supplier short and late is ringed on the map and a closed store keeps its stock and loses its sales;' : ''} ports and towns are suggested only when asked for and adopted; the network saves as a CSV and loads back; the session restores it, and an earlier session is migrated; shortcuts behave and read as Windows and Linux users and Mac users expect; a network is kept with the project before any build; an area loaded is kept on the computer and loads again with nothing fetched, fresh on request, and the cache clears; a searched region fetches its roads and place names alone, and ports only when asked for.`);
 } finally {
     await browser.close();
     await rm(scratch, { recursive: true, force: true });

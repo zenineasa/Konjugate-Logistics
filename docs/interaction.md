@@ -74,6 +74,7 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 | Load an area again fresh | Load fresh beside Load roads, or beside the date the roads were fetched | | |
 | Clear the maps kept on this computer | Clear at the foot of the Map step | | |
 | Make a supplier short or late | The Supplier tab in the Scenarios step: which supplier, of which goods, how short, how late and what its warehouses do meanwhile; Run | Its menu on the map, "Make it late or short…", which opens the tab with it chosen | |
+| Take a warehouse down or close a store | The Site down tab in the Scenarios step: which site, and what the stores it restocks do meanwhile; Run | Its menu on the map, "Take it down…" or "Close it…", which opens the tab with it chosen | |
 | Set a run beside another | Set beside, under the scenario's result (the run before it unless chosen; nothing to hide it) | | Tab to it, then the arrow keys |
 | Read a run's details | Details, under its result | | |
 

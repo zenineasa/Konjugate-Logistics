@@ -14,7 +14,7 @@ import { createPin, networkProblems, networkSelection, routeLinks, suggestLinks 
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
 import { buildRoadGraph } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { compactRoadGraph, createNetworkRouter } from '../../packages/toolbox/lib/routing.mjs';
-import { fleetPlan, supplierPlan } from '../../packages/toolbox/lib/scenarios.mjs';
+import { fleetPlan, siteDownPlan, supplierPlan } from '../../packages/toolbox/lib/scenarios.mjs';
 import { carriersFor, defaultCatalogue } from '../../packages/toolbox/lib/vehicles.mjs';
 import { loadTemplates, ModelBuilder } from '../../scripts/templatePlacement.mjs';
 import { gridRoads } from '../fixtures/roadGrid.mjs';
@@ -256,6 +256,56 @@ test('a supplier short or late: its capacity held at what it still makes, its le
         }
     }
     assert.deepEqual(plan.waiting.sort(), ['Warehouse 1: Ambient', 'Warehouse 1: Chilled', 'Warehouse 1: Frozen'], 'with one supplier, every category waits');
+});
+
+test('a site down: its lanes closed and nothing ordered over them, its deliveries stopped, the sites it restocks waiting or ordering elsewhere', () => {
+    const window = { start: 5 * 86400, duration: 10 * 86400, forkAt: 0, runTime: 30 * 86400 };
+    const during = (path) => path.filter(([time]) => time <= window.start).at(-1)[1];
+    const values = (path) => [path[0][1], during(path), path.at(-1)[1]];
+    // Two warehouses, each from a supplier. North restocks a shop alone and a market with South (6 and 2 a day), and
+    // delivers to an estate; South restocks a kiosk.
+    const lanes = [
+        { name: 'Mill → North', from: 'Mill', to: 'North', rate: 20 }, { name: 'Mill → South', from: 'Mill', to: 'South', rate: 5 },
+        { name: 'North → Shop', from: 'North', to: 'Shop stock', rate: 10 }, { name: 'North → Market', from: 'North', to: 'Market stock', rate: 6 },
+        { name: 'South → Market', from: 'South', to: 'Market stock', rate: 2 }, { name: 'South → Kiosk', from: 'South', to: 'Kiosk stock', rate: 3 }
+    ];
+    const deliveries = [
+        { name: 'Shop sales', from: 'Shop stock', share: 1 }, { name: 'Market sales', from: 'Market stock', share: 1 }, { name: 'Kiosk sales', from: 'Kiosk stock', share: 1 },
+        { name: 'Estate from North', from: 'North', share: 0.2 }
+    ];
+    // North down, its sites waiting: every lane into and out of it closed and nothing ordered over them, its delivery stopped.
+    const waiting = siteDownPlan({ lanes, deliveries, nodes: ['North'], ...window });
+    assert.deepEqual(waiting.supplied.laneOpen.entities, ['Mill → North', 'North → Shop', 'North → Market']);
+    for (const lane of waiting.supplied.laneOpen.entities) assert.deepEqual(values(waiting.supplied.laneOpen.samples[lane]), [1, 0, 1]);
+    assert.deepEqual(values(waiting.supplied.orderShare.samples['Mill → North']), [1, 0, 1]);
+    assert.deepEqual(values(waiting.supplied.orderShare.samples['North → Market']), [0.75, 0, 0.75]);
+    assert.equal(waiting.supplied.orderShare.samples['South → Market'], undefined, 'the other warehouse\'s lane is left as it is');
+    assert.deepEqual([waiting.supplied.share.entities, values(waiting.supplied.share.samples['Estate from North'])], [['Estate from North'], [0.2, 0, 0.2]]);
+    assert.deepEqual([waiting.perDay, waiting.reroutedTo, waiting.waiting.sort()], [16, [], ['Market stock', 'Shop stock']]);
+    // Ordering elsewhere: the market's orders all go to South; the shop has no other warehouse, and waits.
+    const elsewhere = siteDownPlan({ lanes, deliveries, nodes: ['North'], mode: 'otherWarehouses', ...window });
+    assert.deepEqual(values(elsewhere.supplied.orderShare.samples['South → Market']), [0.25, 1, 0.25]);
+    assert.deepEqual(values(elsewhere.supplied.orderShare.samples['North → Market']), [0.75, 0, 0.75]);
+    assert.deepEqual([elsewhere.reroutedTo, elsewhere.waiting], [['South → Market'], ['Shop stock']]);
+    // A store closed: nothing in, nothing sold. A warehouse with no delivery of its own still names one, as it is.
+    const closed = siteDownPlan({ lanes, deliveries, nodes: ['Market stock'], ...window });
+    assert.deepEqual(closed.supplied.laneOpen.entities, ['North → Market', 'South → Market']);
+    assert.deepEqual(closed.supplied.orderShare.entities.map((lane) => during(closed.supplied.orderShare.samples[lane])), [0, 0]);
+    assert.deepEqual([closed.supplied.share.entities, during(closed.supplied.share.samples['Market sales']), closed.perDay], [['Market sales'], 0, 0]);
+    const south = siteDownPlan({ lanes, deliveries, nodes: ['South'], ...window });
+    assert.deepEqual([south.supplied.share.entities, values(south.supplied.share.samples['Shop sales']), south.deliveries], [['Shop sales'], [1, 1, 1], []]);
+    assert.throws(() => siteDownPlan({ lanes, deliveries, nodes: [], ...window }), /Choose a site/);
+    assert.throws(() => siteDownPlan({ lanes, deliveries, nodes: ['Depot'], ...window }), /has no lane in the model/);
+    assert.throws(() => siteDownPlan({ lanes, deliveries, nodes: ['North'], mode: 'panic', ...window }), /wait or order from their other warehouses/);
+    // In a built network every delivery's share is live, and a site's nodes are one for each category.
+    const { built } = placed();
+    assert.deepEqual(built.deliveries.map((delivery) => delivery.name).slice(0, 3), ['Store 1 sales: Ambient', 'Store 2 sales: Ambient', 'Store 1 sales: Chilled']);
+    for (const delivery of built.deliveries) assert.ok(built.parameterIndex.find((entry) => entry.key === 'share' && entry.entity === delivery.name)?.live, `${delivery.name}'s share is live`);
+    const nodes = siteView(built).members.get('Store 1 stock');
+    assert.deepEqual(nodes, ['Store 1 stock: Ambient', 'Store 1 stock: Chilled', 'Store 1 stock: Frozen']);
+    const plan = siteDownPlan({ lanes: built.lanes, deliveries: built.deliveries, nodes, ...window });
+    assert.deepEqual(plan.deliveries, ['Store 1 sales: Ambient', 'Store 1 sales: Chilled', 'Store 1 sales: Frozen']);
+    assert.equal(plan.supplied.laneOpen.entities.length, 3);
 });
 
 test('a model of goods of one kind, or one saved before categories, is its own view', () => {

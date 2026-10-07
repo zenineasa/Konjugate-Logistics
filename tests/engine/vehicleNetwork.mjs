@@ -9,6 +9,9 @@
 //     by the same warehouse keeps its stock
 //   - a store's vans cut by three quarters: its deliveries fall behind and its stock runs down
 //   - demand stepped up at the warehouse with little room: it orders no more than it has room for
+//   - a store closed for ten days: it sells nothing and keeps its stock, four in five of its sales lost and the rest
+//     waiting; and the second warehouse down: its stores run out, but one that the first warehouse also restocks keeps
+//     more of its stock when it orders there
 // All must conserve goods and vehicles, and keep each stock room's and warehouse's on-order count equal to its lanes.
 //
 // Usage: node tests/engine/vehicleNetwork.mjs [path/to/konjugateEngine]
@@ -21,7 +24,7 @@ import { createPin, networkSelection, routeLinks, suggestLinks } from '../../pac
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
 import { buildRoadGraph } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { compactRoadGraph, createNetworkRouter } from '../../packages/toolbox/lib/routing.mjs';
-import { closurePlan, demandPlan, fleetPlan } from '../../packages/toolbox/lib/scenarios.mjs';
+import { closurePlan, demandPlan, fleetPlan, siteDownPlan } from '../../packages/toolbox/lib/scenarios.mjs';
 import { defaultCatalogue } from '../../packages/toolbox/lib/vehicles.mjs';
 import { loadTemplates, ModelBuilder } from '../../scripts/templatePlacement.mjs';
 import { gridRoads } from '../fixtures/roadGrid.mjs';
@@ -43,7 +46,10 @@ add('warehouse', grid.at(28, 26));
 for (const [index, [x, y]] of [[5, 14], [12, 4], [16, 12], [8, 20], [26, 30], [33, 22], [22, 34], [30, 36]].entries()) add('store', grid.at(x, y), index === 2 ? { fields: { demand: 60 } } : {});
 add('darkStore', grid.at(20, 20));
 add('customerArea', grid.at(35, 35), { fields: { population: 40000 } });
-const links = suggestLinks(pins, [], router);
+// The sixth store is restocked from both warehouses: links of the user's own.
+const both = pins.filter((pin) => pin.role === 'store')[5];
+const drawn = pins.filter((pin) => pin.role === 'warehouse').map((warehouse) => ({ id: `${warehouse.id}>${both.id}`, from: warehouse.id, to: both.id, basis: 'user' }));
+const links = suggestLinks(pins, drawn, router);
 routeLinks(pins, links, router);
 // One store's link runs on two types: small trucks and mini-vans.
 const store = (index) => pins.filter((pin) => pin.role === 'store')[index];
@@ -140,7 +146,46 @@ try {
     const used = surged.series(`${tight.name}.spaceUsed`);
     assert.ok(stockOf(surged).every((value, index) => Math.abs(used[index] - value / 45) < 1e-6), 'space used is its stock over its capacity.');
 
-    console.log(`✓ network with vehicles: ${document.nodes.length} nodes (${pins.length} pins, ${built.lanes.length} lanes, ${built.stores.length} stores with stock) hold still in pallets; closing ${lane.name.replace(/^Road /, '')} empties ${first.name} (${lostAll.toFixed(0)} pallets of sales lost) while ${neighbour.site} keeps its stock; a quarter of the vans runs ${store(2).name} down to ${at(cut, `${vanLane.to}.stock`, 14).toFixed(0)} pallets; ${tight.name}, with room for 45 pallets, holds at most ${most.toFixed(0)} under a surge (${Math.max(...stockOf(free)).toFixed(0)} with no limit); goods, vehicles and orders conserved.`);
+    // ---- a store closed for ten days: nothing in, nothing sold. Its stock stays; of its ten days of sales four in five
+    // are lost and the rest wait, and are sold once it opens again.
+    const shut = store(3);
+    const shutPlan = siteDownPlan({ lanes: built.lanes, deliveries: built.deliveries, nodes: [`${shut.name} stock`], ...window });
+    assert.deepEqual(shutPlan.deliveries, [`${shut.name} sales`]);
+    const shutRun = await runDocument(directory, 'vehicles-store-closed', build(follow(shutPlan.supplied)).document, 30);
+    checkInvariants(shutRun);
+    const sales = built.stores.find((item) => item.name === shut.name).demand;
+    // (While it is closed: the shoppers who waited buy at once when it opens, and its shelves dip then.)
+    const whileShut = shutRun.series(`${shut.name} stock.stock`).slice(hour(5), hour(15));
+    assert.ok(Math.min(...whileShut) > 0.99 * at(baseline, `${shut.name} stock.stock`, 0), `closed: ${shut.name} keeps its stock while it is closed (${Math.min(...whileShut).toFixed(2)} pallets at the lowest).`);
+    const lostShut = shutRun.series(`${shut.name}.lost`).at(-1);
+    assert.ok(Math.abs(lostShut - 0.8 * sales * 10) < 0.02 * sales * 10, `closed: it loses four fifths of ten days of sales (${lostShut.toFixed(1)} of ${(sales * 10).toFixed(0)} pallets).`);
+    assert.ok(at(shutRun, `${shut.name}.backlog`, 15) > at(baseline, `${shut.name}.backlog`, 15) + 0.15 * sales * 10, 'closed: the rest wait');
+    assert.ok(at(shutRun, `${shut.name}.backlog`, 30) < at(baseline, `${shut.name}.backlog`, 30) + 0.02 * sales * 10, 'closed: and are served once it opens');
+    assert.ok(shutRun.series(`${store(4).name}.lost`).at(-1) < 1e-6, 'closed: no other store loses a sale.');
+
+    // ---- the second warehouse down for ten days. The sites it restocks wait: a store it alone restocks runs out. Or
+    // they order from their other warehouse: the store both restock keeps more of its stock, though the first warehouse
+    // has little room to send it more from.
+    const [, secondWarehouse] = pins.filter((pin) => pin.role === 'warehouse');
+    const alone = built.lanes.find((item) => item.kind === 'store' && item.from === secondWarehouse.name && built.lanes.filter((other) => other.to === item.to).length === 1);
+    const lowestOf = (result, key) => Math.min(...result.series(key)) / result.series(key)[0];
+    const downWait = siteDownPlan({ lanes: built.lanes, deliveries: built.deliveries, nodes: [secondWarehouse.name], mode: 'wait', ...window });
+    assert.ok(downWait.waiting.includes(`${both.name} stock`) && !downWait.reroutedTo.length);
+    const waitRun = await runDocument(directory, 'vehicles-warehouse-down', build(follow(downWait.supplied)).document, 30);
+    checkInvariants(waitRun);
+    assert.ok(lowestOf(waitRun, `${alone.to}.stock`) < 0.05, `down: ${alone.site} runs out (${(100 * lowestOf(waitRun, `${alone.to}.stock`)).toFixed(0)}% of its stock at the lowest).`);
+    // Nothing went into the warehouse or out of it while it was down.
+    const held = waitRun.series(`${secondWarehouse.name}.stock`);
+    assert.ok(Math.abs(held[hour(14)] - held[hour(7)]) < 0.02 * held[0], `down: ${secondWarehouse.name}'s stock stands still (${held[hour(7)].toFixed(1)} then ${held[hour(14)].toFixed(1)}).`);
+    const downElsewhere = siteDownPlan({ lanes: built.lanes, deliveries: built.deliveries, nodes: [secondWarehouse.name], mode: 'otherWarehouses', ...window });
+    assert.deepEqual(downElsewhere.reroutedTo, [`Road ${tight.name} → ${both.name}`]);
+    assert.ok(downElsewhere.waiting.includes(alone.to) && !downElsewhere.waiting.includes(`${both.name} stock`));
+    const elsewhereRun = await runDocument(directory, 'vehicles-warehouse-down-elsewhere', build(follow(downElsewhere.supplied)).document, 30);
+    checkInvariants(elsewhereRun);
+    const [waited, ordered] = [waitRun, elsewhereRun].map((result) => lowestOf(result, `${both.name} stock.stock`));
+    assert.ok(ordered > waited + 0.1, `down: ${both.name} keeps more of its stock ordering from ${tight.name} (${(100 * ordered).toFixed(0)}% at the lowest against ${(100 * waited).toFixed(0)}%).`);
+
+    console.log(`✓ network with vehicles: ${document.nodes.length} nodes (${pins.length} pins, ${built.lanes.length} lanes, ${built.stores.length} stores with stock) hold still in pallets; closing ${lane.name.replace(/^Road /, '')} empties ${first.name} (${lostAll.toFixed(0)} pallets of sales lost) while ${neighbour.site} keeps its stock; a quarter of the vans runs ${store(2).name} down to ${at(cut, `${vanLane.to}.stock`, 14).toFixed(0)} pallets; ${tight.name}, with room for 45 pallets, holds at most ${most.toFixed(0)} under a surge (${Math.max(...stockOf(free)).toFixed(0)} with no limit); closed for ten days, ${shut.name} keeps its stock and loses ${lostShut.toFixed(0)} pallets of sales; with ${secondWarehouse.name} down ${alone.site} runs out, and ${both.name} keeps ${(100 * ordered).toFixed(0)}% of its stock ordering from ${tight.name} (${(100 * waited).toFixed(0)}% waiting); goods, vehicles and orders conserved.`);
 } finally {
     await rm(directory, { recursive: true, force: true });
 }

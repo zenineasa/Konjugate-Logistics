@@ -134,6 +134,23 @@
                     { "parameter": "supplierLeadTime", "target": "supplied", "samples": true },
                     { "parameter": "orderShare", "target": "supplied", "samples": true }
                 ]
+            },
+            {
+                "scenarioId": "siteDown",
+                "name": "Site down",
+                "description": "A warehouse is out of action, or a store closed, for a while. Nothing goes into it or out of it by road, and nothing is sold or delivered from it. Watch the stores it restocks run down, or the sales a closed store loses.",
+                "forkAt": 864000,
+                "runTime": 7776000,
+                "effects": [
+                    "Every lane into the site and out of it is closed, and no order is placed over one; goods bound for it wait where they are.",
+                    "Every delivery from its stock stops: a closed store's shoppers are lost or wait, as when its shelves are empty.",
+                    "The sites it restocks wait for it, or order what it sent them from their other warehouses."
+                ],
+                "interventions": [
+                    { "parameter": "laneOpen", "target": "supplied", "samples": true },
+                    { "parameter": "orderShare", "target": "supplied", "samples": true },
+                    { "parameter": "share", "target": "supplied", "samples": true }
+                ]
             }
         ]
     },

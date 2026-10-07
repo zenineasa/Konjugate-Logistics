@@ -44,7 +44,8 @@ test('the manifest declares a file role for every kind the importer reads, and e
     for (const feature of ['scenarioForkTime', 'parameterSchedules', 'suppliedPerParameter']) assert.ok(addon.requires.includes(feature), feature);
     assert.deepEqual(addon.contributes.scenarios.map((scenario) => [scenario.scenarioId, scenario.interventions.map((item) => item.parameter)]), [
         ['chokepointDisruption', ['vesselArrivals', 'orderShare', 'baseDemand']], ['chokepointDiversion', ['vesselArrivals', 'orderShare', 'fleetSize', 'berthCapacity', 'outageCapacity', 'baseDemand']], ['roadClosure', ['laneOpen', 'orderShare', 'leadTime', 'distance']], ['fleetChange', ['fleetSize', 'fleetSize2']], ['demandSurge', ['baseDemand']],
-        ['supplierTrouble', ['supplierCapacity', 'supplierLeadTime', 'orderShare']]
+        ['supplierTrouble', ['supplierCapacity', 'supplierLeadTime', 'orderShare']],
+        ['siteDown', ['laneOpen', 'orderShare', 'share']]
     ]);
     for (const scenario of addon.contributes.scenarios) {
         assert.equal(scenario.runTime, 90 * 86400);
@@ -151,7 +152,7 @@ test('every lane and town has its own live parameters for the scenarios, however
     const portNames = result.data.ports.map((port) => port.name);
     // A supplier's are its own (this region has ports alone, so none).
     const supplierNames = result.data.ports.filter((port) => port.supplier).map((port) => port.name);
-    const entitiesOf = { vesselArrivals: portNames, berthCapacity: portNames, outageCapacity: portNames, baseDemand: result.data.towns.map((town) => town.name), supplierCapacity: supplierNames, supplierLeadTime: supplierNames };
+    const entitiesOf = { vesselArrivals: portNames, berthCapacity: portNames, outageCapacity: portNames, baseDemand: result.data.towns.map((town) => town.name), supplierCapacity: supplierNames, supplierLeadTime: supplierNames, share: result.data.deliveries.map((delivery) => delivery.name) };
     for (const key of new Set(scenarioKeys)) {
         for (const entity of entitiesOf[key] ?? result.data.lanes.map((lane) => lane.name)) {
             const entries = result.parameterIndex.filter((entry) => entry.key === key && entry.entity === entity);

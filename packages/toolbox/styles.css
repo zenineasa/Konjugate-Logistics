@@ -269,6 +269,8 @@ td.better { color: var(--ok); font-weight: 600; }
 #map .roadMark .markCross { stroke: #ff3b30; stroke-linecap: round; fill: none; }
 #map .roadMark.planned { opacity: 0.7; }
 #map .siteMark .markRing { stroke: #ff9500; fill: none; }
+#map .siteMark.down .markRing { stroke: #ff3b30; }
+.swatch.downMark { background: none; border: 2px dashed #ff3b30; border-radius: 50%; }
 .swatch.supplierMark { background: none; border: 2px dashed #ff9500; border-radius: 50%; }
 .swatch.closedMark { background: none; color: #ff3b30; font-style: normal; font-weight: 700; width: auto; height: auto; }
 
