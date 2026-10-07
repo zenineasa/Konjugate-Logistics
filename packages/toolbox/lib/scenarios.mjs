@@ -31,6 +31,37 @@ export function heldPath({ outside, inside, start, duration = null, forkAt, runT
     return path;
 }
 
+// Who takes the orders a site cannot place where it used to (a road closed, a supplier short, a warehouse down), when
+// it orders elsewhere: its backup lanes first (links between warehouses that carry nothing until then), evenly; with
+// none, its other lanes, in proportion to what they carry. `siblings` are the lanes into the site, `affected(lane)`
+// says which cannot take more. Returns each taker with its share of what is moved.
+function takers(siblings, affected) {
+    const free = siblings.filter((lane) => !affected(lane));
+    const backups = free.filter((lane) => lane.standby && lane.kind === 'transfer');
+    if (backups.length) return new Map(backups.map((lane) => [lane, 1 / backups.length]));
+    const others = free.filter((lane) => lane.rate > 0);
+    const total = others.reduce((sum, lane) => sum + lane.rate, 0);
+    return new Map(others.map((lane) => [lane, lane.rate / total]));
+}
+// The vehicles a lane needs to carry `rate` a day, as the toolbox sizes a lane: on the road and returning, and a
+// reserve of loads.
+const fleetFor = (lane, rate, idleReserve = 2) => Math.ceil((2 * rate * lane.leadTime + idleReserve * rate * (lane.loadDays ?? 0.25)) / (lane.truckCapacity ?? 1) - 1e-9);
+// The fleets a plan changes: a backup lane has no vehicles until orders move to it, and hires what their flow needs
+// while they do. A plan that moves nothing to a backup still names a lane, at the fleet it has, so the scenario has the
+// data it declares.
+function fleetsFor(hired, fallback, hold) {
+    const fleetSize = { entities: [], samples: {} };
+    for (const [lane, rate] of hired) {
+        fleetSize.entities.push(lane.name);
+        fleetSize.samples[lane.name] = hold(lane.fleet ?? 0, Math.max(lane.fleet ?? 0, fleetFor(lane, lane.rate + rate)));
+    }
+    if (!fleetSize.entities.length && fallback) {
+        fleetSize.entities.push(fallback.name);
+        fleetSize.samples[fallback.name] = hold(fallback.fleet ?? 0, fallback.fleet ?? 0);
+    }
+    return fleetSize;
+}
+
 // A road closed (`open` 0) or restricted (between 0 and 1) for a while, and what its trucks do meanwhile:
 //   'wait'      the lane loads only its open share, and the warehouse orders over it only that share until it reopens:
 //               the cargo waits at the port, and the warehouse lives on its stock and its other lanes. (Orders placed
@@ -55,16 +86,19 @@ export function closurePlan({ lanes, closed, mode = 'wait', open = 0, detourHour
     const one = (value) => ({ entities: [lane.name], samples: { [lane.name]: value } });
     const siblings = lanes.filter((item) => item.to === lane.to);
     const total = siblings.reduce((sum, item) => sum + item.rate, 0);
-    const others = siblings.filter((item) => item !== lane);
-    const othersTotal = others.reduce((sum, item) => sum + item.rate, 0);
-    const moved = mode === 'otherPorts' && othersTotal > 0 ? (1 - open) * lane.rate / total : 0;
+    // Who takes what the closed lane cannot: the site's backup lanes, or its other lanes by what they carry.
+    const split = mode === 'otherPorts' ? takers(siblings, (item) => item === lane) : new Map();
+    const moved = split.size ? (1 - open) * lane.rate / total : 0;
     const samples = {};
+    const hired = new Map();
     for (const item of siblings) {
         const share = item.rate / total;
         // The closed lane takes only its open share of the orders (all of them on a detour); with other ports, what it
         // can't take moves to the other lanes, otherwise it is not ordered while the road is closed.
-        samples[item.name] = hold(share, item === lane ? (mode === 'detour' ? share : share * open) : share + moved * item.rate / othersTotal);
+        samples[item.name] = hold(share, item === lane ? (mode === 'detour' ? share : share * open) : share + moved * (split.get(item) ?? 0));
+        if (item.standby && split.get(item) > 0) hired.set(item, moved * split.get(item) * total);
     }
+    const others = [...split.keys()];
     const detour = mode === 'detour' ? lane.leadTime + detourHours / 24 : lane.leadTime;
     const kilometres = lane.kilometres * detour / lane.leadTime;
     return {
@@ -72,7 +106,8 @@ export function closurePlan({ lanes, closed, mode = 'wait', open = 0, detourHour
             laneOpen: one(hold(1, mode === 'detour' ? 1 : open)),
             orderShare: { entities: siblings.map((item) => item.name), samples },
             leadTime: one(hold(lane.leadTime, detour)),
-            distance: one(hold(lane.kilometres, kilometres))
+            distance: one(hold(lane.kilometres, kilometres)),
+            fleetSize: fleetsFor(hired, lane, hold)
         },
         warehouse: lane.to,
         // Where the orders the lane can't take go: the other lanes, or nowhere (they wait).
@@ -144,21 +179,24 @@ export function supplierPlan({ lanes, suppliers, chosen, short = 0, lateDays = 0
     const orderShare = { entities: [], samples: {} };
     const reroutedTo = new Set();
     const waiting = new Set();
+    const hired = new Map();
     const its = lanes.filter((lane) => names.includes(lane.from) && lane.rate > 0);
     for (const warehouse of new Set(its.map((lane) => lane.to))) {
         const siblings = lanes.filter((lane) => lane.to === warehouse);
         const total = siblings.reduce((sum, lane) => sum + lane.rate, 0);
-        const others = siblings.filter((lane) => !names.includes(lane.from) && lane.rate > 0);
-        const othersTotal = others.reduce((sum, lane) => sum + lane.rate, 0);
-        const moving = mode === 'otherSuppliers' && short > 0 && othersTotal > 0;
+        const split = mode === 'otherSuppliers' && short > 0 ? takers(siblings, (lane) => names.includes(lane.from)) : new Map();
+        const moving = split.size > 0;
         const moved = moving ? short * siblings.filter((lane) => names.includes(lane.from)).reduce((sum, lane) => sum + lane.rate, 0) / total : 0;
         if (mode === 'otherSuppliers' && short > 0 && !moving) waiting.add(warehouse);
         for (const lane of siblings) {
             const share = lane.rate / total;
-            const during = !moving ? share : names.includes(lane.from) ? share * (1 - short) : others.includes(lane) ? share + moved * lane.rate / othersTotal : share;
+            const during = !moving ? share : names.includes(lane.from) ? share * (1 - short) : share + moved * (split.get(lane) ?? 0);
             orderShare.entities.push(lane.name);
             orderShare.samples[lane.name] = hold(share, during);
-            if (moving && others.includes(lane)) reroutedTo.add(lane.name);
+            if (split.get(lane) > 0) {
+                reroutedTo.add(lane.name);
+                if (lane.standby) hired.set(lane, moved * split.get(lane) * total);
+            }
         }
     }
     // A supplier with no lanes (it supplies nothing) still names a lane, at its usual share, so the scenario has the
@@ -170,7 +208,7 @@ export function supplierPlan({ lanes, suppliers, chosen, short = 0, lateDays = 0
         orderShare.samples[lane.name] = hold(share, share);
     }
     return {
-        supplied: { supplierCapacity, supplierLeadTime, orderShare },
+        supplied: { supplierCapacity, supplierLeadTime, orderShare, fleetSize: fleetsFor(hired, its[0] ?? lanes[0], hold) },
         // What it does not make a day while it is short; the lanes from it; where the orders it cannot fill go, and the
         // warehouses that were to order elsewhere and have no one else to order from.
         shortPerDay: troubled.reduce((sum, supplier) => sum + Math.max(0, supplier.arrivals - Math.min(supplier.berths, (1 - short) * supplier.arrivals)) * (short > 0 ? 1 : 0), 0),
@@ -204,20 +242,25 @@ export function siteDownPlan({ lanes, deliveries, nodes, mode = 'wait', start, d
     const shareOf = (lane) => { const total = lanes.filter((item) => item.to === lane.to).reduce((sum, item) => sum + item.rate, 0); return total > 0 ? lane.rate / total : 0; };
     // It orders nothing while it is down.
     for (const lane of into) set(orderShare, lane.name, hold(shareOf(lane), 0));
-    // And nothing is ordered from it: by each site it restocks, from its other lanes or not at all.
+    // And nothing is ordered from it: by each site it restocks, from its backup or its other lanes, or not at all.
+    const hired = new Map();
     const reroutedTo = new Set();
     const waiting = new Set();
     for (const destination of new Set(outOf.map((lane) => lane.to))) {
         const siblings = lanes.filter((lane) => lane.to === destination);
-        const others = siblings.filter((lane) => !down.has(lane.from) && lane.rate > 0);
-        const othersTotal = others.reduce((sum, lane) => sum + lane.rate, 0);
-        const moving = mode === 'otherWarehouses' && othersTotal > 0;
+        const split = mode === 'otherWarehouses' ? takers(siblings, (lane) => down.has(lane.from)) : new Map();
+        const moving = split.size > 0;
         const moved = siblings.filter((lane) => down.has(lane.from)).reduce((sum, lane) => sum + shareOf(lane), 0);
+        const total = siblings.reduce((sum, lane) => sum + lane.rate, 0);
         if (!moving) waiting.add(destination);
         for (const lane of siblings) {
             const share = shareOf(lane);
             if (down.has(lane.from)) set(orderShare, lane.name, hold(share, 0));
-            else if (moving && others.includes(lane)) { set(orderShare, lane.name, hold(share, share + moved * lane.rate / othersTotal)); reroutedTo.add(lane.name); }
+            else if (split.get(lane) > 0) {
+                set(orderShare, lane.name, hold(share, share + moved * split.get(lane)));
+                reroutedTo.add(lane.name);
+                if (lane.standby) hired.set(lane, moved * split.get(lane) * total);
+            }
         }
     }
     const stopped = deliveries.filter((delivery) => down.has(delivery.from));
@@ -225,7 +268,7 @@ export function siteDownPlan({ lanes, deliveries, nodes, mode = 'wait', start, d
     for (const delivery of stopped) set(share, delivery.name, hold(delivery.share, 0));
     if (!stopped.length && deliveries.length) set(share, deliveries[0].name, hold(deliveries[0].share, deliveries[0].share));
     return {
-        supplied: { laneOpen, orderShare, share },
+        supplied: { laneOpen, orderShare, share, fleetSize: fleetsFor(hired, into[0] ?? outOf[0], hold) },
         // What it sent out a day, the lanes closed, the deliveries stopped, where orders went and who waits.
         perDay: outOf.reduce((sum, lane) => sum + lane.rate, 0),
         lanes: [...into, ...outOf].map((lane) => lane.name), deliveries: stopped.map((delivery) => delivery.name),

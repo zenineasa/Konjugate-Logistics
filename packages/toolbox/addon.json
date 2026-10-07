@@ -94,7 +94,8 @@
                     { "parameter": "laneOpen", "target": "supplied", "samples": true },
                     { "parameter": "orderShare", "target": "supplied", "samples": true },
                     { "parameter": "leadTime", "target": "supplied", "samples": true },
-                    { "parameter": "distance", "target": "supplied", "samples": true }
+                    { "parameter": "distance", "target": "supplied", "samples": true },
+                    { "parameter": "fleetSize", "target": "supplied", "samples": true }
                 ]
             },
             {
@@ -132,7 +133,8 @@
                 "interventions": [
                     { "parameter": "supplierCapacity", "target": "supplied", "samples": true },
                     { "parameter": "supplierLeadTime", "target": "supplied", "samples": true },
-                    { "parameter": "orderShare", "target": "supplied", "samples": true }
+                    { "parameter": "orderShare", "target": "supplied", "samples": true },
+                    { "parameter": "fleetSize", "target": "supplied", "samples": true }
                 ]
             },
             {
@@ -149,7 +151,8 @@
                 "interventions": [
                     { "parameter": "laneOpen", "target": "supplied", "samples": true },
                     { "parameter": "orderShare", "target": "supplied", "samples": true },
-                    { "parameter": "share", "target": "supplied", "samples": true }
+                    { "parameter": "share", "target": "supplied", "samples": true },
+                    { "parameter": "fleetSize", "target": "supplied", "samples": true }
                 ]
             }
         ]

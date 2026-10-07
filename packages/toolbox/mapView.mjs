@@ -482,7 +482,10 @@ export class MapView {
     // The menu of what is under the pointer, or of the map there.
     menuAt(event) {
         const site = this.siteAt(event);
-        const linkNode = document.elementFromPoint(event.clientX, event.clientY)?.closest?.('[data-link]');
+        // Links that share a road lie over each other: of those under the pointer, the menu is the selected one's when
+        // one is selected (so a link picked from a card can be reached where others cover it), else the one on top.
+        const linkNodes = (document.elementsFromPoint?.(event.clientX, event.clientY) ?? []).map((node) => node.closest?.('[data-link]')).filter(Boolean);
+        const linkNode = linkNodes.find((node) => this.isSelected('link', node.dataset.link)) ?? linkNodes[0] ?? null;
         const { x, y } = this.toMap(event);
         const target = site ? { kind: site.kept ? 'pin' : 'suggestion', id: site.id } : linkNode ? { kind: 'link', id: linkNode.dataset.link } : null;
         this.handlers.onContextMenu?.({ target, point: this.unproject(x, y), clientX: event.clientX, clientY: event.clientY });

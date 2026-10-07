@@ -56,6 +56,8 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 | Link two sites | "Supplied from" or "Supplies" on its card: add a site | Drag from its handle, Shift-drag from it, or "Link it to another site…" in its menu then click the other | `L`, then click the other |
 | Remove a link | ✕ beside it on the card, or Delete on the link's card | Click it, then Delete in the bar; its menu | Click it, then `Delete` |
 | Move a link's end | | Drag the end of a selected link | |
+| Make a link between warehouses a backup, or a standing link | The tick on the link's card, "A backup: nothing until a scenario orders over it" | Its menu, "Make it a backup" or "Make it a standing link" | |
+| Set what a standing link between warehouses carries | The share on its card (empty: an even share) | | |
 | Keep a suggested link | "Make it mine" on the link's card | Its menu | |
 | Choose a link's vehicles | The vehicle on the link's card (and "+ a second type", ✕ to take it off); with several links selected, "Carry them by" on the selection's card | Its menu, "Carry it by …" (every type that may take it) | `V`: the selected links take the next type that may |
 | Set how many vehicles a link has | The number beside each type on the link's card (empty: sized to its flow) | | |

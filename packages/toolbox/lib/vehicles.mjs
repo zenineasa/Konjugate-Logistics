@@ -35,7 +35,7 @@ export const defaultVehicles = [
 
 // A link's vehicles, by what it joins: heavy trucks from sources to warehouses, medium trucks to stores, mini-vans to
 // dark stores; none to a customer area.
-export const defaultTypeFor = { supply: 'heavyTruck', store: 'mediumTruck', darkStore: 'miniVan' };
+export const defaultTypeFor = { supply: 'heavyTruck', transfer: 'heavyTruck', store: 'mediumTruck', darkStore: 'miniVan' };
 // A link carries at most two types: a road lane has two vehicle sizes.
 export const typesPerLink = 2;
 
@@ -93,22 +93,25 @@ export function vehicleProblem(type) {
     return null;
 }
 
-// What kind of link it is, for its vehicles: supply (source to warehouse), to a store or dark store, or to a customer
-// area (no vehicles); null for a link that cannot be.
+// What kind of link it is, for its vehicles: supply (source to warehouse), transfer (warehouse to warehouse), to a
+// store or dark store, or to a customer area (no vehicles); null for a link that cannot be.
 export function linkKind(fromRole, toRole) {
     if (['supplier', 'port'].includes(fromRole) && toRole === 'warehouse') return 'supply';
+    if (fromRole === 'warehouse' && toRole === 'warehouse') return 'transfer';
     if (fromRole === 'warehouse' && toRole === 'store') return 'store';
     if (fromRole === 'warehouse' && toRole === 'darkStore') return 'darkStore';
     if (fromRole === 'warehouse' && toRole === 'customerArea') return 'customerArea';
     return null;
 }
-export const carriesVehicles = (kind) => kind === 'supply' || kind === 'store' || kind === 'darkStore';
+export const carriesVehicles = (kind) => kind === 'supply' || kind === 'transfer' || kind === 'store' || kind === 'darkStore';
+// Between sites that take any vehicle: heavy trucks may go there, as they may not to a store.
+export const anyVehicle = (kind) => kind === 'supply' || kind === 'transfer';
 
 // The vehicles a link runs on: its own choice where it made one, of types still in the catalogue, else its kind's
 // default (or the first type that may go there). Each is { type, fleet } with fleet null when the toolbox sizes it.
 export function vehiclesOf(link, kind, catalogue) {
     if (!carriesVehicles(kind) || !catalogue.length) return [];
-    const allowed = (type) => kind === 'supply' || type.toStores;
+    const allowed = (type) => anyVehicle(kind) || type.toStores;
     const chosen = (link?.vehicles ?? []).filter((item) => catalogue.some((type) => type.id === item.type)).slice(0, typesPerLink);
     if (chosen.length) return chosen.map((item) => ({ type: item.type, fleet: Number.isFinite(item.fleet) && item.fleet >= 0 ? item.fleet : null }));
     const preferred = catalogue.find((type) => type.id === defaultTypeFor[kind] && allowed(type)) ?? catalogue.find(allowed) ?? catalogue[0];
@@ -123,7 +126,7 @@ export function carriersFor(vehicles, kind, catalogue, chilled) {
     const typeOf = (item) => catalogue.find((type) => type.id === item.type);
     const cold = vehicles.filter((item) => typeOf(item)?.refrigerated);
     if (cold.length) return cold;
-    const fallback = catalogue.find((type) => type.refrigerated && (kind === 'supply' || type.toStores));
+    const fallback = catalogue.find((type) => type.refrigerated && (anyVehicle(kind) || type.toStores));
     return fallback ? [{ type: fallback.id, fleet: null }] : [];
 }
 

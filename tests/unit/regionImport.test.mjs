@@ -819,7 +819,7 @@ test('a road closure holds every path its scenario declares; its warehouse’s o
     const shares = (plan) => Object.values(plan.supplied.orderShare.samples);
     for (const mode of closureModes) {
         const plan = closurePlan({ lanes, closed: 'A → W', mode, detourHours: 6, ...window });
-        assert.deepEqual(Object.keys(plan.supplied), ['laneOpen', 'orderShare', 'leadTime', 'distance'], mode);
+        assert.deepEqual(Object.keys(plan.supplied), ['laneOpen', 'orderShare', 'leadTime', 'distance', 'fleetSize'], mode);
         assert.deepEqual(plan.supplied.orderShare.entities, ['A → W', 'B → W', 'C → W'], `${mode}: only the warehouse's own lanes`);
         close(shares(plan).reduce((sum, samples) => sum + after(samples), 0), 1, 1e-12, `${mode}: shares add up to 1 again`);
         if (mode !== 'wait') close(shares(plan).reduce((sum, samples) => sum + during(samples), 0), 1, 1e-12, `${mode}: shares add up to 1`);

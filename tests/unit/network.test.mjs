@@ -58,7 +58,7 @@ test('links run from a source to a warehouse and from a warehouse to demand; any
     assert.match(linkProblem(supplier, store), /through a warehouse/);
     assert.match(linkProblem(store, warehouse), /at the end of the network/);
     assert.match(linkProblem(warehouse, supplier), /is a source/);
-    assert.match(linkProblem(warehouse, other), /later version/);
+    assert.equal(linkProblem(warehouse, other), null, 'one warehouse may restock another');
     assert.match(linkProblem(supplier, port), /not each other/);
     assert.match(linkProblem(store, store), /two different sites/);
 });
@@ -168,7 +168,7 @@ test('what stops a build is named, with the pins it concerns', () => {
     const problems = networkProblems(pins, [{ id: 'a', from: warehouse.id, to: store.id }, { id: 'b', from: store.id, to: idle.id }]);
     assert.deepEqual(problems.map((problem) => problem.text), [
         'Corner shop supplies nothing: a store is at the end of the network. Draw links from warehouses to it.',
-        'Depot has no supplier or port linked to it. Drag a link from one to it.',
+        'Depot has no supplier, port or warehouse that restocks it. Drag a link from one to it.',
         'Spare depot serves no store or customer area, so it is left out of the model.',
         'Mill supplies no warehouse that serves anyone. Link it to a warehouse, or delete it.',
         'Quay supplies no warehouse that serves anyone: it is kept as a port cargo can be diverted to, with no lanes.'

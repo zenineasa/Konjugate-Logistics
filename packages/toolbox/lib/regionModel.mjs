@@ -355,8 +355,49 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
     }
     const zoneDemand = new Map();
     for (const allocation of allocations) zoneDemand.set(allocation.zone.id, (zoneDemand.get(allocation.zone.id) ?? 0) + allocation.share * demand.get(allocation.town.id));
+    // ---- warehouses restocked from other warehouses (`links.transfer`: { from, to, leg, share, backup }). A standing
+    // link carries its share of what the warehouse it leads to sends out, every day: a hub restocking a spoke. A backup
+    // link carries nothing until a scenario orders over it. What a warehouse sends out is then what its own stores and
+    // customers take and what it sends on to other warehouses; what it needs from suppliers and ports is that, less
+    // what other warehouses send it.
+    const transferLinks = (links?.transfer ?? []).filter((link) => zoneById.has(link.from) && zoneById.has(link.to) && link.from !== link.to);
+    const standingLinks = transferLinks.filter((link) => !link.backup);
+    const transferRate = new Map();
+    const sourceNeed = new Map(zoneDemand);
+    {
+        // Downstream first: a warehouse's need is known once every warehouse it restocks has had its say.
+        const pending = new Map(zones.map((zone) => [zone.id, standingLinks.filter((link) => link.from === zone.id).length]));
+        const ready = zones.filter((zone) => pending.get(zone.id) === 0).map((zone) => zone.id);
+        let settled = 0;
+        while (ready.length) {
+            const id = ready.shift();
+            settled += 1;
+            const total = zoneDemand.get(id) ?? 0;
+            const incoming = standingLinks.filter((link) => link.to === id);
+            const sourced = (links?.supply ?? []).some((link) => link.zone === id && supply.get(link.port) > 0);
+            const given = incoming.filter((link) => link.share > 0);
+            const left = 1 - given.reduce((sum, link) => sum + link.share, 0);
+            const open = incoming.length - given.length + (sourced ? 1 : 0);
+            if (left < -1e-9) throw new Error(`${zoneById.get(id).name} is to take ${number((1 - left) * 100)}% of what it needs from other warehouses: give its links shares that add up to 100% or less.`);
+            if (!open && left > 1e-9 && incoming.length) throw new Error(`${zoneById.get(id).name} takes ${number((1 - left) * 100)}% of what it needs from other warehouses and has no supplier or port for the rest: link one to it, or leave a link's share empty.`);
+            let fromWarehouses = 0;
+            for (const link of incoming) {
+                const share = link.share > 0 ? link.share : Math.max(0, left) / open;
+                transferRate.set(link, { share, rate: share * total });
+                fromWarehouses += share;
+                zoneDemand.set(link.from, (zoneDemand.get(link.from) ?? 0) + share * total);
+                pending.set(link.from, pending.get(link.from) - 1);
+                if (pending.get(link.from) === 0) ready.push(link.from);
+            }
+            sourceNeed.set(id, total * Math.max(0, 1 - fromWarehouses));
+        }
+        if (settled < zones.length) throw new Error(`${zones.filter((zone) => pending.get(zone.id) > 0).map((zone) => zone.name).join(' and ')} restock each other in a circle: one of those links must be a backup, or go.`);
+    }
+    for (const link of transferLinks.filter((item) => item.backup)) transferRate.set(link, { share: 0, rate: 0 });
     const usedZones = zones.filter((zone) => zoneDemand.get(zone.id) > 0);
     const unusedZones = zones.filter((zone) => !(zoneDemand.get(zone.id) > 0));
+    // The warehouses that need a supplier or a port: not one restocked wholly by other warehouses.
+    const sourcedZones = usedZones.filter((zone) => sourceNeed.get(zone.id) > 1e-9);
     if (scope) { /* a warehouse that carries none of one category may carry another: buildRegionModel says which carry none */ } else if (unusedZones.length && links) warnings.push(`${unusedZones.map((zone) => zone.name).join(', ')} ${unusedZones.length === 1 ? 'serves' : 'serve'} no store or customer area, so ${unusedZones.length === 1 ? 'it was' : 'they were'} left out of the model.`);
     else if (unusedZones.length) warnings.push(`${unusedZones.map((zone) => zone.name).join(', ')} ${unusedZones.length === 1 ? 'serves' : 'serve'} none of the kept towns (${unusedZones.length === 1 ? 'it is' : 'they are'} not among the nearest few to any), so ${unusedZones.length === 1 ? 'it was' : 'they were'} left out of the model. Keep a town nearby, or add a customer of your own, to use ${unusedZones.length === 1 ? 'it' : 'them'}.`);
 
@@ -371,7 +412,7 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         }
         return legs.get(key);
     };
-    if (!links) for (const zone of usedZones) for (const port of ports) legOf(`${zone.id}|${port.id}`);
+    if (!links) for (const zone of sourcedZones) for (const port of ports) legOf(`${zone.id}|${port.id}`);
     // A port that hands nothing inland over the period (no container imports in it) has no lanes in the baseline; it
     // stays in the model, where a scenario can divert cargo to it over standby lanes.
     const supplying = ports.filter((port) => supply.get(port.id) > 0);
@@ -384,22 +425,22 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         return { key, zone: zone.id, port: port.id, weight: supply.get(port.id) * Math.exp(-legOf(key).hours / settings.gravityHours) };
     };
     const nearestPorts = (zone) => [...supplying].sort((a, b) => legOf(`${zone.id}|${a.id}`).hours - legOf(`${zone.id}|${b.id}`).hours);
-    const pairsOf = (keys) => usedZones.flatMap((zone) => supplying.filter((port) => keys.has(`${zone.id}|${port.id}`)).map((port) => pairFor(zone, port)));
+    const pairsOf = (keys) => sourcedZones.flatMap((zone) => supplying.filter((port) => keys.has(`${zone.id}|${port.id}`)).map((port) => pairFor(zone, port)));
     // Each zone draws on its nearest few ports, one more at a time until every port ships what arrives and every zone gets what it needs.
     let support = null;
     let flows = null;
     let portsPerZone = Math.min(settings.portsPerZone, supplying.length);
     if (links) {
         // The user's network: the lanes are the links, balanced so every source ships what it supplies.
-        const used = new Set(usedZones.map((zone) => zone.id));
+        const used = new Set(sourcedZones.map((zone) => zone.id));
         support = new Set(links.supply.filter((link) => used.has(link.zone) && supply.get(link.port) > 0).map((link) => `${link.zone}|${link.port}`));
-        for (const zone of usedZones) {
+        for (const zone of sourcedZones) {
             if (![...support].some((key) => key.startsWith(`${zone.id}|`))) throw new Error(`${zone.name} has no supplier or port linked to it that supplies anything. Drag a link from one to it.`);
         }
         for (const port of supplying) {
             if (![...support].some((key) => key.endsWith(`|${port.id}`))) throw new Error(`${port.name} supplies ${supply.get(port.id).toFixed(0)} ${unit} a day, but no warehouse that serves anyone is linked to it. Link it to one, or set it to supply nothing.`);
         }
-        flows = balanceFlows(pairsOf(support), zoneDemand, supplyOf);
+        flows = balanceFlows(pairsOf(support), sourceNeed, supplyOf);
         if (!flows) {
             throw new Error('The links cannot carry what every source supplies to the warehouses that need it: a source supplies more than its warehouses pass on, or a warehouse needs more than its sources supply. Link more sources to warehouses, or change what they supply or what the stores sell.');
         }
@@ -407,13 +448,13 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
     }
     for (; !links && portsPerZone <= supplying.length && !flows; portsPerZone += 1) {
         support = new Set();
-        for (const zone of usedZones) nearestPorts(zone).slice(0, portsPerZone).forEach((port) => support.add(`${zone.id}|${port.id}`));
+        for (const zone of sourcedZones) nearestPorts(zone).slice(0, portsPerZone).forEach((port) => support.add(`${zone.id}|${port.id}`));
         for (const port of supplying) {
             if ([...support].some((key) => key.endsWith(`|${port.id}`))) continue;
-            const nearest = [...usedZones].sort((a, b) => legOf(`${a.id}|${port.id}`).hours - legOf(`${b.id}|${port.id}`).hours)[0];
+            const nearest = [...sourcedZones].sort((a, b) => legOf(`${a.id}|${port.id}`).hours - legOf(`${b.id}|${port.id}`).hours)[0];
             support.add(`${nearest.id}|${port.id}`);
         }
-        flows = balanceFlows(pairsOf(support), zoneDemand, supplyOf);
+        flows = balanceFlows(pairsOf(support), sourceNeed, supplyOf);
     }
     if (!flows) throw new Error('The flows between ports and zones could not be balanced.');
     if (!links && portsPerZone - 1 > settings.portsPerZone) warnings.push(`The nearest ${settings.portsPerZone} ports could not supply every zone in balance, so zones draw on up to ${portsPerZone - 1}.`);
@@ -425,13 +466,13 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
             const [zoneId, portId] = key.split('|');
             const onlyForPort = [...support].filter((other) => other.endsWith(`|${portId}`)).length === 1;
             const onlyForZone = [...support].filter((other) => other.startsWith(`${zoneId}|`)).length === 1;
-            return !onlyForPort && !onlyForZone && flows.get(key) < Math.max(settings.minimumShare * zoneDemand.get(zoneId), settings.minimumLaneTeuPerDay);
+            return !onlyForPort && !onlyForZone && flows.get(key) < Math.max(settings.minimumShare * sourceNeed.get(zoneId), settings.minimumLaneTeuPerDay);
         }).sort((a, b) => flows.get(a) - flows.get(b));
         let dropped = false;
         for (const key of small) {
             const trial = new Set(support);
             trial.delete(key);
-            const balanced = balanceFlows(pairsOf(trial), zoneDemand, supplyOf);
+            const balanced = balanceFlows(pairsOf(trial), sourceNeed, supplyOf);
             if (balanced) { support = trial; flows = balanced; dropped = true; break; }
         }
         if (!dropped) break;
@@ -589,7 +630,7 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
     const choiceOf = (chosen, kind, where) => {
         const usual = chosen?.length ? chosen : catalogue ? usualChoice(kind) : null;
         if (!usual || !scope?.category.chilled) return usual;
-        const cold = carriersFor(usual, kind, catalogue, true);
+        const cold = carriersFor(usual, kind === 'store' ? 'store' : 'supply', catalogue, true);
         if (!cold.length) throw new Error(`${where} carries ${scope.category.name}, which needs a refrigerated vehicle, and no vehicle type ${kind === 'store' ? 'that may deliver to stores ' : ''}is refrigerated. Tick Refrigerated on a vehicle type, or add one.`);
         return cold;
     };
@@ -616,7 +657,7 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
     // The operator's trucks, shared among its contracted lanes by what each needs on the road: loaded and returning
     // trucks for its flow, plus a reserve of loads, in TEU of capacity.
     const laneNeed = (rate, leadTime, laneLoadDays = loadDays) => 2 * rate * leadTime + settings.idleReserve * rate * laneLoadDays;
-    const allocation = operator ? allocateFleet(operator, usedZones.flatMap((zone) => flowsByZone.get(zone.id).filter((flow) => flow.rate > 1e-9).map((flow) => ({
+    const allocation = operator ? allocateFleet(operator, usedZones.flatMap((zone) => (flowsByZone.get(zone.id) ?? []).filter((flow) => flow.rate > 1e-9).map((flow) => ({
         from: flow.port.name, to: zone.name, origin: flow.port, need: laneNeed(flow.rate, laneTime(flow))
     })))) : {};
     const operatorLanes = [];
@@ -650,7 +691,7 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
     // A road lane and the shipment over it, from `origin` to `destination` (nodes), carrying `rate` a day at `share` of
     // what the destination orders. `kind` is 'supply' (from a port or supplier to a warehouse) or 'store' (from a
     // warehouse to a store's stock); `chosen` the link's vehicles ({ type, fleet }), with a catalogue.
-    const placeLane = ({ name: link, kind, origin, destination, originSite, destinationSite, rate, share, leg, chosen: given = null, standby = false, offset = 0 }) => {
+    const placeLane = ({ name: link, kind, origin, destination, originSite, destinationSite, rate, share, leg, chosen: given = null, standby = false, offset = 0, destinationTotal: allItTakes = null }) => {
         const name = label(link);
         const ends = link.replace(/^Road /, '');
         const chosen = choiceOf(given, kind, ends);
@@ -700,7 +741,8 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         if (ownFleet && fleetCapacity < minimum - 1e-9) {
             warnings.push(`${label(ends)} has room for ${fleetCapacity.toFixed(0)} ${unit} in its vehicles, but its flow needs ${minimum.toFixed(0)} (on the road and loading): it will fall behind from the start.`);
         }
-        bundle(kind === 'store' ? 'storeShipment' : maker ? 'supplierShipment' : 'roadShipment', name, { origin, lane: node, destination }, {
+        // From a warehouse (to a store, or to another warehouse) the orders also reach the warehouse's forecast.
+        bundle(kind === 'store' || kind === 'transfer' ? 'storeShipment' : maker ? 'supplierShipment' : 'roadShipment', name, { origin, lane: node, destination }, {
             // From a supplier: its share of the supplier's ready goods, what it orders of all the supplier makes.
             shared: { orderShare: share, ...(maker ? { supplyShare: supply.get(originSite.id) > 0 ? rate / supply.get(originSite.id) : 0 } : {}) }, ...(placedAs ? { as: placedAs.shipment } : {})
         });
@@ -713,7 +755,7 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         makeLive(name, 'leadTime', niceCeiling(Math.max(4 * leadTime, leadTime + 3)));
         makeLive(name, 'distance', niceCeiling(detourFactor * Math.max(kilometres, 1)));
         // Any lane may come to carry all its destination's orders (a diversion to its port, a closure of the others).
-        const destinationTotal = rate / Math.max(share, 1e-9);
+        const destinationTotal = allItTakes ?? rate / Math.max(share, 1e-9);
         const fleetMaximum = niceCeiling(Math.max(10, 3 * Math.max(fleet, fleet2), 3 * Math.ceil(laneNeed(destinationTotal, leadTime, laneLoadDays) / Math.min(capacity1, capacity2))));
         makeLive(name, 'fleetSize', fleetMaximum, 1);
         makeLive(name, 'fleetSize2', fleetMaximum, 1);
@@ -739,7 +781,7 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
             note(name, 'Fleet', fleet, 'trucks', operatorBasis, `${operator.name}'s ${operator.trucks[0].label} trucks from its ${contract.depot}, shared among its contracted lanes by what each needs${operator.synthetic ? ' (invented)' : ''}.`);
             if (operator.trucks[1]) note(name, 'Fleet, second size', fleet2, 'trucks', operatorBasis, `${operator.name}'s ${operator.trucks[1].label} trucks from its ${contract.depot}${operator.synthetic ? ' (invented)' : ''}.`);
         } else if (standby) {
-            note(name, 'Fleet', fleet, vehicleWord, 'assumed', 'On standby: it carries nothing, and has no vehicles, until a scenario diverts cargo to its port.');
+            note(name, 'Fleet', fleet, vehicleWord, 'assumed', kind === 'transfer' ? 'A backup: it carries nothing, and has no vehicles, until a scenario has its warehouse order over it.' : 'On standby: it carries nothing, and has no vehicles, until a scenario diverts cargo to its port.');
         } else if (types) {
             types.forEach((type, index) => {
                 const count = index ? fleet2 : fleet;
@@ -756,7 +798,7 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
             operator: Boolean(contract), standby, basis: leg.basis, timeBasis: own ? 'user' : estimated ? 'estimated' : leg.basis, truckCapacity: capacity1, truckCapacity2: capacity2, loadDays: laneLoadDays,
             ...(types ? { vehicles: types.map((type, index) => ({ type: type.id, name: type.name, fleet: index ? fleet2 : fleet, user: chosen[index].fleet !== null })) } : {})
         });
-        if (kind === 'supply') laneGeometry.push({ name: link, rate, standby, basis: leg.basis, origin: originSite, destination: destinationSite, path: leg.path ?? null });
+        if (kind === 'supply' || kind === 'transfer') laneGeometry.push({ name: link, rate, standby, basis: leg.basis, origin: originSite, destination: destinationSite, path: leg.path ?? null });
         return node;
     };
 
@@ -814,8 +856,9 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
     // on half a day's).
     const stocked = (town) => Boolean(catalogue) && (town.role === 'store' || town.role === 'darkStore');
     const deliversTo = new Set(allocations.filter((item) => !stocked(item.town)).map((item) => item.zone.id));
+    const transfersInto = new Map();
     for (const zone of usedZones) {
-        const zoneFlows = flowsByZone.get(zone.id).filter((flow) => flow.rate > 1e-9);
+        const zoneFlows = (flowsByZone.get(zone.id) ?? []).filter((flow) => flow.rate > 1e-9);
         const total = zoneDemand.get(zone.id);
         const standby = standbyPorts.filter((port) => !zoneFlows.some((flow) => flow.port === port))
             .map((port) => ({ port, rate: 0, leg: legOf(`${zone.id}|${port.id}`), standby: true, link: null }));
@@ -824,8 +867,15 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
             const types = catalogue ? typesOf(choiceOf(flow.link?.vehicles, 'supply', `${flow.port.name} → ${zone.name}`), `${flow.port.name} → ${zone.name}`) : null;
             return { ...flow, leadTime: laneTiming(flow.leg, types, 'supply').leadTime, waitDays: suppliers.get(flow.port.id)?.pipelineDays ?? responseDays };
         });
+        // And what other warehouses send it, over lanes placed once every warehouse is: they count towards what is on its way.
+        const transfersIn = transferLinks.filter((link) => link.to === zone.id && zoneDemand.get(link.from) > 0).map((link) => {
+            const ends = `${zoneById.get(link.from).name} → ${zone.name}`;
+            const types = catalogue ? typesOf(choiceOf(link.vehicles, 'transfer', ends), ends) : null;
+            return { link, rate: transferRate.get(link).rate, leadTime: laneTiming(link.leg ?? route(zoneById.get(link.from), zone), types, 'transfer').leadTime, waitDays: responseDays };
+        });
+        transfersInto.set(zone.id, transfersIn);
         const warehouse = placeStock({
-            entity: label(zone.name), site: zone, total, laneSpecs, defaultCover: coverDays, what: 'sends out',
+            entity: label(zone.name), site: zone, total, laneSpecs: [...laneSpecs, ...transfersIn], defaultCover: coverDays, what: 'sends out',
             minimumDays: deliversTo.has(zone.id) ? drawDownDays : originDrainDays
         });
         for (const [laneIndex, lane] of laneSpecs.entries()) {
@@ -836,6 +886,20 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
             });
         }
         warehouses.set(zone.id, warehouse);
+    }
+    // The lanes between warehouses: a standing one carrying its share of what the warehouse it leads to sends out, a
+    // backup one on standby, with no flow and no vehicles until a scenario orders over it.
+    for (const zone of usedZones) {
+        for (const [laneIndex, transfer] of (transfersInto.get(zone.id) ?? []).entries()) {
+            const from = zoneById.get(transfer.link.from);
+            const { share } = transferRate.get(transfer.link);
+            placeLane({
+                name: `Road ${from.name} → ${zone.name}`, kind: 'transfer', origin: warehouses.get(from.id), destination: warehouses.get(zone.id),
+                originSite: from, destinationSite: zone, rate: transfer.rate, share, leg: transfer.link.leg ?? route(from, zone),
+                chosen: transfer.link.vehicles ?? null, standby: Boolean(transfer.link.backup), offset: -(laneIndex + 1) * 0.8, destinationTotal: zoneDemand.get(zone.id)
+            });
+            if (!transfer.link.backup) note(zone.name, `Share restocked from ${from.name}`, share * 100, '%', transfer.link.share > 0 ? 'user' : 'assumed', transfer.link.share > 0 ? 'Your figure, on the link.' : 'What is left once its links with a share of their own have theirs, split evenly among the rest of its sources: assumed until you set it on the link.');
+        }
     }
 
     // ---- towns, each served by its zones: a customer area (or a town) by deliveries; a store or dark store, with a
@@ -1101,7 +1165,7 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         return {
             category, index, single, shares: its, mixBasis, layout, shift: shifts[index] ?? [0, 0],
             selection: { ports, zones: selection.zones ?? [], towns },
-            links: { supply: links.supply.filter((link) => kept.has(link.port)), serve: links.serve.filter((link) => kept.has(link.town)) }
+            links: { supply: links.supply.filter((link) => kept.has(link.port)), serve: links.serve.filter((link) => kept.has(link.town)), transfer: links.transfer ?? [] }
         };
     });
     const run = (scope, onto, extra) => {

@@ -4,8 +4,10 @@
 // start as defaults labelled assumed and become the user's once changed; a pin adopted from a suggestion
 // (a port from OpenStreetMap and IMF PortWatch, a warehouse estate, a town) keeps where it came from.
 //
-// Links run from a source (supplier or port) to a warehouse, and from a warehouse to a store, dark store
-// or customer area. They are suggested until the user draws, moves or deletes one: a link the user drew is
+// Links run from a source (supplier or port) to a warehouse, from a warehouse to a store, dark store
+// or customer area, and from one warehouse to another: a standing link (a hub restocking a spoke, with its share of
+// what the spoke needs) or a backup (`backup`: nothing until a scenario orders over it). Links between warehouses are
+// never suggested: they are the user's to draw. They are suggested until the user draws, moves or deletes one: a link the user drew is
 // theirs and is never suggested away, and a suggested link the user deleted is not suggested again.
 //
 // Each demand pin is suggested its nearest warehouse by road. Each warehouse is suggested every source while
@@ -141,7 +143,7 @@ export function linkProblem(from, to) {
     if (a === 'demand') return `${from.name} supplies nothing: a ${roleNames[from.role]} is at the end of the network. Draw links from warehouses to it.`;
     if (a === 'source' && b === 'source') return 'Sources supply warehouses, not each other.';
     if (b === 'source') return `${to.name} is a source: nothing is shipped to it. Draw links from it to a warehouse.`;
-    if (a === 'warehouse' && b === 'warehouse') return 'Moving stock between warehouses comes in a later version.';
+    if (a === 'warehouse' && b === 'warehouse') return null;
     return 'These two sites cannot be linked.';
 }
 
@@ -252,8 +254,14 @@ export function networkProblems(pins, links, catalogue = null, categories = null
     const into = (pin) => links.filter((link) => link.to === pin.id && byId.has(link.from));
     const outOf = (pin) => links.filter((link) => link.from === pin.id && byId.has(link.to));
     for (const pin of of('demand')) if (!into(pin).length) add('error', `${pin.name} has no warehouse linked to it. Drag a link from a warehouse to it.`, [pin.id]);
+    // A warehouse restocked by others in a circle has nowhere to start from: one of the links must be a backup.
+    const standing = links.filter((link) => !link.backup && kindOf(byId.get(link.from)?.role) === 'warehouse' && kindOf(byId.get(link.to)?.role) === 'warehouse');
+    const feeds = (from, to, seen = new Set()) => from === to || (!seen.has(from) && seen.add(from) && standing.some((link) => link.from === from && feeds(link.to, to, seen)));
+    const circle = standing.find((link) => feeds(link.to, link.from));
+    if (circle) add('error', `${byId.get(circle.from).name} and ${byId.get(circle.to).name} restock each other in a circle: make one of those links a backup, or delete it.`, [circle.from, circle.to]);
     for (const pin of of('warehouse')) {
-        if (outOf(pin).length && !into(pin).length) add('error', `${pin.name} has no supplier or port linked to it. Drag a link from one to it.`, [pin.id]);
+        // A backup link carries nothing in the baseline: it is no supply.
+        if (outOf(pin).length && !into(pin).some((link) => !link.backup)) add('error', `${pin.name} has no supplier, port or warehouse that restocks it. Drag a link from one to it.`, [pin.id]);
         if (!outOf(pin).length) add('warning', `${pin.name} serves no store or customer area, so it is left out of the model.`, [pin.id]);
     }
     for (const pin of of('source')) {
@@ -319,7 +327,13 @@ export function networkSelection(pins, links, { paths = true, catalogue = null, 
         selection,
         links: {
             supply: usable.filter((link) => kindOf(byId.get(link.from).role) === 'source').map((link) => ({ port: siteId(byId.get(link.from)), zone: siteId(byId.get(link.to)), leg: leg(link, true), ...(link.basis === 'user' ? { user: true } : {}), ...vehicles(link) })),
-            serve: usable.filter((link) => kindOf(byId.get(link.from).role) === 'warehouse').map((link) => ({ zone: siteId(byId.get(link.from)), town: siteId(byId.get(link.to)), leg: leg(link, false), ...vehicles(link) }))
+            serve: usable.filter((link) => kindOf(byId.get(link.from).role) === 'warehouse' && kindOf(byId.get(link.to).role) === 'demand').map((link) => ({ zone: siteId(byId.get(link.from)), town: siteId(byId.get(link.to)), leg: leg(link, false), ...vehicles(link) })),
+            // Between warehouses: a standing link with its share of what the one it leads to needs (nothing: an even
+            // share), or a backup.
+            transfer: usable.filter((link) => kindOf(byId.get(link.from).role) === 'warehouse' && kindOf(byId.get(link.to).role) === 'warehouse').map((link) => ({
+                from: siteId(byId.get(link.from)), to: siteId(byId.get(link.to)), leg: leg(link, true), ...vehicles(link),
+                ...(link.backup ? { backup: true } : Number(link.share) > 0 ? { share: Math.min(1, Number(link.share) / 100) } : {})
+            }))
         },
         ...(catalogue ? { vehicles: catalogueForModel(catalogue), unit } : {}),
         ...(catalogue && categories ? { categories: categoriesForModel(categories) } : {})

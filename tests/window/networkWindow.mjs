@@ -485,6 +485,43 @@ try {
     assert.ok(!/refrigerated/.test(await page.textContent('#networkStatus')));
     noErrors();
 
+    // 6b3. A link between two warehouses, from the first's card: a standing link at first, with a share to give; a
+    // backup from its card or its menu; kept with the session; and undone, the network is as it was.
+    const linksBeforeTransfer = (await links()).length;
+    await clickAt(placements[2][1]);
+    await page.waitForSelector('#selectionCard:not([hidden]) [data-add-link="out"]');
+    await page.selectOption('#selectionCard [data-add-link="out"]', placed[3].id);
+    const between = (await links()).find((link) => link.from === placed[2].id && link.to === placed[3].id);
+    assert.ok(between && between.basis === 'user', 'one warehouse may restock another');
+    assert.ok(!/later version/.test(await page.textContent('#networkStatus')));
+    await page.click(`#selectionCard [data-select-link="${between.id}"]`);
+    await page.waitForSelector('#selectionCard #linkBackup');
+    assert.equal(await page.isChecked('#linkBackup'), false);
+    assert.equal(await page.getAttribute('#linkShare', 'placeholder'), 'an even share');
+    assert.equal(await page.inputValue('#selectionCard [data-link-vehicle="0"]'), 'heavyTruck', 'between warehouses, heavy trucks');
+    const betweenNow = () => page.evaluate((id) => { const link = window.logisticsToolboxState.links.find((item) => item.id === id); return link ? { backup: link.backup ?? false, share: link.share ?? null } : null; }, between.id);
+    await change('#linkShare', '40');
+    assert.deepEqual(await betweenNow(), { backup: false, share: 40 });
+    await page.check('#linkBackup');
+    assert.deepEqual(await betweenNow(), { backup: true, share: null }, 'a backup has no share: it carries nothing');
+    assert.equal(await page.locator('#linkShare').count(), 0);
+    // From its menu: a standing link again, and back. In this small region it shares every road it runs along with
+    // other links, drawn over it: selected (as it is, from the card), the menu under the pointer is still its own.
+    const onBetween = await linkPoint(between.id);
+    await page.mouse.click(onBetween.x, onBetween.y, { button: 'right' });
+    await page.waitForSelector('#contextMenu:not([hidden])');
+    await page.click('#contextMenu button:has-text("Make it a standing link")');
+    assert.deepEqual(await betweenNow(), { backup: false, share: null });
+    await page.click('#undoButtonTool');
+    assert.deepEqual(await betweenNow(), { backup: true, share: null });
+    for (let waited = 0; waited < 50 && !host.session?.links?.some((link) => link.id === between.id && link.backup); waited += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.ok(host.session.links.some((link) => link.id === between.id && link.backup), 'the backup is kept with the session');
+    // Undone, step by step: the backup, the share, the link.
+    for (let step = 0; step < 3; step += 1) await page.click('#undoButtonTool');
+    assert.equal((await links()).length, linksBeforeTransfer, 'the link undone');
+    await page.keyboard.press('Escape');
+    noErrors();
+
     // 6c. Travel times of the user's own: typed in the list (Enter to the next row), when it holds, read off Google Maps
     // (opened in the browser through the host), on the link's card with T, from its menu, a column pasted from a
     // spreadsheet, a time that looks wrong flagged, a calibration from them, and a file saved and loaded.
@@ -700,7 +737,7 @@ try {
     assert.equal(await page.inputValue('#downSiteSelect'), 'site:Warehouse 1');
     assert.deepEqual(await page.$$eval('#downSiteSelect optgroup', (groups) => groups.map((group) => [group.label, group.children.length])), [['Warehouses', 2], ['Stores and dark stores', 5]]);
     assert.equal(await page.isVisible('#downModeRow'), true);
-    assert.match(await page.textContent('#downHint'), /^Warehouse 1 restocks \d stores? with [\d.]+ pallets a day/);
+    assert.match(await page.textContent('#downHint'), /^Warehouse 1 restocks \d sites? with [\d.]+ pallets a day/);
     await menuOn('Harbour shop', 'Close it');
     assert.equal(await page.inputValue('#downSiteSelect'), 'site:Harbour shop');
     assert.equal(await page.isVisible('#downModeRow'), false, 'a store restocks no one');

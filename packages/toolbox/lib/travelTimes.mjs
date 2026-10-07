@@ -52,7 +52,7 @@ export function formatDuration(hours) {
 // plus the hours at its gates, door to door.
 export function modelHours(leg, kind, settings = regionModelDefaults) {
     if (!leg) return null;
-    return leg.hours + (kind === 'supply' ? settings.gateHours : settings.storeGateHours);
+    return leg.hours + (kind === 'supply' || kind === 'transfer' ? settings.gateHours : settings.storeGateHours);
 }
 
 // Directions between two sites, for the user to read: Google Maps' public directions link (no key, nothing fetched by

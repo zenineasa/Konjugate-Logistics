@@ -394,3 +394,75 @@ test('a model of goods of one kind, or one saved before categories, is its own v
     assert.equal(mergeSeries(series, view), series);
     assert.equal(siteView({ lanes: [], ports: [], towns: [], served: [] }).stores, undefined, 'a network of towns has no stores');
 });
+
+// A hub and a spoke on the same grid: a supplier, two warehouses, a store at each.
+function hubAndSpoke(transfer, { supplyBoth = false } = {}) {
+    const catalogue = defaultCatalogue();
+    const pins = [];
+    const add = (role, point, options = {}) => { const pin = createPin(role, point, { pins, ...options }); pins.push(pin); return pin; };
+    const supplier = add('supplier', grid.at(1, 1), { fields: { supply: 40 } });
+    const hub = add('warehouse', grid.at(6, 6), { name: 'Hub' });
+    const spoke = add('warehouse', grid.at(15, 15), { name: 'Spoke' });
+    const near = add('store', grid.at(8, 4), { fields: { demand: 30 } });
+    const far = add('store', grid.at(17, 17), { fields: { demand: 10 } });
+    const link = (from, to, more = {}) => ({ id: `${from.id}>${to.id}`, from: from.id, to: to.id, basis: 'user', ...more });
+    const links = [link(supplier, hub), ...(supplyBoth ? [link(supplier, spoke)] : []), link(hub, near), link(spoke, far), ...(transfer ? [link(hub, spoke, transfer)] : [])];
+    routeLinks(pins, links, router);
+    const problems = networkProblems(pins, links, catalogue).filter((problem) => problem.level === 'error').map((problem) => problem.text);
+    const network = networkSelection(pins, links, { catalogue });
+    const kinds = { ports: 'port', zones: 'zone', towns: 'town' };
+    const selection = Object.fromEntries(Object.entries(network.selection).map(([group, entries]) => [group, entries.map((entry) => ({ ...entry, kind: kinds[group], user: true }))]));
+    const build = () => buildRegionModel({ builder: new ModelBuilder(templates), selection, route: router.route, links: network.links, options: { vehicles: network.vehicles, unit: network.unit } });
+    return { pins, links, problems, network, build };
+}
+
+test('one warehouse restocks another: the spoke takes what it needs from the hub, the hub sends out both its own stores\' goods and the spoke\'s', () => {
+    // The spoke has no supplier of its own: all it needs comes from the hub, over a lane of heavy trucks.
+    const { problems, network, build } = hubAndSpoke({});
+    assert.deepEqual(problems, []);
+    assert.deepEqual(network.links.transfer.map((link) => [link.from === network.selection.zones[0].id, link.backup ?? false, link.share ?? null, link.vehicles]), [[true, false, null, [{ type: 'heavyTruck', fleet: null }]]]);
+    assert.equal(network.links.serve.length, 2, 'a link between warehouses is not one to a store');
+    const built = build();
+    const lane = (name) => built.lanes.find((item) => item.name === name);
+    const round = (value) => Number(value.toFixed(6));
+    assert.deepEqual([lane('Road Hub → Spoke').kind, round(lane('Road Hub → Spoke').rate), lane('Road Hub → Spoke').standby], ['transfer', 10, false]);
+    assert.equal(round(lane('Road Supplier 1 → Hub').rate), 40, 'the supplier ships to the hub what both warehouses send out');
+    assert.equal(lane('Road Supplier 1 → Spoke'), undefined);
+    const stockOf = (name) => built.document.nodes.find((node) => node.name === name).states.find((state) => state.symbol === 'stock').initialValue;
+    assert.deepEqual([round(stockOf('Hub')), round(stockOf('Spoke'))], [120, 30], 'three days of what each sends out: the hub\'s forty a day, the spoke\'s ten');
+    // The orders over the lane reach the hub's forecast, as a store's do: it is a store shipment.
+    assert.ok(built.document.edges.some((edge) => edge.name === 'Order signal: Spoke → Hub'));
+    assert.ok(built.provenance.some((entry) => entry.entity === 'Spoke' && entry.parameter === 'Share restocked from Hub' && entry.value === 100 && entry.basis === 'assumed'));
+    assert.ok(built.corridors.some((corridor) => corridor.lanes.includes('Road Hub → Spoke')), 'the lane is drawn on the map');
+    // With a supplier of its own too, the spoke takes half from each until the link says otherwise: 30%.
+    const both = hubAndSpoke({}, { supplyBoth: true }).build();
+    assert.deepEqual(['Road Hub → Spoke', 'Road Supplier 1 → Spoke', 'Road Supplier 1 → Hub'].map((name) => round(both.lanes.find((item) => item.name === name).rate)), [5, 5, 35]);
+    const third = hubAndSpoke({ share: 30 }, { supplyBoth: true }).build();
+    assert.deepEqual(['Road Hub → Spoke', 'Road Supplier 1 → Spoke', 'Road Supplier 1 → Hub'].map((name) => round(third.lanes.find((item) => item.name === name).rate)), [3, 7, 33]);
+    assert.ok(third.provenance.some((entry) => entry.entity === 'Spoke' && entry.parameter === 'Share restocked from Hub' && entry.value === 30 && entry.basis === 'user'));
+    // A share with nowhere for the rest to come from is refused, with the reason.
+    assert.throws(() => hubAndSpoke({ share: 30 }).build(), /Spoke takes 30% of what it needs from other warehouses and has no supplier or port for the rest/);
+});
+
+test('a backup link between warehouses carries nothing until a scenario orders over it, and is no supply on its own', () => {
+    // A backup alone does not restock the spoke: it needs a supplier, a port or a standing link.
+    assert.deepEqual(hubAndSpoke({ backup: true }).problems, ['Spoke has no supplier, port or warehouse that restocks it. Drag a link from one to it.']);
+    const { problems, network, build } = hubAndSpoke({ backup: true }, { supplyBoth: true });
+    assert.deepEqual(problems, []);
+    assert.deepEqual(network.links.transfer.map((link) => link.backup), [true]);
+    const built = build();
+    const backup = built.lanes.find((item) => item.name === 'Road Hub → Spoke');
+    assert.deepEqual([backup.kind, backup.rate, backup.standby, backup.fleet, backup.fleet2], ['transfer', 0, true, 0, 0]);
+    assert.deepEqual(['Road Supplier 1 → Spoke', 'Road Supplier 1 → Hub'].map((name) => Number(built.lanes.find((item) => item.name === name).rate.toFixed(6))), [10, 30], 'the baseline is as it would be without it');
+    assert.ok(built.provenance.some((entry) => entry.entity === 'Road Hub → Spoke' && entry.parameter === 'Fleet' && /^A backup: it carries nothing/.test(entry.detail)));
+    // Its vehicles can be hired up to what the spoke would need if all it takes came over it.
+    const fleetSize = built.parameterIndex.find((entry) => entry.entity === 'Road Hub → Spoke' && entry.key === 'fleetSize');
+    assert.ok(fleetSize.live && fleetSize.maximum >= 3);
+    // Two warehouses restocking each other in a circle have nowhere to start: one link must be a backup.
+    const circle = hubAndSpoke({}, { supplyBoth: true });
+    const [hub, spoke] = circle.pins.filter((pin) => pin.role === 'warehouse');
+    const back = { id: `${spoke.id}>${hub.id}`, from: spoke.id, to: hub.id, basis: 'user' };
+    assert.deepEqual(networkProblems(circle.pins, [...circle.links, back], defaultCatalogue()).filter((problem) => problem.level === 'error').map((problem) => problem.text),
+        ['Hub and Spoke restock each other in a circle: make one of those links a backup, or delete it.']);
+    assert.deepEqual(networkProblems(circle.pins, [...circle.links, { ...back, backup: true }], defaultCatalogue()).filter((problem) => problem.level === 'error'), []);
+});

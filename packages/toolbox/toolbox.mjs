@@ -17,7 +17,7 @@ import { completeFields, createPin, kindOf, linkId, linkProblem, networkFromSite
 import { calibration, calibrationAdvised, calibrationMinimum, formatDuration, googleMapsUrl, howLabels, modelHours, openStreetMapUrl, parseTravelTimes, suspectTime, timeFrom, whenLabels, writeTravelTimes } from './lib/travelTimes.mjs';
 import { affectedAcross, closureAcross, diversionAcross, mergeSeries, siteView } from './lib/builtView.mjs';
 import { categoryFields, clearMix, completeCategories, createCategory, defaultCategoryCatalogue, hasMix, mixOf, mostCategories, setCategoryField, setLeadDays, setMix } from './lib/categories.mjs';
-import { carriersFor, carriesVehicles, completeCatalogue, createVehicle, defaultCatalogue, linkKind, setVehicleField, typesPerLink, vehicleFields, vehiclesOf } from './lib/vehicles.mjs';
+import { anyVehicle, carriersFor, carriesVehicles, completeCatalogue, createVehicle, defaultCatalogue, linkKind, setVehicleField, typesPerLink, vehicleFields, vehiclesOf } from './lib/vehicles.mjs';
 import { writeSites } from './lib/sites.mjs';
 import { addsToSelection, commandHeld, platformKeys } from './lib/platform.mjs';
 
@@ -957,7 +957,7 @@ const kindOfLink = (link) => linkKind(pinById(link.from)?.role, pinById(link.to)
 const linkVehicles = (link) => vehiclesOf(link, kindOfLink(link), state.vehicles);
 const typeNamed = (id) => state.vehicles.find((type) => type.id === id);
 // May this type carry this link: anything to a warehouse; to a store or dark store only what may deliver to stores.
-const typeAllowed = (type, link) => kindOfLink(link) === 'supply' || type.toStores;
+const typeAllowed = (type, link) => anyVehicle(kindOfLink(link)) || type.toStores;
 // "; on medium trucks" for a link's title on the map.
 function vehicleWords(link) {
     const carried = linkVehicles(link);
@@ -1166,7 +1166,7 @@ function timedLinks() {
         if (!carriesVehicles(kind) || !link.leg) return null;
         const from = pinById(link.from);
         const to = pinById(link.to);
-        return { link, from, to, kind: kind === 'supply' ? 'supply' : 'store', leg: link.leg, time: link.time ?? null };
+        return { link, from, to, kind: anyVehicle(kind) ? 'supply' : 'store', leg: link.leg, time: link.time ?? null };
     }).filter(Boolean).sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'supply' ? -1 : 1) || a.from.name.localeCompare(b.from.name) || a.to.name.localeCompare(b.to.name));
 }
 const currentCalibration = () => calibration(timedLinks());
@@ -1477,6 +1477,8 @@ function openMenu({ target, point, clientX, clientY }) {
     } else if (target?.kind === 'link') {
         const link = state.links.find((each) => each.id === target.id);
         if (link?.basis !== 'user') item('Make it mine (keep it as it is)', '', () => { checkpoint('keeping a suggested link'); keepLink(link); networkChanged(); });
+        // Between warehouses: a standing link, or a backup that carries nothing until a scenario orders over it.
+        if (links.length === 1 && kindOfLink(link) === 'transfer') item(link.backup ? 'Make it a standing link' : 'Make it a backup', '', () => setBackup(link, !link.backup));
         // The vehicles it runs on: every type that may take all the links selected.
         const carrying = links.filter((each) => carriesVehicles(kindOfLink(each)));
         const current = carrying.length === 1 ? linkVehicles(carrying[0])[0]?.type : null;
@@ -1630,17 +1632,43 @@ function renderCard() {
             <h3>${escape(from?.name)} → ${escape(to?.name)}</h3>
             <div class="detail">${leg ? `${number(leg.kilometres, 1)} km, ${number(leg.hours, 1)} h ${legHow(leg)}.` : 'Not routed yet.'} ${link.basis === 'user' ? 'Your link.' : 'Suggested.'}</div>
             ${unused ? `<div class="detail">Left out of the model: it ${escape(unused.why)}.</div>` : ''}
+            ${renderTransfer(link, to)}
             ${renderLinkVehicles(link)}
             ${renderLinkTime(link)}
             <div class="row">${link.basis === 'user' ? '' : '<button class="button small" type="button" id="keepLink">Make it mine</button>'}<button class="button small danger" type="button" id="deleteLink" title="${keys.delete}">Delete</button></div>
             <div class="detail">Drag either end on the map to another site to move it.</div>`;
         $('#keepLink')?.addEventListener('click', () => { checkpoint('keeping a suggested link'); keepLink(link); networkChanged(); });
         $('#deleteLink').addEventListener('click', deleteSelected);
+        $('#linkBackup')?.addEventListener('change', (event) => setBackup(link, event.target.checked));
+        $('#linkShare')?.addEventListener('change', (event) => {
+            const value = Number(event.target.value);
+            checkpoint(`changing what ${from?.name} sends ${to?.name}`, { merge: true });
+            if (event.target.value !== '' && value > 0 && value <= 100) link.share = value; else delete link.share;
+            card.dataset.for = '';
+            networkChanged();
+        });
         wireLinkVehicles(link);
         wireTimeInputs(card);
     } else {
         card.dataset.for = '';
     }
+}
+
+// A link between two warehouses, on its card: a standing link, with the share of what the warehouse it leads to needs
+// that comes over it (empty: an even share of what its other links leave), or a backup, which carries nothing until a
+// scenario has that warehouse order over it.
+function renderTransfer(link, to) {
+    if (kindOfLink(link) !== 'transfer') return '';
+    return `<div class="links transfer"><b>Between warehouses</b>
+        <label class="row small" title="A backup carries nothing, and has no vehicles, until a road closes, a supplier is short or a warehouse is down and ${escape(to?.name)} orders elsewhere: then it takes those orders first"><input type="checkbox" id="linkBackup" ${link.backup ? 'checked' : ''}> A backup: nothing until a scenario orders over it</label>
+        ${link.backup ? '' : `<div class="field"><label for="linkShare">Carries</label><span><input type="number" min="0" max="100" step="any" id="linkShare" value="${link.share ?? ''}" placeholder="an even share"> <span class="muted">% of what ${escape(to?.name)} needs</span></span><span class="basis ${link.share > 0 ? 'user' : 'assumed'}">${link.share > 0 ? 'yours' : 'assumed'}</span></div>`}
+    </div>`;
+}
+function setBackup(link, backup) {
+    checkpoint(backup ? 'making a link a backup' : 'making a backup a standing link');
+    if (backup) { link.backup = true; delete link.share; } else delete link.backup;
+    $('#selectionCard').dataset.for = '';
+    networkChanged();
 }
 
 // A site's mix of categories on its card: of what it supplies or sells, each category's share (0: it does not carry
@@ -1716,8 +1744,8 @@ function renderLinkVehicles(link) {
 function renderLinkTime(link) {
     const kind = kindOfLink(link);
     if (!carriesVehicles(kind) || !link.leg) return '';
-    const estimate = modelHours(link.leg, kind === 'supply' ? 'supply' : 'store');
-    const suspect = suspectTime(link.time, link.leg, kind === 'supply' ? 'supply' : 'store');
+    const estimate = modelHours(link.leg, anyVehicle(kind) ? 'supply' : 'store');
+    const suspect = suspectTime(link.time, link.leg, anyVehicle(kind) ? 'supply' : 'store');
     const how = link.time ? `${howLabels[link.time.how] ?? 'your figure'}${link.time.checkedOn ? `, ${link.time.checkedOn}` : ''}` : '';
     return `<div class="links travelTime"><b>Travel time, door to door</b>
         <div class="field"><label for="linkTime">Yours</label><span><input type="text" id="linkTime" data-time-input="${escape(link.id)}" value="${escape(link.time ? clock(link.time.hours) : '')}" placeholder="${escape(clock(estimate))}" title="${escape(how || 'Loading, the drive and unloading: 1:25, 85 min or 1 h 25 min (T)')}"></span><span class="basis ${link.time ? 'user' : 'assumed'}">${link.time ? 'yours' : 'routed'}</span></div>
@@ -2239,7 +2267,7 @@ function sessionState() {
         version: 2, place: state.place ? { display_name: state.place.display_name, boundingbox: state.place.boundingbox } : null,
         margin: $('#marginSelect').value, bbox: state.bbox, roadLevel: state.roadLevel, sample: Boolean(state.sample), portVolume: state.portVolume,
         // Links without their legs, which are routed again when the session is restored (from the same roads, the same legs).
-        pins: state.pins, links: state.links.map(({ id, from, to, basis, vehicles, time }) => ({ id, from, to, basis, ...(vehicles ? { vehicles } : {}), ...(time ? { time } : {}) })), vehicles: state.vehicles, categories: state.categories,
+        pins: state.pins, links: state.links.map(({ id, from, to, basis, vehicles, time, backup, share }) => ({ id, from, to, basis, ...(vehicles ? { vehicles } : {}), ...(time ? { time } : {}), ...(backup ? { backup: true } : {}), ...(Number(share) > 0 ? { share: Number(share) } : {}) })), vehicles: state.vehicles, categories: state.categories,
         useCalibration: Boolean(state.useCalibration),
         dismissed: [...state.dismissed], suggestions: Object.keys(state.suggestions), available: [...state.available], listRole: state.listRole,
         built: state.built, keepInStep: $('#keepInStep').checked,
@@ -2831,7 +2859,7 @@ const fleetLanes = (choice) => {
 const demandTowns = (choice) => (choice === 'all' ? view().towns ?? [] : (view().towns ?? []).filter((town) => `town:${town.name}` === choice));
 
 // Where a lane's goods come from, in the user's word: a warehouse (to a store), a supplier or a port.
-const sourceKind = (lane) => (lane.kind === 'store' ? 'warehouse' : view().ports.find((port) => port.name === lane.from)?.supplier ? 'supplier' : 'port');
+const sourceKind = (lane) => (lane.kind === 'store' || lane.kind === 'transfer' ? 'warehouse' : view().ports.find((port) => port.name === lane.from)?.supplier ? 'supplier' : 'port');
 // What limits the lanes orders are moved to: a warehouse or a port ships what it holds, a supplier what it can make.
 function sourcesHave(lanes) {
     const kinds = [...new Set(lanes.map(sourceKind))];
@@ -2915,7 +2943,7 @@ function renderDownHint(settings) {
     const alone = [...new Set(out.filter((lane) => !raw.some((other) => other.to === lane.to && !down.has(other.from) && other.rate > 0)).map((lane) => lane.site ?? lane.to))];
     const areas = [...new Set(state.built.deliveries.filter((delivery) => down.has(delivery.from)).map((delivery) => delivery.site))];
     const restocked = new Set(out.map((lane) => lane.site ?? lane.to)).size;
-    $('#downHint').textContent = `${site.name} restocks ${restocked} store${restocked === 1 ? '' : 's'} with ${number(out.reduce((sum, lane) => sum + lane.rate, 0), 1)} ${goods()} a day`
+    $('#downHint').textContent = `${site.name} restocks ${restocked} site${restocked === 1 ? '' : 's'} with ${number(out.reduce((sum, lane) => sum + lane.rate, 0), 1)} ${goods()} a day`
         + `${areas.length ? ` and delivers to ${areas.join(' and ')}, whose orders wait` : ''}.`
         + `${alone.length && restocked ? ` ${alone.length === restocked ? (restocked === 1 ? 'It has' : 'None of them has') : `${alone.join(' and ')} ${alone.length === 1 ? 'has' : 'have'}`} no other warehouse${settings.mode === 'otherWarehouses' ? ', so can only wait' : ''}.` : restocked ? ' Each has another warehouse.' : ''}`;
 }
