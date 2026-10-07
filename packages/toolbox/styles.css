@@ -268,6 +268,8 @@ td.better { color: var(--ok); font-weight: 600; }
 #map .roadMark .markCasing { stroke: rgba(0, 0, 0, 0.75); stroke-linecap: round; fill: none; }
 #map .roadMark .markCross { stroke: #ff3b30; stroke-linecap: round; fill: none; }
 #map .roadMark.planned { opacity: 0.7; }
+#map .siteMark .markRing { stroke: #ff9500; fill: none; }
+.swatch.supplierMark { background: none; border: 2px dashed #ff9500; border-radius: 50%; }
 .swatch.closedMark { background: none; color: #ff3b30; font-style: normal; font-weight: 700; width: auto; height: auto; }
 
 /* Travel times: a list of links, each with the route's estimate, your time, when it holds and the maps; a flag on a time

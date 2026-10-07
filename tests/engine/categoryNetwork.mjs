@@ -6,6 +6,9 @@
 //   - baseline: every category's copy of the network holds still, its suppliers making to order over their lead times
 //   - the chilled supplier short for ten days: a store runs out of chilled goods while its ambient goods stay in stock,
 //     and everything ordered from the supplier is made in the end
+//   - the same supplier three days late instead: the store's chilled goods run down and come back
+//   - the general supplier short of ambient goods, its warehouses waiting or ordering from the other supplier of them:
+//     ordering elsewhere keeps the stores stocked
 //   - the refrigerated vans to a big store cut: its chilled goods run short while its ambient goods, which also go by
 //     the link's trucks, do not
 // All must conserve goods (in each category on its own), vehicles and the order books.
@@ -22,7 +25,7 @@ import { createPin, networkSelection, routeLinks, suggestLinks } from '../../pac
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
 import { buildRoadGraph } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { compactRoadGraph, createNetworkRouter } from '../../packages/toolbox/lib/routing.mjs';
-import { fleetPlan, heldPath } from '../../packages/toolbox/lib/scenarios.mjs';
+import { fleetPlan, supplierPlan } from '../../packages/toolbox/lib/scenarios.mjs';
 import { createVehicle, defaultCatalogue } from '../../packages/toolbox/lib/vehicles.mjs';
 import { loadTemplates, ModelBuilder } from '../../scripts/templatePlacement.mjs';
 import { gridRoads } from '../fixtures/roadGrid.mjs';
@@ -44,6 +47,10 @@ const dairy = add('supplier', grid.at(38, 2), { name: 'Dairy', fields: { supply:
 setMix(dairy, 'ambient', 0, categories);
 setMix(dairy, 'frozen', 0, categories);
 setLeadDays(dairy, 'chilled', 0.5);
+// And a second supplier of ambient goods alone, with room to make far more than is ordered from it.
+const second = add('supplier', grid.at(20, 1), { name: 'Second supplier', fields: { supply: 20, makes: 120 } });
+setMix(second, 'chilled', 0, categories);
+setMix(second, 'frozen', 0, categories);
 const first = add('warehouse', grid.at(10, 10), { fields: { capacity: 400 } });
 add('warehouse', grid.at(28, 26));
 // The first store is a big one, selling 60 pallets a day.
@@ -98,7 +105,8 @@ try {
     for (const pin of stores) for (const category of built.categories) assert.ok(nodeNames.has(`${pin.name} stock: ${category.name}`) && nodeNames.has(`${pin.name}: ${category.name}`), `${pin.name} holds and sells ${category.name}.`);
     // A store's sales are shared by the categories' usual shares; the dairy's lead time is its own, the rest their category's.
     const storeOf = (pin, category) => built.stores.find((item) => item.site === pin.name && item.category === category);
-    assert.ok(Math.abs(storeOf(stores[1], 'ambient').demand / storeOf(stores[1], 'frozen').demand - 60 / 15) < 1e-9);
+    assert.ok(Math.abs(storeOf(stores[0], 'frozen').demand / storeOf(stores[1], 'frozen').demand - 60 / 15) < 1e-9);
+    assert.ok(storeOf(stores[1], 'ambient').demand > storeOf(stores[1], 'chilled').demand && storeOf(stores[1], 'chilled').demand > storeOf(stores[1], 'frozen').demand);
     const lead = (name) => built.ports.find((port) => port.name === name).leadDays;
     assert.deepEqual([lead('Dairy: Chilled'), lead('General supplier: Ambient'), lead('General supplier: Frozen')], [0.5, 3, 5]);
     // Chilled and frozen goods go by refrigerated vehicles, ambient goods by the link's usual ones; a type is one set of
@@ -134,7 +142,10 @@ try {
 
     // ---- the dairy makes a fifth of what it does for ten days: stores run out of chilled goods, not of ambient ones.
     const dairyNode = built.ports.find((port) => port.name === 'Dairy: Chilled');
-    const short = build(follow({ supplierCapacity: { entities: [dairyNode.name], samples: { [dairyNode.name]: heldPath({ outside: dairyNode.berths, inside: 0.2 * dairyNode.arrivals, ...window }) } } }));
+    const suppliers = built.ports.filter((port) => port.supplier);
+    const shortPlan = supplierPlan({ lanes: built.lanes, suppliers, chosen: [dairyNode.name], short: 0.8, ...window });
+    assert.ok(Math.abs(shortPlan.shortPerDay - 0.8 * dairyNode.arrivals) < 1e-9);
+    const short = build(follow(shortPlan.supplied));
     const shortRun = await runDocument(directory, 'categories-short', short.document, 40);
     checkInvariants(shortRun);
     const store = stores[1];
@@ -151,6 +162,45 @@ try {
     const recovered = stock(shortRun, 'Chilled.stock', 40);
     assert.ok(recovered > 0.9 * stock(baseline, 'Chilled.stock', 40), `short: ${store.name}'s chilled goods are back (${recovered.toFixed(2)} pallets).`);
 
+    // ---- the dairy late instead. Three days late (its orders take three and a half days, not half a day): what was in
+    // production is held up, and the warehouse's three days of cover take it, running nearly out while the store holds.
+    // A week late, the store runs down too. Either way the goods are back once the lead time is its own again.
+    const lateBy = async (lateDays) => {
+        const run = await runDocument(directory, `categories-late${lateDays}`, build(follow(supplierPlan({ lanes: built.lanes, suppliers, chosen: [dairyNode.name], lateDays, ...window }).supplied)).document, 40);
+        checkInvariants(run);
+        return run;
+    };
+    const itsWarehouse = built.lanes.find((lane) => lane.kind === 'store' && lane.site === store.name && lane.category === 'chilled').from;
+    const lowestOf = (run, key) => Math.min(...run.series(key)) / run.series(key)[0];
+    const lateRun = await lateBy(3);
+    assert.ok(lowestOf(lateRun, `${itsWarehouse}.stock`) < 0.4, `late: ${itsWarehouse} runs down (${(100 * lowestOf(lateRun, `${itsWarehouse}.stock`)).toFixed(0)}% of its stock at the lowest).`);
+    assert.ok(lowestOf(lateRun, `${store.name} stock: Chilled.stock`) > 0.9, `late: its cover takes three days, so ${store.name} holds.`);
+    const weekLate = await lateBy(7);
+    const lateLow = lowestOf(weekLate, `${store.name} stock: Chilled.stock`);
+    assert.ok(lateLow < 0.75 && lateLow < lowestOf(lateRun, `${store.name} stock: Chilled.stock`) - 0.2, `a week late: ${store.name}'s chilled goods run down (${(100 * lateLow).toFixed(0)}% of its stock at the lowest).`);
+    for (const run of [lateRun, weekLate]) {
+        assert.ok(stock(run, 'Chilled.stock', 40) > 0.9 * stock(baseline, 'Chilled.stock', 40), 'late: the chilled goods are back by the end.');
+        assert.ok(lowestOf(run, `${store.name} stock: Ambient.stock`) > 0.99, 'late: its ambient goods are untouched.');
+    }
+
+    // ---- the general supplier makes a fifth of the ambient goods ordered from it. Its warehouses wait, and the stores
+    // run down; or they order what it cannot make from the second supplier, which has room to make it, and the stores hold.
+    const general = built.ports.find((port) => port.name === 'General supplier: Ambient');
+    const other = built.ports.find((port) => port.name === 'Second supplier: Ambient');
+    const lowestAmbient = (result) => Math.min(...stores.map((pin) => Math.min(...result.series(`${pin.name} stock: Ambient.stock`)) / result.series(`${pin.name} stock: Ambient.stock`)[0]));
+    const waitRun = await runDocument(directory, 'categories-wait', build(follow(supplierPlan({ lanes: built.lanes, suppliers, chosen: [general.name], short: 0.8, mode: 'wait', ...window }).supplied)).document, 40);
+    checkInvariants(waitRun);
+    const elsewherePlan = supplierPlan({ lanes: built.lanes, suppliers, chosen: [general.name], short: 0.8, mode: 'otherSuppliers', ...window });
+    assert.ok(elsewherePlan.reroutedTo.length && elsewherePlan.reroutedTo.every((lane) => /^Road Second supplier → .*: Ambient$/.test(lane)) && !elsewherePlan.waiting.length);
+    const elsewhereRun = await runDocument(directory, 'categories-elsewhere', build(follow(elsewherePlan.supplied)).document, 40);
+    checkInvariants(elsewhereRun);
+    assert.ok(lowestAmbient(waitRun) < 0.2, `waiting: a store all but runs out of ambient goods (${(100 * lowestAmbient(waitRun)).toFixed(0)}% of its stock at the lowest).`);
+    assert.ok(lowestAmbient(elsewhereRun) > 0.6, `ordering elsewhere: every store keeps most of its ambient goods (${(100 * lowestAmbient(elsewhereRun)).toFixed(0)}% at the lowest).`);
+    const madeBy = (result) => result.series(`${other.name}.made`).at(-1);
+    // What it makes more: the four fifths of the general supplier's ambient orders, for the ten days.
+    const moved = 0.8 * general.arrivals * 10;
+    assert.ok(Math.abs(madeBy(elsewhereRun) - madeBy(waitRun) - moved) < 0.1 * moved, `ordering elsewhere: the second supplier makes what the first cannot (${madeBy(elsewhereRun).toFixed(0)} pallets against ${madeBy(waitRun).toFixed(0)}).`);
+
     // ---- the big store's refrigerated vans for its chilled and frozen goods cut by nine in ten: those run short, its ambient goods do not.
     const big = stores[0];
     const cold = toFirst.filter((lane) => lane.category !== 'ambient');
@@ -166,7 +216,7 @@ try {
     assert.throws(() => buildRegionModel({ builder: new ModelBuilder(templates), selection, route: router.route, links: warm.links, options: { vehicles: warm.vehicles, unit: warm.unit, categories: warm.categories } }),
         /Chilled: .* carries Chilled, which needs a refrigerated vehicle/);
 
-    console.log(`✓ network with categories: ${document.nodes.length} nodes (${pins.length} pins, ${built.lanes.length} lanes, ${built.categories.length} categories, each conserved on its own) hold still; with the dairy short, ${store.name} runs out of chilled goods (${lost(shortRun, 'Chilled').toFixed(1)} pallets of sales lost) and keeps its ambient ones, and every order is made in the end; with a tenth of its refrigerated vans ${big.name}'s chilled goods fall to ${chilledThen.toFixed(1)} pallets (from ${stock(baseline, 'Chilled.stock', 14, big).toFixed(1)}) while its ambient goods hold; one category alone builds the network as it was; goods, vehicles and orders conserved.`);
+    console.log(`✓ network with categories: ${document.nodes.length} nodes (${pins.length} pins, ${built.lanes.length} lanes, ${built.categories.length} categories, each conserved on its own) hold still; with the dairy short, ${store.name} runs out of chilled goods (${lost(shortRun, 'Chilled').toFixed(1)} pallets of sales lost) and keeps its ambient ones, and every order is made in the end; three days late its warehouse's cover takes it (down to ${(100 * lowestOf(lateRun, `${itsWarehouse}.stock`)).toFixed(0)}% of its stock) and a week late the store falls to ${(100 * lateLow).toFixed(0)}% of its own, both coming back; with the general supplier short of ambient goods the stores fall to ${(100 * lowestAmbient(waitRun)).toFixed(0)}% of their stock waiting for it and keep ${(100 * lowestAmbient(elsewhereRun)).toFixed(0)}% ordering from the second supplier; with a tenth of its refrigerated vans ${big.name}'s chilled goods fall to ${chilledThen.toFixed(1)} pallets (from ${stock(baseline, 'Chilled.stock', 14, big).toFixed(1)}) while its ambient goods hold; one category alone builds the network as it was; goods, vehicles and orders conserved.`);
 } finally {
     await rm(directory, { recursive: true, force: true });
 }

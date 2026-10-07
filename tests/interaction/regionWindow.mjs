@@ -344,6 +344,20 @@ try {
             await toolbox.fill('#fleetChangeInput', '-40');
         });
         // Demand up by half everywhere.
+        // A supplier short, in the real app: this network has ports alone, so the tab is hidden until a supplier is placed;
+        // the host takes the scenario's three parameters; and with the supplier deleted the tab goes again.
+        assert.equal(await toolbox.locator('#scenarioTabs [data-scenario="supplierTrouble"]').isVisible(), false, 'no supplier, no Supplier tab');
+        await toolbox.click('[data-add="supplier"]');
+        await toolbox.mouse.click(mapBox.x + mapBox.width * 0.45, mapBox.y + mapBox.height * 0.55);
+        await toolbox.keyboard.press('Escape');
+        await toolbox.waitForFunction(() => /^1 supplier, 2 ports/.test(document.querySelector('#buildStatus .notice.ok')?.textContent ?? ''), null, { timeout: 120000 }).catch(fail);
+        const short = await runTab('supplierTrouble', /Supplier 1 makes 50% less than is ordered \([\d,.]+ pallets a day\) from day 2 for 3 days; its warehouses wait for it\./);
+        assert.match(short, /Most orders waiting/);
+        assert.equal(await toolbox.locator('#map .siteMark.supplier').count(), 1, 'the supplier is ringed on the map');
+        await toolbox.click('#selectionCard #deletePin');
+        await toolbox.waitForFunction(() => /^2 ports/.test(document.querySelector('#buildStatus .notice.ok')?.textContent ?? ''), null, { timeout: 120000 }).catch(fail);
+        assert.equal(await toolbox.locator('#scenarioTabs [data-scenario="supplierTrouble"]').isVisible(), false);
+        assert.equal(log.filter((line) => line.startsWith('pageerror') || line.startsWith('error')).length, 0, log.join('\n'));
         const surge = await runTab('demandSurge', /Demand up 50% in every store, dark store and customer area from day 2 for 3 days: [\d,]+ pallets more ordered\./, () => toolbox.fill('#demandChangeInput', '50'));
         assert.ok(/Highest backlog/.test(surge));
         assert.equal(log.filter((line) => line.startsWith('pageerror') || line.startsWith('error')).length, 0, log.join('\n'));
@@ -421,7 +435,7 @@ try {
         } finally {
             await offline.close().catch(() => {});
         }
-        console.log(`✓ logistics region window: the sample region and a searched region load their roads alone; ports, warehouses and towns are fetched and suggested only when asked for, and adopted; the model (${nodes} nodes, ${edges} relationships) is built from the pins and links and opens in the canvas; dragging Alder Industrial Park moves its lane from ${before} to ${after}; a customer area placed on the map is served; a chokepoint's cargo is diverted to Birch Harbour; the lanes run on heavy trucks, counted in pallets; a road closure, a detour, a cut in heavy trucks and a demand surge run from their tabs; the session is kept with the project (and a scenario runs straight after it is restored), saved with it, and restored from it with no network.`);
+        console.log(`✓ logistics region window: the sample region and a searched region load their roads alone; ports, warehouses and towns are fetched and suggested only when asked for, and adopted; the model (${nodes} nodes, ${edges} relationships) is built from the pins and links and opens in the canvas; dragging Alder Industrial Park moves its lane from ${before} to ${after}; a customer area placed on the map is served; a chokepoint's cargo is diverted to Birch Harbour; the lanes run on heavy trucks, counted in pallets; a road closure, a detour, a cut in heavy trucks, a supplier short and a demand surge run from their tabs; the session is kept with the project (and a scenario runs straight after it is restored), saved with it, and restored from it with no network.`);
     } finally {
         await app?.close().catch(() => {});
     }

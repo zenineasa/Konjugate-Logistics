@@ -11,7 +11,7 @@ import { cityTileKilometres, maximumCityKilometres, maximumSplitDepth, overpassR
 import { nominatimSearchUrl, rankPlaces } from './lib/places.mjs';
 import { chokepointById, chokepointDependence, chokepointRecentUrl, chokepoints, chokepointYearlyUrl, disruptionPlan, summariseTransits } from './lib/chokepoints.mjs';
 import { portwatchActivityUrl, portwatchPortsUrl } from './lib/portwatch.mjs';
-import { closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan } from './lib/scenarios.mjs';
+import { closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan, mostLateDays, supplierPlan } from './lib/scenarios.mjs';
 import { createNetworkRouter } from './lib/routing.mjs';
 import { completeFields, createPin, kindOf, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
 import { calibration, calibrationAdvised, calibrationMinimum, formatDuration, googleMapsUrl, howLabels, modelHours, openStreetMapUrl, parseTravelTimes, suspectTime, timeFrom, whenLabels, writeTravelTimes } from './lib/travelTimes.mjs';
@@ -1468,6 +1468,7 @@ function openMenu({ target, point, clientX, clientY }) {
         const pin = pinById(target.id);
         item('Rename', 'Enter', () => rename(pin.id));
         item('Link it to another site…', 'L', () => startLinking(pin.id));
+        if (builtSuppliers().some((supplier) => supplier.name === pin.name)) item('Make it late or short…', '', () => planSupplierTrouble(pin));
         for (const role of roleIds.filter((role) => role !== pin.role)) item(`Make it a ${roles[role].label.toLowerCase()}`, '', () => changeRole(pin, role));
         item('Duplicate', keys.duplicate, duplicateSelected);
         item('Delete', keys.delete, deleteSelected, { danger: true });
@@ -2149,7 +2150,14 @@ function renderMarks() {
         const at = laneMidpoint(chosen);
         if (at) marks.push({ ...at, kind: 'planned', title: `${laneEnds(chosen)}: to be closed when the scenario runs` });
     }
-    map.setMarks(marks);
+    // A ring round a supplier short or late: those of the scenario shown on the map.
+    const trouble = built && state.scenario?.id === 'supplierTrouble' && state.mapShows !== 'baseline' ? state.scenario.supplierTrouble : null;
+    const rings = (trouble?.suppliers ?? []).map((name) => ({ pin: pinNamed(name), name })).filter((item) => item.pin).map(({ pin, name }) => ({
+        lat: pin.lat, lon: pin.lon, kind: 'supplier',
+        title: `${name}: ${[trouble.short > 0 ? `makes ${trouble.short}% less` : '', trouble.late > 0 ? `takes ${String(trouble.late)} days longer` : ''].filter(Boolean).join(' and ')} from day ${trouble.startDay} for ${trouble.days} days`
+    }));
+    map.setMarks([...marks, ...rings]);
+    $('#legendSupplier').hidden = !rings.length;
     $('#legendClosed').hidden = !marks.length;
     $('#legendClosedText').textContent = marks.some((mark) => mark.kind === 'closed') ? 'Road closed' : 'Road to close';
 }
@@ -2405,6 +2413,8 @@ const seaOf = (port) => {
 };
 // The ports of the model, without its suppliers: what ships reach.
 const builtPorts = () => (view()?.ports ?? []).filter((port) => !port.supplier);
+// And its suppliers, which make what is ordered from them (a build saved before they did has none to make late).
+const builtSuppliers = () => (view()?.ports ?? []).filter((port) => port.supplier && port.members.every((copy) => copy.leadDays > 0));
 
 function disruptionSettings() {
     return {
@@ -2436,6 +2446,9 @@ function renderScenario({ fetchTransits = false } = {}) {
     const hasPorts = builtPorts().length > 0;
     $('#scenarioTabs [data-scenario="chokepointDisruption"]').hidden = !hasPorts;
     if (!hasPorts && state.scenarioTab === 'chokepointDisruption') state.scenarioTab = 'roadClosure';
+    // And one with no supplier has none to be short or late.
+    $('#scenarioTabs [data-scenario="supplierTrouble"]').hidden = !builtSuppliers().length;
+    if (!builtSuppliers().length && state.scenarioTab === 'supplierTrouble') state.scenarioTab = 'roadClosure';
     renderDependence();
     // After a fresh build, fetch the chokepoint's transits; when restoring a session (perhaps offline), show only what was kept.
     if (hasPorts) renderTransits({ fetch: fetchTransits });
@@ -2537,9 +2550,9 @@ async function renderTransits({ fetch = true } = {}) {
 $('#chokepointSelect').addEventListener('change', () => { renderDependence(); renderTransits(); });
 
 // ---- the scenarios: choosing one ----------------------------------------------------------------------------------
-// Four scenarios share the days they run for and the summary of what they changed: a chokepoint disruption (above), a
-// road closed, the fleet changed and demand stepped up.
-const scenarioIds = ['chokepointDisruption', 'roadClosure', 'fleetChange', 'demandSurge'];
+// Five scenarios share the days they run for and the summary of what they changed: a chokepoint disruption (above), a
+// road closed, the fleet changed, demand stepped up and a supplier short or late.
+const scenarioIds = ['chokepointDisruption', 'roadClosure', 'fleetChange', 'demandSurge', 'supplierTrouble'];
 
 function showScenarioTab() {
     document.querySelectorAll('#scenarioTabs button').forEach((button) => button.classList.toggle('active', button.dataset.scenario === state.scenarioTab));
@@ -2552,6 +2565,18 @@ document.querySelectorAll('#scenarioTabs button').forEach((button) => button.add
     showScenarioTab();
 }));
 
+// From a supplier's menu on the map: the Supplier tab, with that supplier chosen, in view.
+function planSupplierTrouble(pin) {
+    state.scenarioTab = 'supplierTrouble';
+    $('#stepScenario').classList.remove('collapsed');
+    $('#supplierSelect').value = `supplier:${pin.name}`;
+    renderSupplierGoods();
+    showScenarioTab();
+    renderScenarioHints();
+    $('#stepScenario').scrollIntoView({ block: 'nearest' });
+    $('#supplierShortInput').focus();
+}
+
 // The lanes, fleets and towns each scenario can choose from, after a build.
 function renderScenarioChoices() {
     const built = state.built;
@@ -2561,6 +2586,7 @@ function renderScenarioChoices() {
     // An operator that has just appeared is what a fleet change is first about: its lanes, not every lane.
     const operatorAppeared = built.operator && ![...$('#fleetLanesSelect').options].some((option) => option.value === 'operator');
     const previous = {
+        supplier: $('#supplierSelect').value || saved?.supplier?.supplier, goods: $('#supplierGoodsSelect').value || saved?.supplier?.goods,
         lane: $('#closureLaneSelect').value || saved?.closure?.lane,
         fleet: saved?.fleet?.lanes ?? (operatorAppeared ? 'operator' : $('#fleetLanesSelect').value),
         towns: $('#demandTownsSelect').value || saved?.demand?.towns
@@ -2579,6 +2605,17 @@ function renderScenarioChoices() {
     $('#demandTownsSelect').innerHTML = `<option value="all">${view().stores ? 'every store, dark store and customer area' : 'every town'}</option>`
         + [...(view().towns ?? [])].sort((a, b) => b.demand - a.demand).map((town) => `<option value="town:${escape(town.name)}">${escape(town.name)} (${number(town.demand, 1)} ${goods()}/day)</option>`).join('');
     keep('#demandTownsSelect', previous.towns);
+    // The suppliers, the one that supplies most first: its trouble matters most.
+    const suppliers = [...builtSuppliers()].sort((a, b) => b.arrivals - a.arrivals);
+    $('#supplierSelect').innerHTML = suppliers.map((supplier) => `<option value="supplier:${escape(supplier.name)}">${escape(supplier.name)} (${number(supplier.arrivals, 1)} ${goods()}/day)</option>`).join('')
+        + (suppliers.length > 1 ? '<option value="all">every supplier</option>' : '');
+    keep('#supplierSelect', previous.supplier);
+    renderSupplierGoods(previous.goods);
+    if (saved?.supplier) {
+        $('#supplierShortInput').value = saved.supplier.short ?? 50;
+        $('#supplierLateInput').value = saved.supplier.late ?? 0;
+        $('#supplierModeSelect').value = saved.supplier.mode ?? 'wait';
+    }
     if (saved) {
         if (saved.closure) {
             $('#closureOpenInput').value = saved.closure.open ?? 0;
@@ -2592,8 +2629,21 @@ function renderScenarioChoices() {
     renderScenarioHints();
 }
 
+// The suppliers chosen in the Supplier tab, and the goods of theirs in trouble: everything they supply, or one category.
+const chosenSuppliers = (choice = $('#supplierSelect').value) => builtSuppliers().filter((supplier) => choice === 'all' || `supplier:${supplier.name}` === choice);
+function renderSupplierGoods(wanted = $('#supplierGoodsSelect').value) {
+    const carried = new Set(chosenSuppliers().flatMap((supplier) => supplier.members.map((copy) => copy.category)));
+    const categories = (view()?.categories ?? []).filter((category) => carried.has(category.id));
+    $('#supplierGoodsSelect').innerHTML = `<option value="all">everything ${chosenSuppliers().length === 1 ? 'it supplies' : 'they supply'}</option>`
+        + (categories.length > 1 ? categories.map((category) => `<option value="${escape(category.id)}">${escape(category.name)}</option>`).join('') : '');
+    if ([...$('#supplierGoodsSelect').options].some((option) => option.value === wanted)) $('#supplierGoodsSelect').value = wanted;
+}
+// Their copies in the model: one for each category in trouble.
+const supplierCopies = (settings) => chosenSuppliers(settings.supplier).flatMap((supplier) => supplier.members).filter((copy) => settings.goods === 'all' || copy.category === settings.goods);
+
 function scenarioSettings() {
     return {
+        supplier: { supplier: $('#supplierSelect').value || null, goods: $('#supplierGoodsSelect').value || 'all', short: Number($('#supplierShortInput').value) || 0, late: Number($('#supplierLateInput').value) || 0, mode: $('#supplierModeSelect').value },
         closure: { lane: $('#closureLaneSelect').value || null, mode: $('#closureModeSelect').value, open: Number($('#closureOpenInput').value) || 0, detourHours: Number($('#detourHoursInput').value) || 0 },
         fleet: { lanes: $('#fleetLanesSelect').value || null, change: Number($('#fleetChangeInput').value) },
         demand: { towns: $('#demandTownsSelect').value || null, change: Number($('#demandChangeInput').value) }
@@ -2628,12 +2678,38 @@ function renderScenarioHints() {
                 : `${lane.site ?? lane.to} has no other lane: its orders wait for the road to reopen.`
         }[mode];
     }
+    renderSupplierHint(settings.supplier);
     const lanes = fleetLanes(settings.fleet.lanes);
     const trucks = lanes.reduce((sum, item) => sum + item.fleet + (item.fleet2 ?? 0), 0);
     $('#fleetHint').textContent = `${lanes.length} lane${lanes.length === 1 ? '' : 's'} with ${number(trucks)} ${state.built.vehicles ? 'vehicles' : 'trucks'}.`;
     const towns = demandTowns(settings.demand.towns);
     $('#demandHint').textContent = `${towns.length} ${view().stores ? 'site' : 'town'}${towns.length === 1 ? '' : 's'} ordering ${number(towns.reduce((sum, town) => sum + town.demand, 0), 1)} ${goods()}/day.`;
 }
+// What the Supplier tab's choice comes to, in figures: what the supplier makes meanwhile, how long its orders take, and
+// which warehouses order the goods from it alone.
+function renderSupplierHint(settings) {
+    const copies = supplierCopies(settings);
+    if (!copies.length) { $('#supplierHint').textContent = ''; return; }
+    const ordered = copies.reduce((sum, copy) => sum + copy.arrivals, 0);
+    const names = chosenSuppliers(settings.supplier).map((supplier) => supplier.name);
+    const who = names.length === 1 ? names[0] : `${names.length} suppliers`;
+    const parts = [];
+    if (settings.short > 0) parts.push(`${who} ${names.length === 1 ? 'makes' : 'make'} ${number(ordered * (1 - Math.min(100, settings.short) / 100), 1)} of the ${number(ordered, 1)} ${goods()} a day ordered from ${names.length === 1 ? 'it' : 'them'}`);
+    if (settings.late > 0) {
+        const leads = [...new Set(copies.map((copy) => copy.leadDays))].sort((a, b) => a - b);
+        // 3, 3.5 or 0.06: as few decimals as say it.
+        const plain = (days) => String(Number(days.toFixed(2)));
+        parts.push(`${settings.short > 0 ? (names.length === 1 ? 'its' : 'their') : `${who}'s`} orders take ${leads.map((lead) => plain(lead + settings.late)).join(' or ')} days in place of ${leads.map(plain).join(' or ')}`);
+    }
+    // The warehouses that order these goods from no one else: they can only wait.
+    const raw = state.built.lanes;
+    const from = new Set(copies.map((copy) => copy.name));
+    const alone = [...new Set(raw.filter((lane) => from.has(lane.from) && lane.rate > 0 && !raw.some((other) => other.to === lane.to && !from.has(other.from) && other.rate > 0)).map((lane) => lane.site ?? lane.to))];
+    const others = settings.short > 0 ? (alone.length ? ` ${alone.join(' and ')} ${alone.length === 1 ? 'orders' : 'order'} ${settings.goods === 'all' ? 'these goods' : 'them'} from ${names.length === 1 ? 'it' : 'them'} alone${settings.mode === 'otherSuppliers' ? ', so can only wait' : ''}.` : ' Every warehouse it supplies has another supplier of the same goods.') : '';
+    $('#supplierHint').textContent = parts.length ? `${parts.join(' and ')}.${others}` : 'Neither short nor late: give it a share it does not make, or days its orders take longer.';
+}
+$('#supplierSelect').addEventListener('change', () => { renderSupplierGoods(); renderScenarioHints(); renderMarks(); });
+for (const selector of ['#supplierGoodsSelect', '#supplierShortInput', '#supplierLateInput', '#supplierModeSelect']) $(selector).addEventListener('input', renderScenarioHints);
 for (const selector of ['#closureLaneSelect', '#closureModeSelect', '#fleetLanesSelect', '#demandTownsSelect']) $(selector).addEventListener('change', renderScenarioHints);
 for (const selector of ['#closureLaneSelect', '#closureModeSelect']) $(selector).addEventListener('change', () => { state.closureChosen = true; renderMarks(); });
 
@@ -2750,6 +2826,30 @@ function scenarioRun(id, start, runTime, status) {
             describe: `${state.built.vehicles ? 'Vehicles' : 'Trucks'} ${which} changed by ${settings.fleet.change > 0 ? '+' : ''}${settings.fleet.change}% ${days}: ${number(plan.trucks.before)} to ${number(plan.trucks.after)}.`
         };
     }
+    if (id === 'supplierTrouble') {
+        const chosen = settings.supplier;
+        const copies = supplierCopies(chosen);
+        if (!copies.length) throw new Error('Choose a supplier that is short or late.');
+        if (!(chosen.short >= 0 && chosen.short <= 100)) throw new Error('A supplier makes from 0% to 100% less than is ordered from it.');
+        if (!(chosen.late >= 0 && chosen.late <= mostLateDays)) throw new Error(`A supplier's orders take from 0 to ${mostLateDays} days longer.`);
+        const plan = supplierPlan({ lanes: state.built.lanes, suppliers: state.built.ports.filter((port) => port.supplier), chosen: copies.map((copy) => copy.name), short: chosen.short / 100, lateDays: chosen.late, mode: chosen.mode, ...common });
+        const names = chosenSuppliers(chosen.supplier).map((supplier) => supplier.name);
+        const category = chosen.goods === 'all' ? null : view().categories?.find((item) => item.id === chosen.goods);
+        const what = [
+            ...(chosen.short > 0 ? [`${names.length === 1 ? 'makes' : 'make'} ${chosen.short}% less${category ? ` ${category.name}` : ''} than is ordered (${number(plan.shortPerDay, 1)} ${goods()} a day)`] : []),
+            ...(chosen.late > 0 ? [`${names.length === 1 ? 'takes' : 'take'} ${String(chosen.late)} days longer over ${category ? `${category.name} ` : ''}orders`] : [])
+        ].join(' and ');
+        const elsewhere = [...new Set(plan.reroutedTo.map((lane) => view().siteOf(lane)))].map((link) => view().lanes.find((lane) => lane.name === link)?.from).filter(Boolean);
+        const waiting = [...new Set(plan.waiting.map(view().siteOf))];
+        const meanwhile = chosen.short > 0 && chosen.mode === 'otherSuppliers'
+            ? (elsewhere.length ? `; its warehouses order what it cannot make from ${[...new Set(elsewhere)].join(' and ')}${waiting.length ? `, but ${waiting.join(' and ')} ${waiting.length === 1 ? 'has' : 'have'} no other supplier of it and ${waiting.length === 1 ? 'waits' : 'wait'}` : ''}` : '; none of its warehouses has another supplier of the same goods, so they wait')
+            : '; its warehouses wait for it';
+        return {
+            supplied: { byParameter: plan.supplied }, lanes: [...new Set(plan.lanes.map(view().siteOf))], describe: `${names.join(' and ')} ${what} ${days}${meanwhile}.`,
+            // For the ring round the supplier on the map, and its row in the details.
+            extra: { supplierTrouble: { suppliers: names, short: chosen.short, late: chosen.late, startDay: Number($('#startInput').value), days: Number($('#durationInput').value) } }
+        };
+    }
     const towns = demandTowns(settings.demand.towns);
     const plan = demandPlan({ towns: towns.flatMap((town) => town.members), change: settings.demand.change / 100, ...common });
     const servedBy = new Set(view().served.filter((item) => towns.some((town) => town.name === item.town)).map((item) => item.zone));
@@ -2831,7 +2931,7 @@ api?.onProgress?.((progress) => {
 
 // ---- the scenarios: what a run showed --------------------------------------------------------------------------------
 
-const summarySignals = ['arrived', 'queue', 'waitDays', 'stock', 'spaceUsed', 'backlog', 'delivered', 'ordered', 'lost', 'arriving', 'utilisation', 'transportCost', 'fleetCost', 'holdingCost', 'backlogCost'];
+const summarySignals = ['arrived', 'queue', 'waitDays', 'stock', 'spaceUsed', 'backlog', 'delivered', 'ordered', 'lost', 'arriving', 'utilisation', 'transportCost', 'fleetCost', 'holdingCost', 'backlogCost', 'toMake', 'made'];
 
 // What the run showed, from the day the scenario starts to the end of the run, kept small enough to save with the
 // session: the share of demand met, the sales lost (in goods and in money) and the costs, how long an order waited, per
@@ -2937,7 +3037,12 @@ function summariseRun(answer, id, run, start, duration) {
                 lostValue: both((series) => stores.reduce((sum, item) => sum + grew(series[item.name]?.lost) * (item.saleValue ?? 0), 0))
             } : {})
         },
-        ports: view().ports.map((port) => ({
+        // The suppliers in trouble: the most orders that waited to be made at once, and what they made.
+        ...(run.extra?.supplierTrouble ? { suppliers: run.extra.supplierTrouble.suppliers.map((name) => ({
+            name, waiting: { baseline: extreme(baseline[name]?.toMake, (value, best) => value > best)[1], scenario: extreme(scenario[name]?.toMake, (value, best) => value > best)[1] },
+            made: both((series) => grew(series[name]?.made))
+        })) } : {}),
+        ports: view().ports.filter((port) => !port.supplier).map((port) => ({
             name: port.name, lost: grew(baseline[port.name]?.arrived) - grew(scenario[port.name]?.arrived),
             wait: { baseline: extreme(baseline[port.name]?.waitDays, (value, best) => value > best)[1], scenario: extreme(scenario[port.name]?.waitDays, (value, best) => value > best)[1] }
         })),
@@ -3138,6 +3243,9 @@ function renderScenarioResult() {
                 const diverted = !affected && port.lost < -0.5 ? -port.lost : 0;
                 return `<tr><td>${escape(port.name)}</td><td class="number">${number(keptOut)}</td><td class="number">${number(affected?.caughtUp ?? 0)}</td><td class="number">${number(never)}</td>${result.diversion ? `<td class="number">${number(diverted)}</td>` : ''}</tr>`;
             }).join('')}</tbody></table>` : '';
+    const suppliersTable = result.suppliers?.length ? `
+        <table id="supplierResult"><thead><tr><th>Supplier</th><th class="number" title="The most orders it had waiting to be made at once">Most orders waiting (${goods()})</th><th class="number">baseline</th><th class="number" title="Since the scenario began">made</th><th class="number">baseline</th></tr></thead>
+            <tbody>${result.suppliers.map((item) => `<tr><td>${escape(item.name)}</td><td${worse(item.waiting.scenario, item.waiting.baseline)}>${number(item.waiting.scenario, 1)}</td><td class="number">${number(item.waiting.baseline, 1)}</td><td${worse(item.made.scenario, item.made.baseline, { lowerIsWorse: true })}>${number(item.made.scenario)}</td><td class="number">${number(item.made.baseline)}</td></tr>`).join('')}</tbody></table>` : '';
     const waits = result.ports.some((port) => port.wait) ? `
         <table><thead><tr><th>Port</th><th class="number">Longest wait (days)</th><th class="number">baseline</th></tr></thead>
             <tbody>${result.ports.map((port) => `<tr><td>${escape(port.name)}</td><td${worse(port.wait.scenario, port.wait.baseline, { noise: 0.01 })}>${number(port.wait.scenario, 2)}</td><td class="number">${number(port.wait.baseline, 2)}</td></tr>`).join('')}</tbody></table>` : '';
@@ -3172,7 +3280,7 @@ function renderScenarioResult() {
         ${result.clamped?.length ? notice('warning', `Some of the values this scenario supplied lie outside what the model allows, and were held to its limits, so the run differs from what was asked: ${result.clamped.join('; ')}.`) : ''}
         ${totals}${storesTable}${categoriesTable}${renderComparison(result)}
         <details class="resultDetails"${detailsWereOpen ? ' open' : ''}><summary>Details: waits, ports, lanes and stock</summary>
-        ${detailTotals}${ports}${waits}${lanes}
+        ${detailTotals}${suppliersTable}${ports}${waits}${lanes}
         <table><thead><tr><th>Warehouse</th><th class="number">Lowest stock</th><th class="number">baseline</th><th class="number">day</th>${spaceShown ? '<th class="number" title="Its stock at its fullest, as a share of its storage capacity: above 100%, goods ordered before demand fell arrived with no room for them">fullest</th>' : ''}</tr></thead>
             <tbody>${result.warehouses.map((item) => `<tr><td><div class="nameWithSpark"><span>${escape(item.name)}</span>${drawSpark(item.scenPts, item.basePts, { stroke: 'var(--warn)' })}</div></td><td${worse(item.low, item.baseline, { lowerIsWorse: true })}>${number(item.low)}</td><td class="number">${number(item.baseline)}</td><td class="number">${number(item.day, 1)}</td>${spaceShown ? (item.space?.scenario > 0.001 ? `<td${item.space.scenario > 1.005 ? ' class="number worse"' : ' class="number"'}>${percent(item.space.scenario)}</td>` : '<td class="number muted">no limit</td>') : ''}</tr>`).join('')}</tbody></table>
         ${storeRows.length ? `<table><thead><tr><th>Store stock</th><th class="number">Lowest stock</th><th class="number">baseline</th><th class="number" title="Days its shelves were all but empty since the scenario began">days empty</th></tr></thead>

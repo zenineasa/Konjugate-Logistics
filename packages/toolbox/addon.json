@@ -117,6 +117,23 @@
                 "runTime": 7776000,
                 "effects": ["Each chosen town's demand rises by the share given, for the days given."],
                 "interventions": [{ "parameter": "baseDemand", "target": "supplied", "samples": true }]
+            },
+            {
+                "scenarioId": "supplierTrouble",
+                "name": "Supplier short or late",
+                "description": "A supplier makes less than is ordered from it, takes longer over its orders, or both, for a while. Watch its orders wait to be made, the warehouses it supplies run down and the stores run out of what it makes.",
+                "forkAt": 864000,
+                "runTime": 7776000,
+                "effects": [
+                    "Short, the supplier makes only its share of what is ordered from it; the rest waits to be made, and arrives late.",
+                    "Late, every order takes longer, those already in production too.",
+                    "Its warehouses wait for it, or order what it cannot make from their other suppliers of the same goods."
+                ],
+                "interventions": [
+                    { "parameter": "supplierCapacity", "target": "supplied", "samples": true },
+                    { "parameter": "supplierLeadTime", "target": "supplied", "samples": true },
+                    { "parameter": "orderShare", "target": "supplied", "samples": true }
+                ]
             }
         ]
     },

@@ -256,6 +256,13 @@ export class MapView {
             const { x, y } = this.project(mark.lat, mark.lon);
             const arm = 8 * unit;
             const cross = `M${x - arm} ${y - arm}L${x + arm} ${y + arm}M${x + arm} ${y - arm}L${x - arm} ${y + arm}`;
+            // A supplier in trouble: a ring round its pin, not a cross on a road.
+            if (mark.kind === 'supplier') {
+                const ring = element('g', { class: 'siteMark supplier', 'data-mark': mark.kind }, this.markLayer);
+                element('circle', { cx: x, cy: y, r: 13 * unit, class: 'markRing', 'stroke-width': 3 * unit, 'stroke-dasharray': `${4 * unit} ${3 * unit}` }, ring);
+                if (mark.title) element('title', {}, ring).textContent = mark.title;
+                continue;
+            }
             const group = element('g', { class: `roadMark ${mark.kind}`, 'data-mark': mark.kind }, this.markLayer);
             element('path', { d: cross, class: 'markCasing', 'stroke-width': 6 * unit }, group);
             element('path', { d: cross, class: 'markCross', 'stroke-width': 3.2 * unit, ...(mark.kind === 'planned' ? { 'stroke-dasharray': `${3 * unit} ${2 * unit}` } : {}) }, group);

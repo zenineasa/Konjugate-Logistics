@@ -630,6 +630,34 @@ try {
     assert.equal(await marks('planned'), 1);
     noErrors();
 
+    // 7a2. A supplier short or late: its tab is there because the network has suppliers; from a supplier's menu on the
+    // map the tab opens with that supplier chosen, and the hint says what the choice comes to.
+    assert.equal(await page.isVisible('#scenarioTabs [data-scenario="supplierTrouble"]'), true);
+    assert.equal(await page.isVisible('#scenarioTabs [data-scenario="chokepointDisruption"]'), false, 'no port, no chokepoint');
+    await page.keyboard.press('Escape');
+    const onSupplier = await screenOf(placements[1][1]);
+    await page.mouse.click(onSupplier.x, onSupplier.y, { button: 'right' });
+    await page.waitForSelector('#contextMenu:not([hidden])');
+    await page.click('#contextMenu button:has-text("Make it late or short")');
+    assert.equal(await page.evaluate(() => document.querySelector('#scenarioTabs .active').dataset.scenario), 'supplierTrouble');
+    assert.equal(await page.isVisible('.scenarioPanel[data-panel="supplierTrouble"]'), true);
+    assert.equal(await page.inputValue('#supplierSelect'), 'supplier:Supplier 2');
+    assert.deepEqual(await page.$$eval('#supplierGoodsSelect option', (options) => options.map((option) => option.textContent)), ['everything it supplies', 'Ambient', 'Chilled', 'Frozen']);
+    assert.match(await page.textContent('#supplierHint'), /^Supplier 2 makes [\d.]+ of the [\d.]+ pallets a day ordered from it\. Every warehouse it supplies has another supplier of the same goods\.$/);
+    // Late as well, of chilled goods alone, its warehouses ordering elsewhere; a store has no such menu item.
+    await page.selectOption('#supplierGoodsSelect', 'chilled');
+    await page.fill('#supplierLateInput', '2');
+    await page.selectOption('#supplierModeSelect', 'otherSuppliers');
+    assert.match(await page.textContent('#supplierHint'), /^Supplier 2 makes [\d.]+ of the [\d.]+ pallets a day ordered from it and its orders take 3 days in place of 1\./);
+    assert.deepEqual(await stateOf(() => window.logisticsToolboxState.built && { ...JSON.parse(JSON.stringify({ tab: window.logisticsToolboxState.scenarioTab })) }), { tab: 'supplierTrouble' });
+    const onStore = await screenOf(placements[4][1]);
+    await page.mouse.click(onStore.x, onStore.y, { button: 'right' });
+    await page.waitForSelector('#contextMenu:not([hidden])');
+    assert.ok(!/late or short/.test(await page.textContent('#contextMenu')));
+    await page.keyboard.press('Escape');
+    await page.click('#scenarioTabs [data-scenario="roadClosure"]');
+    noErrors();
+
     // 7b. With an engine (KONJUGATE_ENGINE=export runs the model as Konjugate's code export writes it): Harbour shop's
     // only lane closed for ten days, and the summary shows its shelves empty and its shoppers waiting.
     if (process.env.KONJUGATE_ENGINE === 'export') {
@@ -686,6 +714,27 @@ try {
         assert.equal(await page.locator('#scenarioResult .comparison table').count(), 1);
         assert.deepEqual(await stateOf(() => window.logisticsToolboxState.runs.map((run) => run.number)), [1, 2]);
         await page.fill('#durationInput', '10');
+        // A supplier short of chilled goods and two days late with them, its warehouses ordering from the other supplier:
+        // the run says so, the supplier is ringed on the map, and the details give what it made and what waited.
+        await page.click('#scenarioTabs [data-scenario="supplierTrouble"]');
+        await page.fill('#supplierShortInput', '80');
+        await page.click('#runScenarioButton');
+        await page.waitForFunction(() => /^Supplier 2 /.test(document.querySelector('#scenarioResult p')?.textContent ?? '') || document.querySelector('#scenarioStatus .notice.error'), null, { timeout: 120000 }).catch(fail);
+        assert.equal(await page.locator('#scenarioStatus .notice.error').count(), 0, await page.textContent('#scenarioStatus'));
+        assert.match(await page.textContent('#scenarioResult p'), /^Supplier 2 makes 80% less Chilled than is ordered \([\d.]+ pallets a day\) and takes 2 days longer over Chilled orders from day 5 for 10 days; its warehouses order what it cannot make from Supplier 1\.$/);
+        const trouble = await stateOf(() => window.logisticsToolboxState.scenario.suppliers);
+        assert.equal(trouble.length, 1);
+        assert.ok(trouble[0].name === 'Supplier 2' && trouble[0].made.scenario < trouble[0].made.baseline && trouble[0].waiting.scenario > trouble[0].waiting.baseline, JSON.stringify(trouble));
+        assert.match(await page.textContent('#scenarioResult #supplierResult'), /Supplier 2/);
+        assert.equal(await page.locator('#map .siteMark.supplier').count(), 1);
+        assert.match(await page.textContent('#map .siteMark.supplier title'), /^Supplier 2: makes 80% less and takes 2 days longer from day 5 for 10 days$/);
+        assert.equal(await page.isVisible('#legendSupplier'), true);
+        assert.equal(await marks('closed'), 0, 'the closed road\'s X goes with its scenario');
+        await page.click('#flowView [data-flows="baseline"]');
+        assert.equal(await page.locator('#map .siteMark.supplier').count(), 0, 'no ring on the baseline');
+        await page.click('#flowView [data-flows="scenario"]');
+        assert.deepEqual(await stateOf(() => window.logisticsToolboxState.runs.map((run) => run.number)), [1, 2, 3]);
+        await page.click('#scenarioTabs [data-scenario="roadClosure"]');
         noErrors();
     }
 
@@ -879,7 +928,7 @@ try {
     await macPage.close();
     noErrors();
 
-    console.log(`✓ logistics network window: the sample region loads its roads alone; ${placements.length} pins placed from the palette are linked and routed as suggested; every action works from a button or menu, a drag or a right click, and the keyboard, and undoes; a moved store re-routes its one link in ${routing.milliseconds < 1 ? 'under a millisecond' : `${routing.milliseconds.toFixed(0)} ms`}; links are drawn, refused with a reason, deleted and not suggested again; the model is built from the pins and links, a copy for each of its three categories (${built.match(/\d+ nodes/)[0]}), its stores holding stock and its links on the vehicles chosen on their cards, from their menus and with V;${process.env.KONJUGATE_ENGINE === 'export' ? ' a store whose road closes runs out of stock;' : ''} ports and towns are suggested only when asked for and adopted; the network saves as a CSV and loads back; the session restores it, and an earlier session is migrated; shortcuts behave and read as Windows and Linux users and Mac users expect; a network is kept with the project before any build; an area loaded is kept on the computer and loads again with nothing fetched, fresh on request, and the cache clears; a searched region fetches its roads and place names alone, and ports only when asked for.`);
+    console.log(`✓ logistics network window: the sample region loads its roads alone; ${placements.length} pins placed from the palette are linked and routed as suggested; every action works from a button or menu, a drag or a right click, and the keyboard, and undoes; a moved store re-routes its one link in ${routing.milliseconds < 1 ? 'under a millisecond' : `${routing.milliseconds.toFixed(0)} ms`}; links are drawn, refused with a reason, deleted and not suggested again; the model is built from the pins and links, a copy for each of its three categories (${built.match(/\d+ nodes/)[0]}), its stores holding stock and its links on the vehicles chosen on their cards, from their menus and with V;${process.env.KONJUGATE_ENGINE === 'export' ? ' a store whose road closes runs out of stock and a supplier short and late is ringed on the map;' : ''} ports and towns are suggested only when asked for and adopted; the network saves as a CSV and loads back; the session restores it, and an earlier session is migrated; shortcuts behave and read as Windows and Linux users and Mac users expect; a network is kept with the project before any build; an area loaded is kept on the computer and loads again with nothing fetched, fresh on request, and the cache clears; a searched region fetches its roads and place names alone, and ports only when asked for.`);
 } finally {
     await browser.close();
     await rm(scratch, { recursive: true, force: true });

@@ -170,6 +170,7 @@
                         <button type="button" role="tab" data-scenario="roadClosure">Road closure</button>
                         <button type="button" role="tab" data-scenario="fleetChange">Fleet</button>
                         <button type="button" role="tab" data-scenario="demandSurge">Demand</button>
+                        <button type="button" role="tab" data-scenario="supplierTrouble" hidden>Supplier</button>
                     </div>
                     <div class="scenarioPanel" data-panel="chokepointDisruption">
                         <p class="muted small">Fewer ships through a strait or canal for a while: the ports that depend on it receive less.</p>
@@ -233,6 +234,22 @@
                         </div>
                         <div class="muted small" id="demandHint"></div>
                     </div>
+                    <div class="scenarioPanel" data-panel="supplierTrouble" hidden>
+                        <p class="muted small">A supplier makes less than is ordered from it, takes longer over its orders, or both. Nothing ordered is dropped: it waits, arrives late, and comes ready close together once the trouble ends. Lateness reaches what is already in production too.</p>
+                        <label class="row small">Supplier <select id="supplierSelect"></select></label>
+                        <label class="row small">Of <select id="supplierGoodsSelect"></select></label>
+                        <div class="row small">
+                            <label>It makes <input type="number" id="supplierShortInput" min="0" max="100" step="5" value="50"> % less than is ordered from it</label>
+                        </div>
+                        <div class="row small">
+                            <label>Its orders take <input type="number" id="supplierLateInput" min="0" max="14" step="0.5" value="0"> days longer</label>
+                        </div>
+                        <label class="row small">Meanwhile its warehouses <select id="supplierModeSelect">
+                            <option value="wait">wait for it</option>
+                            <option value="otherSuppliers">order what it cannot make from their other suppliers</option>
+                        </select></label>
+                        <div class="muted small" id="supplierHint"></div>
+                    </div>
                     <div class="row small">
                         <label>from day <input type="number" id="startInput" min="0" step="1" value="10"></label>
                         <label>for <input type="number" id="durationInput" min="1" step="1" value="30"> days</label>
@@ -292,7 +309,7 @@
                 <span><i class="swatch lane"></i>Road lane, as built</span>
                 <span id="legendFell" hidden><i class="swatch lane fell"></i>Carried less</span>
                 <span id="legendRose" hidden><i class="swatch lane rose"></i>Carried more</span>
-                <span id="legendClosed" hidden><i class="swatch closedMark">✕</i><span id="legendClosedText">Road closed</span></span>
+                <span id="legendSupplier" hidden><i class="swatch supplierMark"></i>Supplier short or late</span><span id="legendClosed" hidden><i class="swatch closedMark">✕</i><span id="legendClosedText">Road closed</span></span>
                 <span id="legendBorder" hidden><i class="swatch border"></i>Border</span>
                 <span id="legendUnsettled" hidden title="Disputed, indefinite or a line of control, as Natural Earth classes it"><i class="swatch border unsettled"></i>Disputed or undefined</span>
                 <span class="attribution" id="attribution">Map data © OpenStreetMap contributors</span>

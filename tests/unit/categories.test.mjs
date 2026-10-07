@@ -14,7 +14,7 @@ import { createPin, networkProblems, networkSelection, routeLinks, suggestLinks 
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
 import { buildRoadGraph } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { compactRoadGraph, createNetworkRouter } from '../../packages/toolbox/lib/routing.mjs';
-import { fleetPlan } from '../../packages/toolbox/lib/scenarios.mjs';
+import { fleetPlan, supplierPlan } from '../../packages/toolbox/lib/scenarios.mjs';
 import { carriersFor, defaultCatalogue } from '../../packages/toolbox/lib/vehicles.mjs';
 import { loadTemplates, ModelBuilder } from '../../scripts/templatePlacement.mjs';
 import { gridRoads } from '../fixtures/roadGrid.mjs';
@@ -199,6 +199,63 @@ test('the built model by site and link: a link\'s lanes and a store\'s copies ad
     const plan = fleetPlan({ lanes: [{ name: 'a', fleet: 0.625, fleet2: 0 }, { name: 'b', fleet: 5, fleet2: 0 }], change: -0.5, ...window });
     assert.equal(plan.supplied.fleetSize.samples.a.find(([time]) => time === window.start)[1], 0.3125);
     assert.equal(plan.supplied.fleetSize.samples.b.find(([time]) => time === window.start)[1], 3);
+});
+
+test('a supplier short or late: its capacity held at what it still makes, its lead time longer, its warehouses waiting or ordering elsewhere', () => {
+    const window = { start: 5 * 86400, duration: 10 * 86400, forkAt: 0, runTime: 30 * 86400 };
+    // A held path's value on the scenario's first day: its last sample by then (a value that never changes has two in all).
+    const during = (path) => path.filter(([time]) => time <= window.start).at(-1)[1];
+    const before = (path) => path[0][1];
+    const after = (path) => path.at(-1)[1];
+    // Two dairies supply one warehouse (30 and 10 a day); the first alone supplies another (20 a day). It can make 75.
+    const suppliers = [{ name: 'Dairy', arrivals: 50, berths: 75, leadDays: 1 }, { name: 'Farm', arrivals: 10, berths: 15, leadDays: 2 }];
+    const lanes = [
+        { name: 'Dairy → North', from: 'Dairy', to: 'North', rate: 30 }, { name: 'Farm → North', from: 'Farm', to: 'North', rate: 10 },
+        { name: 'Dairy → South', from: 'Dairy', to: 'South', rate: 20 }, { name: 'North → Shop', from: 'North', to: 'Shop stock', rate: 40 }
+    ];
+    // Short by 60%: it makes 20 of the 50 ordered, not 60% less than the 75 it could; then what it could again.
+    const short = supplierPlan({ lanes, suppliers, chosen: ['Dairy'], short: 0.6, ...window });
+    assert.deepEqual([before, during, after].map((at) => at(short.supplied.supplierCapacity.samples.Dairy)), [75, 20, 75]);
+    assert.deepEqual([before, during].map((at) => at(short.supplied.supplierLeadTime.samples.Dairy)), [1, 1], 'its lead time is held as it is');
+    assert.equal(short.shortPerDay, 30);
+    // Waiting: its warehouses order as before (the scenario still names their lanes, at their usual shares).
+    assert.deepEqual(short.supplied.orderShare.entities, ['Dairy → North', 'Farm → North', 'Dairy → South']);
+    assert.deepEqual([before, during].map((at) => at(short.supplied.orderShare.samples['Dairy → North'])), [0.75, 0.75]);
+    assert.deepEqual([short.reroutedTo, short.waiting, short.lanes, short.warehouses], [[], [], ['Dairy → North', 'Dairy → South'], ['North', 'South']]);
+    // Ordering elsewhere: North moves the 60% of its orders the dairy cannot make to the farm; South has no one else, and waits.
+    const elsewhere = supplierPlan({ lanes, suppliers, chosen: ['Dairy'], short: 0.6, mode: 'otherSuppliers', ...window });
+    const share = (lane) => [before, during, after].map((at) => Number(at(elsewhere.supplied.orderShare.samples[lane]).toFixed(9)));
+    assert.deepEqual(share('Dairy → North'), [0.75, 0.3, 0.75]);
+    assert.deepEqual(share('Farm → North'), [0.25, 0.7, 0.25]);
+    assert.deepEqual(share('Dairy → South'), [1, 1, 1]);
+    assert.deepEqual([elsewhere.reroutedTo, elsewhere.waiting], [['Farm → North'], ['South']]);
+    // Late by three days, and both at once; every supplier chosen is changed, no other.
+    const late = supplierPlan({ lanes, suppliers, chosen: ['Dairy', 'Farm'], lateDays: 3, mode: 'otherSuppliers', ...window });
+    assert.deepEqual(['Dairy', 'Farm'].map((name) => [before, during, after].map((at) => at(late.supplied.supplierLeadTime.samples[name]))), [[1, 4, 1], [2, 5, 2]]);
+    assert.deepEqual([during(late.supplied.supplierCapacity.samples.Dairy), late.shortPerDay, late.reroutedTo.length], [75, 0, 0], 'late alone cuts nothing and moves no orders');
+    const both = supplierPlan({ lanes, suppliers, chosen: ['Farm'], short: 1, lateDays: 0.5, ...window });
+    assert.deepEqual([during(both.supplied.supplierCapacity.samples.Farm), during(both.supplied.supplierLeadTime.samples.Farm), Object.keys(both.supplied.supplierCapacity.samples)], [0, 2.5, ['Farm']]);
+    // A supplier the user gave less room than is ordered cannot be: but one with little headroom is cut from its orders.
+    assert.equal(during(supplierPlan({ lanes, suppliers: [{ name: 'Dairy', arrivals: 50, berths: 50, leadDays: 1 }], chosen: ['Dairy'], short: 0.1, ...window }).supplied.supplierCapacity.samples.Dairy), 45);
+    // Refused with the reason.
+    assert.throws(() => supplierPlan({ lanes, suppliers, chosen: ['Mill'], short: 0.5, ...window }), /Choose a supplier/);
+    assert.throws(() => supplierPlan({ lanes, suppliers, chosen: ['Dairy'], ...window }), /short, late or both: it is neither/);
+    assert.throws(() => supplierPlan({ lanes, suppliers, chosen: ['Dairy'], short: 1.2, ...window }), /from 0% to 100% less/);
+    assert.throws(() => supplierPlan({ lanes, suppliers, chosen: ['Dairy'], lateDays: 15, ...window }), /from 0 to 14 days longer/);
+    assert.throws(() => supplierPlan({ lanes, suppliers, chosen: ['Dairy'], short: 0.5, mode: 'panic', ...window }), /wait or order from their other suppliers/);
+    // In a built network the paths fit the sliders the model gives a supplier, at the window's limits.
+    const { built, document } = placed();
+    const copies = built.ports.filter((port) => port.supplier);
+    const plan = supplierPlan({ lanes: built.lanes, suppliers: copies, chosen: copies.map((copy) => copy.name), short: 1, lateDays: 14, mode: 'otherSuppliers', ...window });
+    for (const [key, { entities, samples }] of Object.entries(plan.supplied)) {
+        for (const entity of entities) {
+            const indexed = built.parameterIndex.find((entry) => entry.key === key && entry.entity === entity);
+            assert.ok(indexed?.live, `${key} of ${entity} is live`);
+            const { control } = document.sharedParameters.find((shared) => shared.id === indexed.sharedParameterId);
+            assert.ok(samples[entity].every(([, value]) => value >= control.minimum - 1e-9 && value <= control.maximum + 1e-9), `${key} of ${entity} stays within its slider`);
+        }
+    }
+    assert.deepEqual(plan.waiting.sort(), ['Warehouse 1: Ambient', 'Warehouse 1: Chilled', 'Warehouse 1: Frozen'], 'with one supplier, every category waits');
 });
 
 test('a model of goods of one kind, or one saved before categories, is its own view', () => {

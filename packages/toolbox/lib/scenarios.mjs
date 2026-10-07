@@ -117,6 +117,67 @@ export function demandPlan({ towns, change, start, duration = null, forkAt, runT
     return { supplied: { baseDemand: { entities: towns.map((town) => town.name), samples } }, extraTeu: extra };
 }
 
+// A supplier short, late or both for a while. Short: it makes only (1 - `short`) of what is ordered from it in the
+// baseline (its capacity is held there; cutting its capacity by a share would do nothing while it has headroom). Late:
+// every order takes `lateDays` longer, those already in production too, since a supplier's lead time is one figure for
+// all it is making. Nothing ordered is dropped: orders wait and arrive late, and come ready close together once it ends.
+// Meanwhile its warehouses
+//   'wait'           order from it as before, counting what is late as on its way;
+//   'otherSuppliers' order the share it cannot make from their other lanes of the same goods, in proportion to what
+//                    those carry (their sources make or hold only so much); a warehouse with no other lane waits.
+// `suppliers` are the build's suppliers ({ name, arrivals, berths: the most it can make, leadDays }), `chosen` the names
+// of those in trouble (a supplier's copy for each category it is short of), `lanes` the build's lanes.
+// The plan always holds the three parameters, those it leaves alone at their values.
+export const supplierModes = ['wait', 'otherSuppliers'];
+export const mostLateDays = 14;
+export function supplierPlan({ lanes, suppliers, chosen, short = 0, lateDays = 0, mode = 'wait', start, duration, forkAt, runTime }) {
+    const troubled = suppliers.filter((supplier) => chosen.includes(supplier.name));
+    if (!troubled.length) throw new Error('Choose a supplier that is short or late.');
+    if (!(short >= 0 && short <= 1)) throw new Error('A supplier makes from 0% to 100% less than is ordered from it.');
+    if (!(lateDays >= 0 && lateDays <= mostLateDays)) throw new Error(`A supplier's orders take from 0 to ${mostLateDays} days longer.`);
+    if (!(short > 0) && !(lateDays > 0)) throw new Error('Make the supplier short, late or both: it is neither.');
+    if (!supplierModes.includes(mode)) throw new Error(`A short supplier's warehouses wait or order from their other suppliers, not "${mode}".`);
+    const hold = (outside, inside) => heldPath({ outside, inside, start, duration, forkAt, runTime });
+    const names = troubled.map((supplier) => supplier.name);
+    const supplierCapacity = { entities: names, samples: Object.fromEntries(troubled.map((supplier) => [supplier.name, hold(supplier.berths, short > 0 ? Math.min(supplier.berths, (1 - short) * supplier.arrivals) : supplier.berths)])) };
+    const supplierLeadTime = { entities: names, samples: Object.fromEntries(troubled.map((supplier) => [supplier.name, hold(supplier.leadDays, supplier.leadDays + lateDays)])) };
+    const orderShare = { entities: [], samples: {} };
+    const reroutedTo = new Set();
+    const waiting = new Set();
+    const its = lanes.filter((lane) => names.includes(lane.from) && lane.rate > 0);
+    for (const warehouse of new Set(its.map((lane) => lane.to))) {
+        const siblings = lanes.filter((lane) => lane.to === warehouse);
+        const total = siblings.reduce((sum, lane) => sum + lane.rate, 0);
+        const others = siblings.filter((lane) => !names.includes(lane.from) && lane.rate > 0);
+        const othersTotal = others.reduce((sum, lane) => sum + lane.rate, 0);
+        const moving = mode === 'otherSuppliers' && short > 0 && othersTotal > 0;
+        const moved = moving ? short * siblings.filter((lane) => names.includes(lane.from)).reduce((sum, lane) => sum + lane.rate, 0) / total : 0;
+        if (mode === 'otherSuppliers' && short > 0 && !moving) waiting.add(warehouse);
+        for (const lane of siblings) {
+            const share = lane.rate / total;
+            const during = !moving ? share : names.includes(lane.from) ? share * (1 - short) : others.includes(lane) ? share + moved * lane.rate / othersTotal : share;
+            orderShare.entities.push(lane.name);
+            orderShare.samples[lane.name] = hold(share, during);
+            if (moving && others.includes(lane)) reroutedTo.add(lane.name);
+        }
+    }
+    // A supplier with no lanes (it supplies nothing) still names a lane, at its usual share, so the scenario has the
+    // data it declares.
+    if (!orderShare.entities.length && lanes.length) {
+        const lane = lanes[0];
+        const share = lane.rate / Math.max(1e-9, lanes.filter((item) => item.to === lane.to).reduce((sum, item) => sum + item.rate, 0));
+        orderShare.entities.push(lane.name);
+        orderShare.samples[lane.name] = hold(share, share);
+    }
+    return {
+        supplied: { supplierCapacity, supplierLeadTime, orderShare },
+        // What it does not make a day while it is short; the lanes from it; where the orders it cannot fill go, and the
+        // warehouses that were to order elsewhere and have no one else to order from.
+        shortPerDay: troubled.reduce((sum, supplier) => sum + Math.max(0, supplier.arrivals - Math.min(supplier.berths, (1 - short) * supplier.arrivals)) * (short > 0 ? 1 : 0), 0),
+        lanes: its.map((lane) => lane.name), warehouses: [...new Set(its.map((lane) => lane.to))], reroutedTo: [...reroutedTo], waiting: [...waiting]
+    };
+}
+
 // A held path through `breaks` (seconds), valued `valueAt(time)` from each break to the next, counted from `forkAt`.
 function pathThrough(valueAt, breaks, forkAt, runTime) {
     const times = [...new Set(breaks.filter((time) => time >= forkAt && time <= runTime))].sort((a, b) => a - b);
