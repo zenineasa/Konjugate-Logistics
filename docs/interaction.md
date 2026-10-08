@@ -18,6 +18,7 @@ How the toolbox window should feel to three kinds of user, and what that means f
 4. **Undo everything**, not only deletions; say what was undone. Steps of one kind in quick succession (a pin nudged with the arrows, a figure typed) are one step.
 5. **Refuse with a reason, where the user is looking**: on the map, and in the Network step.
 6. **Escape always backs out** one level: a menu, the shortcuts, a link being drawn, placing, then the selection.
+7. **The panel is narrow, and its layout allows for it.** It may be 320 pixels wide. Nothing in it is wider than it is (a test holds every table and control to that): a choice among many is one picker, not a row of tabs; a filter is chips that wrap; a table has the few columns that matter, with the rest under the name or in a tooltip; a long explanation shows two lines and the rest when asked for; a card explains the field in hand at its foot, where nothing moves.
 7. **No surprises on keys**: keys act only when the user is not typing in a field.
 8. **Every platform as its own users expect** (see below): Windows and Linux are not an afterthought to the Mac, nor the other way round.
 9. **Tests cover each way**: the window test (`tests/window/networkWindow.mjs`) does each action by button or menu, by gesture and by key.
@@ -68,7 +69,7 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 | Set the hours a site keeps (open, receives, dispatches) | The hours and the days on its card (empty, every day: round the clock) | | |
 | Add or change a holiday or peak | Holidays and peaks in the Network step: its name, days, effect on each category's demand, the days before and after, and whether suppliers dispatch; Add a holiday or peak; ✕ to delete one | | |
 | Say what money is in | Money in the Network step: the currency, as a word or a symbol | | |
-| Run the network as planned | The As planned tab in the Scenarios step; Run it as planned | | |
+| Run the network as planned | The network as planned, in the Scenarios step's picker; Run it as planned | | |
 | Change a category | Categories in the Network step: its name, usual share, supplier lead time, how long it keeps, the value of a pallet of it and "Needs refrigerated vehicles"; Add a category; ✕ to delete one | | |
 | Give a site its own mix of categories | The share beside each category on its card (0: it does not carry it); Use the usual shares | | |
 | Give a supplier its own lead time | The days beside each category on its card (empty: the category's) | | |
@@ -80,11 +81,11 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 | Load an area again fresh | Load fresh beside Load roads, or beside the date the roads were fetched | | |
 | Read the roads from a file | Read roads from a file (.osm.pbf) in the Map step: for the place searched, or the whole of a small file | | |
 | Clear the maps kept on this computer | Clear at the foot of the Map step | | |
-| Make a supplier short or late | The Supplier tab in the Scenarios step: which supplier, of which goods, how short, how late and what its warehouses do meanwhile; Run | Its menu on the map, "Make it late or short…", which opens the tab with it chosen | |
-| Take a warehouse down or close a store | The Site down tab in the Scenarios step: which site, and what the stores it restocks do meanwhile; Run | Its menu on the map, "Take it down…" or "Close it…", which opens the tab with it chosen | |
+| Make a supplier short or late | A supplier short or late, in the Scenarios step's picker: which supplier, of which goods, how short, how late and what its warehouses do meanwhile; Run | Its menu on the map, "Make it late or short…", which opens that scenario with it chosen | |
+| Take a warehouse down or close a store | A site down, in the Scenarios step's picker: which site, and what the stores it restocks do meanwhile; Run | Its menu on the map, "Take it down…" or "Close it…", which opens that scenario with it chosen | |
 | Make a warehouse a candidate | The tick on its card, "A candidate: not open yet, to compare" | | |
-| Compare candidate sites | The New site tab in the Scenarios step: under which disruption; Build and compare them | | |
-| Rank the failures | The Weakest link tab in the Scenarios step: tick what may fail, Run them all and rank; Run it beside one to run it alone | | |
+| Compare candidate sites | A new site, in the Scenarios step's picker: under which disruption; Build and compare them | | |
+| Rank the failures | The weakest link, in the Scenarios step's picker: tick what may fail, Run them all and rank; Run it beside one to run it alone | | |
 | Set a run beside another | Set beside, under the scenario's result (the run before it unless chosen; nothing to hide it) | | Tab to it, then the arrow keys |
 | Read a run's details | Details, under its result | | |
 

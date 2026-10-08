@@ -45,6 +45,21 @@ try {
     const fail = (error) => { throw new Error(`${error.message}\nWindow log:\n${log.join('\n')}`); };
     const noErrors = () => assert.deepEqual(log.filter((line) => /^(pageerror|error)/.test(line)), [], log.join('\n'));
     const stateOf = (pick) => page.evaluate(pick);
+    // Nothing in the panel is wider than the panel, at its usual width or at its narrowest: or the whole of it scrolls
+    // sideways, its left edge out of sight and its last columns cut off.
+    const fitsPanel = async (what) => {
+        for (const width of ['320px', '420px']) {
+            const sizes = await page.evaluate((panelWidth) => {
+                document.documentElement.style.setProperty('--panel-width', panelWidth);
+                const panel = document.querySelector('.panel');
+                // On failure, which elements reach furthest right: the culprits.
+                const widest = [...panel.querySelectorAll('*')].filter((item) => item.offsetParent).map((item) => [Math.round(item.getBoundingClientRect().right - panel.getBoundingClientRect().left), `${item.tagName.toLowerCase()}${item.id ? `#${item.id}` : ''}${typeof item.className === 'string' && item.className ? `.${item.className.split(' ')[0]}` : ''}`]).filter(([right]) => right > panel.clientWidth).slice(0, 6);
+                return { scroll: panel.scrollWidth, client: panel.clientWidth, widest };
+            }, width);
+            assert.ok(sizes.scroll <= sizes.client + 1, `${what} fits a panel ${width} wide (${JSON.stringify(sizes)})`);
+        }
+        await page.evaluate(() => document.documentElement.style.setProperty('--panel-width', '420px'));
+    };
     // A point on the map, on screen: the map's own projection, then the SVG's transform.
     const screenOf = (point) => page.evaluate(({ lat, lon }) => {
         const bbox = window.logisticsToolboxState.roads.map.bbox;
@@ -711,7 +726,8 @@ try {
     assert.equal(storeLanes.filter((lane) => lane.site === 'Harbour shop').length, 3, 'Harbour shop\'s link is a lane for each category');
     assert.match(await page.textContent('#buildResult'), /Harbour shop/);
     assert.ok(host.session?.version === 2 && host.session.pins.length === placements.length, 'the session went with the model');
-    assert.match(await page.textContent('#buildResult'), /pallets\/day.*vehicles/s);
+    assert.match(await page.textContent('#buildResult'), /pallets\/day.*medium truck/s, 'each lane says the vehicles it runs on, under its name');
+    await fitsPanel('the built model\'s tables');
     assert.ok(storeLanes.some((lane) => lane.site === 'Harbour shop' && lane.category === 'ambient' && lane.vehicles[0].type === 'smallTruck'), 'Harbour shop restocked by small trucks');
     assert.ok(storeLanes.some((lane) => lane.site === 'Harbour shop' && lane.category === 'chilled' && lane.vehicles[0].type === 'refrigeratedTruck'), 'and its chilled goods by refrigerated trucks');
     // Its time is yours, door to door; a lane without one is the route's estimate scaled by your times.
@@ -732,7 +748,7 @@ try {
     // none on a detour, which keeps the road open.
     const marks = (kind) => page.locator(`#map .roadMark.${kind}`).count();
     assert.equal(await marks('planned'), 0, 'no X before a road is chosen to close');
-    await page.click('#scenarioTabs [data-scenario="roadClosure"]');
+    await page.selectOption('#scenarioSelect', 'roadClosure');
     const harbourLane = storeLanes.find((lane) => lane.site === 'Harbour shop');
     await page.selectOption('#closureLaneSelect', harbourLane.link);
     assert.equal(await marks('planned'), 1);
@@ -772,8 +788,8 @@ try {
 
     // 7a2. A supplier short or late: its tab is there because the network has suppliers; from a supplier's menu on the
     // map the tab opens with that supplier chosen, and the hint says what the choice comes to.
-    assert.equal(await page.isVisible('#scenarioTabs [data-scenario="supplierTrouble"]'), true);
-    assert.equal(await page.isVisible('#scenarioTabs [data-scenario="chokepointDisruption"]'), false, 'no port, no chokepoint');
+    assert.equal(await page.evaluate(() => !document.querySelector('#scenarioSelect option[value=\"supplierTrouble\"]').hidden), true);
+    assert.equal(await page.evaluate(() => !document.querySelector('#scenarioSelect option[value=\"chokepointDisruption\"]').hidden), false, 'no port, no chokepoint');
     // Where a site is now (some were moved since they were placed), and its menu there. The map is drawn again after
     // Escape clears the selection: a right click sent before it has been would land on a site about to be replaced, so
     // the menu is asked for once the window has drawn (twice over, a frame each).
@@ -790,7 +806,7 @@ try {
         await page.click(`#contextMenu button:has-text("${label}")`);
     };
     await menuOn('Supplier 2', 'Make it late or short');
-    assert.equal(await page.evaluate(() => document.querySelector('#scenarioTabs .active').dataset.scenario), 'supplierTrouble');
+    assert.equal(await page.evaluate(() => document.querySelector('#scenarioSelect').value), 'supplierTrouble');
     assert.equal(await page.isVisible('.scenarioPanel[data-panel="supplierTrouble"]'), true);
     assert.equal(await page.inputValue('#supplierSelect'), 'supplier:Supplier 2');
     assert.deepEqual(await page.$$eval('#supplierGoodsSelect option', (options) => options.map((option) => option.textContent)), ['everything it supplies', 'Ambient', 'Chilled', 'Frozen']);
@@ -804,15 +820,15 @@ try {
     await openMenuOn('Harbour shop');
     assert.ok(!/late or short/.test(await page.textContent('#contextMenu')));
     await page.keyboard.press('Escape');
-    await page.click('#scenarioTabs [data-scenario="roadClosure"]');
+    await page.selectOption('#scenarioSelect', 'roadClosure');
     noErrors();
 
     // 7a3. A site down: from a warehouse's menu on the map ("Take it down…") or a store's ("Close it…"), the tab opens
     // with that site chosen; a warehouse says whom it restocks and offers them their other warehouses, a store what it
     // sells and loses.
-    assert.equal(await page.isVisible('#scenarioTabs [data-scenario="siteDown"]'), true);
+    assert.equal(await page.evaluate(() => !document.querySelector('#scenarioSelect option[value=\"siteDown\"]').hidden), true);
     await menuOn('Warehouse 1', 'Take it down');
-    assert.equal(await page.evaluate(() => document.querySelector('#scenarioTabs .active').dataset.scenario), 'siteDown');
+    assert.equal(await page.evaluate(() => document.querySelector('#scenarioSelect').value), 'siteDown');
     assert.equal(await page.inputValue('#downSiteSelect'), 'site:Warehouse 1');
     assert.deepEqual(await page.$$eval('#downSiteSelect optgroup', (groups) => groups.map((group) => [group.label, group.children.length])), [['Warehouses', 2], ['Stores and dark stores', 5]]);
     assert.equal(await page.isVisible('#downModeRow'), true);
@@ -827,11 +843,11 @@ try {
         assert.ok(!/Take it down|Close it/.test(await page.textContent('#contextMenu')));
     }
     await page.keyboard.press('Escape');
-    await page.click('#scenarioTabs [data-scenario="roadClosure"]');
+    await page.selectOption('#scenarioSelect', 'roadClosure');
     noErrors();
 
     // 7a4. The weakest link: its tab says how many failures it would run, as ticked, and the button says it runs them all.
-    await page.click('#scenarioTabs [data-scenario="weakestLink"]');
+    await page.selectOption('#scenarioSelect', 'weakestLink');
     assert.equal(await page.textContent('#runScenarioButton'), 'Run them all and rank');
     const supplyRoads = await linksOf('supply');
     assert.equal(await page.textContent('#rankHint'), `${4 + supplyRoads} failures to run, one after another: 2 suppliers, 2 warehouses, ${supplyRoads} roads.`);
@@ -840,13 +856,13 @@ try {
     await page.uncheck('#rankStoreRoads');
     await page.uncheck('#rankRoads');
     assert.equal(await page.textContent('#rankHint'), '4 failures to run, one after another: 2 suppliers, 2 warehouses.');
-    await page.click('#scenarioTabs [data-scenario="roadClosure"]');
+    await page.selectOption('#scenarioSelect', 'roadClosure');
     assert.equal(await page.textContent('#runScenarioButton'), 'Run the scenario');
     noErrors();
 
     // 7a5. A new site: a warehouse placed and ticked a candidate is drawn as an outline, takes a fixed cost and a cost to
     // open, is linked from its card, stops nothing and is not built: the New site tab says what it would compare.
-    await page.click('#scenarioTabs [data-scenario="newSite"]');
+    await page.selectOption('#scenarioSelect', 'newSite');
     assert.equal(await page.textContent('#runScenarioButton'), 'Build and compare them');
     assert.equal(await page.textContent('#siteHint'), 'No candidate yet: place a warehouse, tick A candidate on its card, and link it.');
     await page.click('[data-add="warehouse"]');
@@ -857,6 +873,24 @@ try {
     await page.check('#pinCandidate');
     assert.deepEqual(await stateOf(() => { const pin = window.logisticsToolboxState.pins.at(-1); return [pin.proposed, 'candidate' in pin]; }), [true, false]);
     assert.doesNotMatch(await page.textContent('#selectionCard'), /Adopted from OpenStreetMap/, 'a site placed by hand is not said to be adopted');
+    // The legend names what is on the map: links of the user's and suggested ones are, no suggestion of a site is.
+    assert.deepEqual(await page.evaluate(() => ['#legendYourLink', '#legendSuggestion'].map((id) => document.querySelector(id).hidden)), [false, true]);
+    // Days are told apart by two letters, where one made Tuesday and Thursday the same.
+    assert.deepEqual(await page.$$eval('#selectionCard .hours li:first-child .days label', (labels) => labels.map((label) => label.textContent)), ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su']);
+    // A card is short: a field's explanation is written at its foot while the field is being changed, where it stays
+    // put (nothing moves under the pointer), and every explanation is shown beside its field when asked for.
+    const explanations = () => page.locator('#selectionCard .detail.help:visible').count();
+    assert.equal(await explanations(), 0);
+    assert.equal(await page.textContent('#fieldHelp'), 'Click a field for what it means.');
+    const footBefore = await page.evaluate(() => document.querySelector('#explainFields').getBoundingClientRect().top);
+    await page.focus('#field-fixedCost');
+    assert.match(await page.textContent('#fieldHelp'), /^Rent, staff/);
+    assert.equal(await page.evaluate(() => document.querySelector('#explainFields').getBoundingClientRect().top), footBefore, 'the card does not move when a field takes the focus');
+    await page.click('#explainFields');
+    assert.ok(await explanations() >= 4, 'every field is explained');
+    assert.equal(await page.textContent('#explainFields'), 'Hide the explanations');
+    await page.click('#explainFields');
+    assert.equal(await explanations(), 0);
     assert.equal(await page.locator('#map .site.candidate').count(), 1, 'drawn as an outline');
     await change('#field-fixedCost', '2000');
     await change('#field-openingCost', '50000');
@@ -873,14 +907,14 @@ try {
     await page.waitForFunction(() => document.querySelector('#buildStatus .notice.ok') && !window.logisticsToolboxState.busy, null, { timeout: 60000 }).catch(fail);
     assert.ok(!(await stateOf(() => window.logisticsToolboxState.built.lanes.some((lane) => lane.fromSite === 'Warehouse 3' || lane.site === 'Warehouse 3'))), 'a candidate is left out of the model');
     await page.keyboard.press('Escape');
-    await page.click('#scenarioTabs [data-scenario="roadClosure"]');
+    await page.selectOption('#scenarioSelect', 'roadClosure');
     await page.selectOption('#closureLaneSelect', harbourLane.link);
     noErrors();
 
     // 7b. With an engine (KONJUGATE_ENGINE=export runs the model as Konjugate's code export writes it): Harbour shop's
     // only lane closed for ten days, and the summary shows its shelves empty and its shoppers waiting.
     if (process.env.KONJUGATE_ENGINE === 'export') {
-        assert.equal(await page.isVisible('#scenarioTabs'), true, 'the scenarios show once the model is built');
+        assert.equal(await page.isVisible('#scenarioSelect'), true, 'the scenarios show once the model is built');
         assert.match(await page.textContent('#closureHint'), /Harbour shop's orders over it queue until it reopens/);
         await page.fill('#startInput', '5');
         await page.fill('#durationInput', '10');
@@ -898,7 +932,7 @@ try {
         assert.match(result, /fullest/, 'a warehouse with room for 400 pallets says how full it got');
         // In business terms first: one sentence, then demand met, sales lost and running costs; the rest under Details.
         const headline = await page.textContent('#scenarioResult .headline');
-        assert.match(headline, /^Harbour shop ran out of Ambient, Chilled and Frozen for [\d.]+ days( and was short for [\d.]+)?, losing [\d,.]+ pallets of sales, worth [\d,]+ INR at an assumed value of a pallet; running costs ((up|down) [\d,]+ \([\d.]+%\) against|as in) the baseline\.$/, headline);
+        assert.match(headline, /^Harbour shop ran out of Ambient, Chilled and Frozen for [\d.]+ days( and was short for [\d.]+)?, losing [\d,.]+ pallets of sales, worth [\d,]+ INR at an assumed value of a pallet; running costs ((up|down) [\d,]+ \([\d.]+%\) against|as in) the baseline(, as less was carried)?\.$/, headline);
         // By category: the closed road carried all three, so one store ran out of each, and the sales lost add up.
         const byCategory = await stateOf(() => window.logisticsToolboxState.scenario.byCategory);
         assert.deepEqual(byCategory.map((item) => [item.name, item.storesOut]), [['Ambient', 1], ['Chilled', 1], ['Frozen', 1]]);
@@ -910,7 +944,7 @@ try {
         assert.ok(wasted && wasted.scenario >= 0 && wasted.baseline < 1e-6, `nothing is wasted in the baseline (${JSON.stringify(wasted)})`);
         assert.match(result, /Goods wasted \(pallets\)/);
         assert.deepEqual(byCategory.map((item) => Boolean(item.wasted)), [false, true, false]);
-        assert.match(await page.textContent('#scenarioResult #byCategory'), /wasted \(pallets\).*Ambient.*keeps/s);
+        assert.match(await page.textContent('#scenarioResult #byCategory'), /wasted.*Ambient.*keeps/s);
         assert.match(await page.textContent('#scenarioResult table.business:not(#byCategory) .basis'), /^Ambient: out [\d.]+ days, [\d.]+ lost; Chilled: out/);
         const lost = await stateOf(() => window.logisticsToolboxState.scenario.stores.find((item) => item.name === 'Harbour shop'));
         // Priced by category: chilled goods at the 2,500 a pallet given in the list, the others at the store's 1,000.
@@ -943,7 +977,7 @@ try {
         await page.fill('#durationInput', '10');
         // A supplier short of chilled goods and two days late with them, its warehouses ordering from the other supplier:
         // the run says so, the supplier is ringed on the map, and the details give what it made and what waited.
-        await page.click('#scenarioTabs [data-scenario="supplierTrouble"]');
+        await page.selectOption('#scenarioSelect', 'supplierTrouble');
         await page.fill('#supplierShortInput', '80');
         await page.click('#runScenarioButton');
         await page.waitForFunction(() => /^Supplier 2 /.test(document.querySelector('#scenarioResult p')?.textContent ?? '') || document.querySelector('#scenarioStatus .notice.error'), null, { timeout: 120000 }).catch(fail);
@@ -972,7 +1006,7 @@ try {
         assert.deepEqual(await stateOf(() => window.logisticsToolboxState.runs.map((run) => run.number)), [1, 2, 3]);
         // Harbour shop closed for the ten days: it keeps its stock, so it is not out of anything, and loses its sales;
         // the summary says it was closed, and the map rings it.
-        await page.click('#scenarioTabs [data-scenario="siteDown"]');
+        await page.selectOption('#scenarioSelect', 'siteDown');
         assert.equal(await page.inputValue('#downSiteSelect'), 'site:Harbour shop');
         await page.click('#runScenarioButton');
         await page.waitForFunction(() => /^Harbour shop closed/.test(document.querySelector('#scenarioResult p')?.textContent ?? '') || document.querySelector('#scenarioStatus .notice.error'), null, { timeout: 120000 }).catch(fail);
@@ -982,6 +1016,7 @@ try {
         assert.ok(shut.lost.scenario > 1 && shut.emptyDays.scenario - shut.emptyDays.baseline < 0.05, `closed, it loses sales with stock on its shelves (${JSON.stringify([shut.lost, shut.emptyDays])})`);
         const shutRow = await page.evaluate(() => [...document.querySelectorAll('#scenarioResult table')].find((table) => /^Store/.test(table.tHead.textContent))?.querySelector('tbody tr')?.textContent);
         assert.match(shutRow ?? '', /^Harbour shopclosed for 10 days: its stock stayed, its sales did not/);
+        await fitsPanel('a scenario\'s result');
         assert.equal(await page.locator('#map .siteMark.down').count(), 1);
         assert.match(await page.textContent('#map .siteMark.down title'), /^Harbour shop: closed from day 5 for 10 days$/);
         assert.equal(await page.locator('#map .siteMark.supplier').count(), 0, 'the supplier\'s ring goes with its scenario');
@@ -991,7 +1026,7 @@ try {
         assert.equal(await page.isVisible('#legendDown'), true);
         // The weakest link: each supplier starting nothing new and each warehouse down, run in turn for the ten days and
         // ranked by the sales they lose, worst first, none of them kept as a run of its own; then the worst run alone.
-        await page.click('#scenarioTabs [data-scenario="weakestLink"]');
+        await page.selectOption('#scenarioSelect', 'weakestLink');
         await page.click('#runScenarioButton');
         await page.waitForSelector('#rankingTable, #scenarioStatus .notice.error', { timeout: 300000 }).catch(fail);
         assert.equal(await page.locator('#scenarioStatus .notice.error').count(), 0, await page.textContent('#scenarioStatus'));
@@ -1004,6 +1039,7 @@ try {
         assert.match(await page.textContent('#rankingResult .headline'), new RegExp(`^The weakest link: ${worst.name}\\. If ${worst.what} for 10 days, it costs most, losing sales worth [\\d,]+ INR\\.`));
         assert.equal(await page.locator('#rankingTable tbody tr').count(), 4);
         assert.match(await page.textContent('#rankingTable tbody tr'), new RegExp(`^1${worst.what}`));
+        await fitsPanel('the ranking');
         // A supplier's failure is named for what it is: it starts nothing new, and what it was making still ships.
         assert.ok((await stateOf(() => window.logisticsToolboxState.ranking.rows.map((row) => row.what))).some((what) => /^Supplier \d+ starts nothing new$/.test(what)));
         assert.match(await page.textContent('#rankingResult'), /A supplier that starts nothing new still ships what it was already making/);
@@ -1015,7 +1051,7 @@ try {
         await page.click('#rankingTable [data-run-failure="0"]');
         await page.waitForFunction((what) => (document.querySelector('#scenarioResult p')?.textContent ?? '').startsWith(what) || document.querySelector('#scenarioStatus .notice.error'), `${worst.name} `, { timeout: 120000 }).catch(fail);
         assert.equal(await page.locator('#scenarioStatus .notice.error').count(), 0, await page.textContent('#scenarioStatus'));
-        assert.equal(await page.evaluate(() => document.querySelector('#scenarioTabs .active').dataset.scenario), worst.kind === 'supplier' ? 'supplierTrouble' : 'siteDown');
+        assert.equal(await page.evaluate(() => document.querySelector('#scenarioSelect').value), worst.kind === 'supplier' ? 'supplierTrouble' : 'siteDown');
         assert.equal(await page.isVisible('#rankingResult'), false, 'the ranking shows under its own tab');
         const alone = await stateOf(() => window.logisticsToolboxState.scenario.totals.lostValue);
         assert.ok(Math.abs(alone.scenario - alone.baseline - worst.lostValue) < 0.01 * worst.lostValue + 1, `run alone, it loses what it lost in the ranking (${alone.scenario - alone.baseline} against ${worst.lostValue})`);
@@ -1030,7 +1066,7 @@ try {
         await page.click('#buildButton');
         await page.waitForFunction(() => document.querySelector('#buildStatus .notice.ok') && !window.logisticsToolboxState.busy, null, { timeout: 60000 }).catch(fail);
         assert.ok(await stateOf(() => window.logisticsToolboxState.built.provenance.some((entry) => entry.entity === 'Holidays and peaks: Chilled')), 'the festival is in the model');
-        await page.click('#scenarioTabs [data-scenario="asPlanned"]');
+        await page.selectOption('#scenarioSelect', 'asPlanned');
         assert.equal(await page.textContent('#runScenarioButton'), 'Run it as planned');
         assert.match(await page.textContent('#plannedHint'), /^1 holiday or peak in the calendar: Holiday 1 \(day 20\); no site keeps hours\.$/);
         await page.click('#runScenarioButton');
@@ -1048,7 +1084,7 @@ try {
         // A new site: the network as it is and the network with Warehouse 3 open, each built and run with the road to
         // Harbour shop closed for the ten days. With the candidate, which also restocks Harbour shop, the closure costs
         // less; it is dearer to run by its fixed cost, and the verdict says how often such a closure must come to pay.
-        await page.click('#scenarioTabs [data-scenario="newSite"]');
+        await page.selectOption('#scenarioSelect', 'newSite');
         await page.selectOption('#siteStressSelect', 'roadClosure');
         await page.click('#runScenarioButton');
         await page.waitForSelector('#siteTable, #scenarioStatus .notice.error', { timeout: 400000 }).catch(fail);
@@ -1061,11 +1097,12 @@ try {
         assert.ok(withSite.extraMonthly > 1500, `dearer to run by its fixed cost and its own running (${withSite.extraMonthly} a month)`);
         assert.match(withSite.verdict, /^Dearer to run by [\d,]+ a month, and one such disruption costs [\d,]+ less with it: it pays for its running if one comes more often than once every [\d.,]+ months\. Its cost to open, 50,000, is back after [\d.,]+ such disruptions\.$/);
         assert.equal(await page.locator('#siteTable tbody tr').count(), 2);
+        await fitsPanel('the comparison of sites');
         assert.match(await page.textContent('#siteTable tbody tr:nth-child(2)'), /^With Warehouse 3Dearer to run by/);
         // The network on the map is the one built again: the candidate is out of the model, and the runs are as they were.
         assert.ok(!(await stateOf(() => window.logisticsToolboxState.built.lanes.some((lane) => lane.fromSite === 'Warehouse 3'))));
         assert.deepEqual(await stateOf(() => window.logisticsToolboxState.runs.map((run) => run.number)), [1, 2, 3, 4, 5, 6]);
-        await page.click('#scenarioTabs [data-scenario="roadClosure"]');
+        await page.selectOption('#scenarioSelect', 'roadClosure');
         // A host that applies none of a scenario's changes (Konjugate up to 1.1.10, on a model its engine partitioned)
         // answers with the baseline twice: the window says the run is the baseline's, and not that nothing was lost.
         host.dropChanges = true;

@@ -26,7 +26,7 @@ body { background: var(--bg); color: var(--text); font: 13px/1.45 var(--font); d
 .step.collapsed { padding: 10px 0; }
 .stepHeader { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 2px 0; user-select: none; border-radius: 4px; }
 .stepHeader:hover h2 { color: var(--accent); }
-.stepSummary { font-size: 11px; color: var(--muted); background: var(--surface-2); padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); margin-left: auto; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stepSummary { font-size: 11px; color: var(--muted); background: var(--surface-2); padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); margin-left: auto; max-width: 62%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stepSummary:empty { display: none; }
 .stepToggle { background: none; border: 0; color: var(--muted); font-size: 12px; padding: 2px 4px; cursor: pointer; transition: transform 0.2s ease, color 0.15s ease; }
 .stepToggle:hover { color: var(--bright); }
@@ -77,8 +77,9 @@ input[type="number"] { width: 72px; }
 .level.good, .level.mapped { color: var(--ok); background: rgba(52, 211, 153, 0.12); }
 .level.partial { color: var(--warn); background: rgba(251, 191, 36, 0.12); }
 .level.thin, .level.none { color: var(--danger); background: rgba(248, 113, 113, 0.12); }
-.tabs { display: flex; gap: 4px; margin: 6px 0; }
-.tabs button { flex: 1; background: var(--surface); border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 6px 4px; font: inherit; font-size: 12px; cursor: pointer; transition: all 0.15s ease; }
+/* Chips that wrap: a filter of as many kinds as there are, each label whole on one line, in a panel of any width. */
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.tabs button { flex: 0 1 auto; white-space: nowrap; background: var(--surface); border: 1px solid var(--border); color: var(--muted); border-radius: 12px; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; transition: all 0.15s ease; }
 .tabs button:hover:not(.active) { background: var(--surface-hover); color: var(--text); }
 .tabs button.active { color: var(--bright); border-color: var(--accent); background: var(--surface-2); font-weight: 600; }
 .count { color: var(--muted); font-size: 11px; }
@@ -98,6 +99,17 @@ tbody tr:last-child td { border-bottom: 0; }
 tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.015); }
 tbody tr:hover { background: var(--surface-hover); }
 td.number { text-align: right; font-variant-numeric: tabular-nums; }
+/* A table fits the panel at its narrowest: names wrap where they must, figures stay whole, and a column of actions is
+   as wide as its button. Nothing in the panel may be wider than the panel, or the whole of it scrolls sideways. */
+.panel th, .panel td { padding: 6px 6px; }
+.panel td:first-child, .panel th:first-child { padding-left: 8px; overflow-wrap: anywhere; }
+.panel td.number { white-space: nowrap; }
+.panel td.action { width: 1%; white-space: nowrap; text-align: right; }
+.scenarioChoice label { font-weight: 600; }
+/* A long explanation shows its first two lines, and the rest when asked for: whole, they pushed what they explain out
+   of sight. */
+.panel p.clamped { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; margin-bottom: 0; }
+.panel .moreText { display: block; margin: 0 0 8px; font-size: 11px; }
 .basis { font-size: 10px; color: var(--muted); }
 .basis.assumed { color: var(--warn); }
 .basis.synthetic { color: var(--accent); font-style: italic; }
@@ -107,8 +119,8 @@ details summary { cursor: pointer; color: var(--accent); font-size: 12px; paddin
 details summary:hover { text-decoration: underline; }
 
 .mapArea { position: relative; display: flex; flex-direction: column; min-width: 0; flex: 1; }
-.mapTools { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
-.mapTools .spacer { flex: 1; }
+.mapTools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.mapTools .spacer, .card .row .spacer { flex: 1; }
 .tool { background: var(--surface-2); border: 1px solid var(--border-strong); color: var(--text); border-radius: 6px; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; transition: all 0.15s ease; }
 .tool:hover { border-color: var(--accent); color: var(--bright); }
 .tool.active { border-color: var(--accent); color: var(--accent); background: rgba(56, 189, 248, 0.15); }
@@ -182,6 +194,11 @@ details summary:hover { text-decoration: underline; }
 .swatch.lane.fell { background: var(--danger); }
 .swatch.lane.rose { background: var(--warn); }
 .flowView { display: inline-flex; margin-right: 8px; }
+.flowView small { color: var(--muted); font-size: 10px; margin-left: 4px; }
+/* The map's own controls stay together when the bar wraps. */
+.toolGroup { display: inline-flex; gap: 6px; flex-wrap: nowrap; }
+/* A button's label stays on one line: a bar too narrow for its buttons wraps them to a second row, whole. */
+.tool { white-space: nowrap; }
 .flowView .tool { border-radius: 0; }
 .flowView .tool:first-child { border-radius: 6px 0 0 6px; }
 .flowView .tool:last-child { border-radius: 0 6px 6px 0; margin-left: -1px; }
@@ -213,10 +230,22 @@ td.better { color: var(--ok); font-weight: 600; }
 .mapHint { position: absolute; top: 50px; left: 50%; transform: translateX(-50%); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px; padding: 6px 10px; font-size: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); pointer-events: none; }
 .card { background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; padding: 10px; margin: 8px 0; }
 .card h3 { margin: 0 0 6px; font-size: 13px; color: var(--bright); display: flex; align-items: center; gap: 6px; }
-.card .field { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; margin: 4px 0; font-size: 12px; }
-.card .field input[type="number"] { width: 90px; }
+/* The figures of a card stand in one column: a field's box and its unit take a fixed width, whatever the unit's length. */
+.card .field { display: grid; grid-template-columns: minmax(0, 1fr) 160px auto; gap: 6px; align-items: center; margin: 4px 0; font-size: 12px; }
+.card .field > span:nth-child(2) { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.card .field > span:nth-child(2) input[type="number"] { width: 84px; flex: 0 0 84px; }
+#rankingTable td:nth-child(2) { width: 100%; }
+.card .field input[type="number"] { width: 72px; }
 .card .field .basis { min-width: 54px; text-align: right; }
 .card .detail { color: var(--muted); font-size: 11px; margin: 2px 0 6px; }
+/* A field's explanation is written at the foot of the card while the field is being changed, and all of them beside
+   their fields when asked for: always shown, they made a card two screens long. The foot keeps its place and its
+   height, so nothing above or below it moves under the pointer as the focus changes. Pointing at a field gives its
+   explanation too (its title). */
+.card .detail.help { display: none; }
+.card.explained .detail.help { display: block; }
+.card .fieldHelp { color: var(--muted); font-size: 11px; min-height: 3.9em; margin: 6px 0 0; padding-top: 6px; border-top: 1px solid var(--border); }
+.card.explained .fieldHelp { display: none; }
 .card input[type="text"] { width: 100%; }
 .card ul { list-style: none; padding: 0; margin: 4px 0; font-size: 12px; }
 .card li { display: flex; justify-content: space-between; gap: 6px; padding: 2px 0; }

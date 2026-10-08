@@ -113,7 +113,7 @@ try {
         const fail = async (error) => {
             const shown = await toolbox.evaluate(() => ({
                 build: document.querySelector('#buildStatus')?.innerText, scenario: document.querySelector('#scenarioStatus')?.innerText,
-                result: document.querySelector('#scenarioResult p')?.textContent, tab: document.querySelector('#scenarioTabs .active')?.dataset.scenario
+                result: document.querySelector('#scenarioResult p')?.textContent, tab: document.querySelector('#scenarioSelect')?.value
             })).catch((problem) => problem.message);
             throw new Error(`${error.message}\nThe window shows: ${JSON.stringify(shown)}\nToolbox window log:\n${log.join('\n')}`);
         };
@@ -284,7 +284,7 @@ try {
         assert.match(await toolbox.textContent('#scenarioResult'), /Days an order waited/);
         // The map shows what the lanes carried while the cut lasted: Port Alder's less, Birch Harbour's standby lanes more.
         assert.equal(await toolbox.locator('#flowView').isVisible(), true);
-        assert.match(await toolbox.textContent('#flowView [data-flows="scenario"]'), /^Scenario, day 2 to 5$/);
+        assert.match(await toolbox.textContent('#flowView [data-flows="scenario"]'), /^Scenario day 2 to 5$/);
         assert.ok(await toolbox.locator('#map .lane.rose').count() > 0, 'the lanes the cargo was diverted to carried more');
         assert.ok(await toolbox.locator('#map .lane.fell, #map .lane.stopped').count() > 0, 'the lanes from the cut port carried less');
         await toolbox.click('#flowView [data-flows="baseline"]');
@@ -317,7 +317,7 @@ try {
         assert.equal(await toolbox.locator('#operatorRow').isVisible(), false);
         assert.match(await toolbox.textContent('#buildResult'), /heavy trucks/);
         const runTab = async (tab, expected, setUp = async () => {}) => {
-            await toolbox.click(`#scenarioTabs [data-scenario="${tab}"]`);
+            await toolbox.selectOption('#scenarioSelect', tab);
             assert.equal(await toolbox.locator(`.scenarioPanel[data-panel="${tab}"]`).isVisible(), true);
             await setUp();
             await toolbox.click('#runScenarioButton');
@@ -349,7 +349,7 @@ try {
         // Demand up by half everywhere.
         // The weakest link, in the real app: both warehouses down and each of the four roads into them closed, run in
         // turn (the host keeps none of them in the canvas) and ranked.
-        await toolbox.click('#scenarioTabs [data-scenario="weakestLink"]');
+        await toolbox.selectOption('#scenarioSelect', 'weakestLink');
         assert.match(await toolbox.textContent('#rankHint'), /^6 failures to run, one after another: 2 warehouses, 4 roads\.$/);
         await toolbox.click('#runScenarioButton');
         await toolbox.waitForSelector('#rankingTable', { timeout: 300000 }).catch(fail);
@@ -361,7 +361,7 @@ try {
         assert.match(down, /Share of demand met/);
         // A supplier short, in the real app: this network has ports alone, so the tab is hidden until a supplier is placed;
         // the host takes the scenario's three parameters; and with the supplier deleted the tab goes again.
-        assert.equal(await toolbox.locator('#scenarioTabs [data-scenario="supplierTrouble"]').isVisible(), false, 'no supplier, no Supplier tab');
+        assert.equal(await toolbox.evaluate(() => !document.querySelector('#scenarioSelect option[value=\"supplierTrouble\"]').hidden), false, 'no supplier, no Supplier tab');
         await toolbox.click('[data-add="supplier"]');
         await toolbox.mouse.click(mapBox.x + mapBox.width * 0.45, mapBox.y + mapBox.height * 0.55);
         await toolbox.keyboard.press('Escape');
@@ -371,7 +371,7 @@ try {
         assert.equal(await toolbox.locator('#map .siteMark.supplier').count(), 1, 'the supplier is ringed on the map');
         await toolbox.click('#selectionCard #deletePin');
         await toolbox.waitForFunction(() => /^2 ports/.test(document.querySelector('#buildStatus .notice.ok')?.textContent ?? ''), null, { timeout: 120000 }).catch(fail);
-        assert.equal(await toolbox.locator('#scenarioTabs [data-scenario="supplierTrouble"]').isVisible(), false);
+        assert.equal(await toolbox.evaluate(() => !document.querySelector('#scenarioSelect option[value=\"supplierTrouble\"]').hidden), false);
         assert.equal(log.filter((line) => line.startsWith('pageerror') || line.startsWith('error')).length, 0, log.join('\n'));
         const surge = await runTab('demandSurge', /Demand up 50% in every store, dark store and customer area from day 2 for 3 days: [\d,]+ pallets more ordered\./, () => toolbox.fill('#demandChangeInput', '50'));
         assert.ok(/Highest backlog/.test(surge));
@@ -388,7 +388,7 @@ try {
         assert.equal(await toolbox.locator('#map .site.dropped').count(), 0, 'every suggestion asked for was adopted');
         assert.match(await toolbox.textContent('#buildResult'), /Harbour customers/);
         assert.match(await toolbox.textContent('#scenarioResult'), /Demand up 50% in every store, dark store and customer area/, 'and the last scenario run');
-        assert.equal(await toolbox.evaluate(() => document.querySelector('#scenarioTabs .active').dataset.scenario), 'demandSurge', 'on its tab');
+        assert.equal(await toolbox.evaluate(() => document.querySelector('#scenarioSelect').value), 'demandSurge', 'on its tab');
         assert.equal(await toolbox.inputValue('#demandChangeInput'), '50');
         assert.equal(await toolbox.inputValue('#closureModeSelect'), 'detour');
         assert.equal(await toolbox.inputValue('#chokepointSelect'), 'chokepoint1');

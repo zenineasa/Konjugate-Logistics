@@ -11,7 +11,7 @@ import {
 } from '../../packages/toolbox/lib/categories.mjs';
 import { affectedAcross, closureAcross, mergeSeries, mergeSupplied, siteView } from '../../packages/toolbox/lib/builtView.mjs';
 import { createPin, networkProblems, networkSelection, routeLinks, suggestLinks } from '../../packages/toolbox/lib/network.mjs';
-import { buildRegionModel, categoryShifts } from '../../packages/toolbox/lib/regionModel.mjs';
+import { buildRegionModel, categoryShifts, scaledTogether } from '../../packages/toolbox/lib/regionModel.mjs';
 import { buildRoadGraph } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { compactRoadGraph, createNetworkRouter } from '../../packages/toolbox/lib/routing.mjs';
 import { fleetPlan, siteDownPlan, supplierPlan } from '../../packages/toolbox/lib/scenarios.mjs';
@@ -178,11 +178,12 @@ test('names are listed as a sentence does, and a run names the categories it los
 test('where the stores\' own sales differ from what is supplied, each category says so for itself, with figures that show the difference', () => {
     const { built } = placed({ change: ({ pins }) => { pins[2].fields.demand = { value: 30.5, basis: 'user' }; } });
     const scaled = built.warnings.filter((text) => /scaled/.test(text));
-    assert.deepEqual(scaled, [
-        'Ambient: the customers\' own demand (24.3 pallets/day) differs from what the suppliers and ports supply (24 pallets/day); it was scaled by 0.988 to match so the baseline holds still.',
-        'Chilled: the customers\' own demand (10.1 pallets/day) differs from what the suppliers and ports supply (10 pallets/day); it was scaled by 0.988 to match so the baseline holds still.',
-        'Frozen: the customers\' own demand (6.1 pallets/day) differs from what the suppliers and ports supply (6 pallets/day); it was scaled by 0.988 to match so the baseline holds still.'
-    ]);
+    // One fact about the network, said once: not a warning for each category.
+    assert.deepEqual(scaled, ['The customers\' own demand differs from what the suppliers and ports supply in Ambient (24.3 against 24 pallets/day), Chilled (10.1 against 10) and Frozen (6.1 against 6); each was scaled to match (by 0.988) so the baseline holds still.']);
+    // One category so scaled is said as it is; other warnings keep their place.
+    const lone = 'Chilled: the customers\' own demand (10.1 pallets/day) differs from what the suppliers and ports supply (10 pallets/day); it was scaled by 0.988 to match so the baseline holds still.';
+    assert.deepEqual(scaledTogether(['Something else.', lone]), ['Something else.', lone]);
+    assert.deepEqual(scaledTogether(['First.', lone, 'Between.', lone.replace('Chilled', 'Frozen').replace('0.988', '0.9')]).map((text) => text.slice(0, 40)), ['First.', 'The customers\' own demand differs from w', 'Between.']);
     // One category alone is the network itself, and says it as before.
     const single = placed({ change: ({ pins, categories }) => { pins[2].fields.demand = { value: 30.5, basis: 'user' }; categories.splice(1); } });
     assert.match(single.built.warnings.find((text) => /scaled/.test(text)), /^The customers' own demand \(40\.5 pallets\/day\) differs/);

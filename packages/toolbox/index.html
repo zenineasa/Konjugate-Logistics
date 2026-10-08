@@ -75,7 +75,7 @@
                     <ul class="candidates pins" id="pinList"></ul>
                     <details id="vehicles">
                         <summary>Vehicles <span class="muted small" id="vehiclesSummary"></span></summary>
-                        <p class="muted small">The types every link chooses from. A link to a warehouse runs on heavy trucks, to a store on medium trucks and to a dark store on mini-vans, until you choose others on its card (or press V). Each figure is assumed until you set your own fleet's; costs are in your cost units.</p>
+                        <p class="muted small">The types every link chooses from. A link to a warehouse runs on heavy trucks, to a store on medium trucks and to a dark store on mini-vans, until you choose others on its card (or press V). Each figure is assumed until you set your own fleet's; costs are in the money you name under Money.</p>
                         <ul class="vehicles" id="vehicleList"></ul>
                         <button class="button small" type="button" id="addVehicleButton">Add a vehicle type</button>
                     </details>
@@ -178,16 +178,27 @@
                 </div>
                 <div class="stepContent">
                     <p class="muted small">Each scenario forks the model on the day it starts and runs beside the baseline.</p>
-                    <div class="tabs" role="tablist" id="scenarioTabs">
-                        <button type="button" role="tab" data-scenario="asPlanned" hidden>As planned</button>
-                        <button type="button" role="tab" data-scenario="chokepointDisruption" class="active">Chokepoint</button>
-                        <button type="button" role="tab" data-scenario="roadClosure">Road closure</button>
-                        <button type="button" role="tab" data-scenario="fleetChange">Fleet</button>
-                        <button type="button" role="tab" data-scenario="demandSurge">Demand</button>
-                        <button type="button" role="tab" data-scenario="supplierTrouble" hidden>Supplier</button>
-                        <button type="button" role="tab" data-scenario="siteDown" hidden>Site down</button>
-                        <button type="button" role="tab" data-scenario="weakestLink" hidden>Weakest link</button>
-                        <button type="button" role="tab" data-scenario="newSite" hidden>New site</button>
+                    <!-- One picker, whatever the number of scenarios: a row of tabs ran out of the panel's width. Grouped by
+                         what they are: the plan itself, something going wrong, and analyses that run several. -->
+                    <div class="row scenarioChoice">
+                        <label for="scenarioSelect">Run</label>
+                        <select id="scenarioSelect" aria-label="What to run">
+                            <optgroup label="The plan">
+                                <option value="asPlanned" hidden disabled>The network as planned</option>
+                            </optgroup>
+                            <optgroup label="A disruption">
+                                <option value="roadClosure">A road closed</option>
+                                <option value="supplierTrouble" hidden disabled>A supplier short or late</option>
+                                <option value="siteDown" hidden disabled>A site down</option>
+                                <option value="fleetChange">A change of fleet</option>
+                                <option value="demandSurge">A surge in demand</option>
+                                <option value="chokepointDisruption" selected>A chokepoint disrupted</option>
+                            </optgroup>
+                            <optgroup label="A comparison">
+                                <option value="weakestLink" hidden disabled>The weakest link, ranked</option>
+                                <option value="newSite" hidden disabled>A new site, compared</option>
+                            </optgroup>
+                        </select>
                     </div>
                     <div class="scenarioPanel" data-panel="chokepointDisruption">
                         <p class="muted small">Fewer ships through a strait or canal for a while: the ports that depend on it receive less.</p>
@@ -326,12 +337,14 @@
                 <span class="flowView" id="flowView" hidden title="What the lanes carried while the scenario lasted, or the baseline">
                     <button type="button" class="tool" data-flows="scenario">Scenario</button><button type="button" class="tool" data-flows="baseline">Baseline</button>
                 </span>
+                <span class="toolGroup">
                 <button type="button" class="tool" id="undoButtonTool" title="Undo" aria-label="Undo" disabled>↶</button>
                 <button type="button" class="tool" id="redoButtonTool" title="Redo" aria-label="Redo" disabled>↷</button>
                 <button type="button" class="tool" id="zoomInButton" title="Zoom in (+)">+</button>
                 <button type="button" class="tool" id="zoomOutButton" title="Zoom out (-)">−</button>
                 <button type="button" class="tool" id="fitButton" title="Fit the map to the region (0)">Fit</button>
                 <button type="button" class="tool" id="shortcutsButton" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
+                </span>
             </div>
             <svg id="map" role="img" aria-label="Map of the region"></svg>
             <div class="mapHint" id="mapHint" hidden></div>
@@ -348,9 +361,9 @@
                 <table><tbody id="shortcutList"></tbody></table>
             </div>
             <div class="legend">
-                <span><i class="swatch link suggested"></i>Suggested link</span>
-                <span><i class="swatch link drawn"></i>Your link</span>
-                <span><i class="swatch hollow"></i>Suggestion</span>
+                <span id="legendSuggestedLink" hidden><i class="swatch link suggested"></i>Suggested link</span>
+                <span id="legendYourLink" hidden><i class="swatch link drawn"></i>Your link</span>
+                <span id="legendSuggestion" hidden><i class="swatch hollow"></i>Suggestion</span>
                 <span><i class="swatch lane"></i>Road lane, as built</span>
                 <span id="legendFell" hidden><i class="swatch lane fell"></i>Carried less</span>
                 <span id="legendRose" hidden><i class="swatch lane rose"></i>Carried more</span>

@@ -15,6 +15,7 @@
 //   right-click (or Control-click on a Mac) a pin, a link or the map: its menu
 //   in add mode, click anywhere: place a pin of that role
 
+import { boundsWith } from './lib/geo.mjs';
 import { choosePlaceLabels } from './lib/labels.mjs';
 import { addsToSelection, commandHeld, isMenuClick, platformKeys } from './lib/platform.mjs';
 
@@ -103,8 +104,11 @@ export class MapView {
 
     fit() {
         if (!this.bbox) return;
-        const a = this.project(this.bbox.north, this.bbox.west);
-        const b = this.project(this.bbox.south, this.bbox.east);
+        // The region, and every site placed: one beyond the roads loaded (a supplier out of town) is in view too, where
+        // it was once a name cut off at the map's edge.
+        const area = boundsWith(this.bbox, (this.sites ?? []).filter((site) => site.kept));
+        const a = this.project(area.north, area.west);
+        const b = this.project(area.south, area.east);
         const pad = 0.04 * Math.max(b.x - a.x, b.y - a.y);
         // More room on the right, where a site at the edge of the region writes its name.
         const labels = 0.12 * (b.x - a.x);

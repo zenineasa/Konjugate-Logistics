@@ -134,3 +134,13 @@ export function splitToSpan(items, pointOf, span) {
     }
     return parts;
 }
+
+// A box ({ south, west, north, east }) widened to hold some points ({ lat, lon }) too: the area a map fits when a site
+// lies beyond the region its roads were loaded for. Points that are no place are left out.
+export function boundsWith(bbox, points = []) {
+    const placed = points.filter((point) => Number.isFinite(point?.lat) && Number.isFinite(point?.lon));
+    return {
+        south: Math.min(bbox.south, ...placed.map((point) => point.lat)), north: Math.max(bbox.north, ...placed.map((point) => point.lat)),
+        west: Math.min(bbox.west, ...placed.map((point) => point.lon)), east: Math.max(bbox.east, ...placed.map((point) => point.lon))
+    };
+}

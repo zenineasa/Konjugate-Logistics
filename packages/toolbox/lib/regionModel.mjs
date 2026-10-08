@@ -1185,7 +1185,7 @@ function assemble(parts, { builder, settings, categories = null }) {
     const histories = new Map(all('histories').map((item) => [item.port, item]));
     const unusedLinks = new Map(all('unusedLinks').map((item) => [`${item.from}|${item.to}`, item]));
     return {
-        document, provenance, warnings: unique(all('warnings')), parameterIndex: all('parameterIndex'),
+        document, provenance, warnings: scaledTogether(unique(all('warnings'))), parameterIndex: all('parameterIndex'),
         // Every lane, a link's one for each category it carries: { name, link, category, from and to (nodes), fromSite and site, ... }.
         lanes: all('lanes'), ports: all('ports'), days: settings.days, trucking: first.trucking, standbyPorts: first.standbyPorts, operator: first.operator,
         histories: [...histories.values()], unusedZones,
@@ -1212,6 +1212,23 @@ function assemble(parts, { builder, settings, categories = null }) {
 // id]: weight }) or else by the categories' usual shares, a supplier may have a lead time for each (`leadDaysBy`), a
 // chilled category goes by refrigerated vehicles only, and a link's vehicles and a site's room are shared among the
 // categories by what each needs. Vehicles are not shared between categories as they run: each has its own on a link.
+// Each category's copy of the network says when the stores' own sales were scaled to what is supplied; several such
+// warnings are one fact about the network, and are said as one: "... in Ambient (60.6 against 60 pallets/day),
+// Chilled (25.3 against 25) and Frozen (15.1 against 15); each was scaled to match (by 0.99) ...".
+const scaledPattern = /^(.+): the customers' own demand \((\S+) (\S+)\/day\) differs from what (.+) \((\S+) \S+\/day\); it was scaled by (\S+) to match so the baseline holds still\.$/;
+export function scaledTogether(warnings) {
+    const found = warnings.map((text) => scaledPattern.exec(text));
+    const matches = found.filter(Boolean);
+    if (matches.length < 2) return warnings;
+    const [, , , unit, supplied] = matches[0];
+    const parts = matches.map(([, category, demand, , , supply], index) => `${category} (${demand} against ${supply}${index === 0 ? ` ${unit}/day` : ''})`);
+    const factors = [...new Set(matches.map((match) => match[6]))];
+    const said = `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`;
+    const merged = `The customers' own demand differs from what ${supplied} in ${said}; each was scaled to match (by ${factors.length === 1 ? factors[0] : factors.join(', ')}) so the baseline holds still.`;
+    const first = found.findIndex(Boolean);
+    return warnings.flatMap((text, index) => (found[index] ? (index === first ? [merged] : []) : [text]));
+}
+
 export function buildRegionModel({ builder, selection, route, links = null, options = {} }) {
     const settings = { ...regionModelDefaults, ...options };
     const categories = links && settings.vehicles?.length && settings.categories?.length ? settings.categories : null;
