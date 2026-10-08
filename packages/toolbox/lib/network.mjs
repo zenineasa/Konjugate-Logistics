@@ -156,7 +156,16 @@ export const linkId = (from, to) => `${from}>${to}`;
 
 // A candidate: a warehouse that is not open, placed and linked to be compared with the network as it is. It is left
 // out of the network (and its links with it) unless it is opened for a comparison.
-export const isCandidate = (pin) => pin?.role === 'warehouse' && pin.candidate === true;
+// The mark is `proposed`, a field of its own: `candidate` holds the public record a site was adopted from
+// (OpenStreetMap's), which a tick must neither overwrite nor be taken for. (Sessions kept before this marked a
+// candidate with `candidate: true`; they are read as they were meant.)
+export const isCandidate = (pin) => pin?.role === 'warehouse' && (pin.proposed === true || pin.candidate === true);
+// Marks a warehouse a candidate, or open again. The record it was adopted from stays as it is.
+export function setCandidate(pin, on) {
+    if (pin.candidate === true) delete pin.candidate;
+    if (on) pin.proposed = true; else delete pin.proposed;
+    return pin;
+}
 // The network with these candidates open (by pin id) and the rest left out: the pins and links a build takes.
 export function openNetwork(pins, links, open = []) {
     const opened = new Set(open);

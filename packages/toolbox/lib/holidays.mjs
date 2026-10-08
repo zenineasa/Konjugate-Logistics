@@ -82,11 +82,17 @@ export function closeDuring(samples, spans) {
 }
 
 // In words, for the provenance: "Eid (day 40 for 3 days): demand +60%; the 5 days before +30%; suppliers do not dispatch".
-export function describeHoliday(event, categoryId = null, categoryName = null) {
+// For one category (`categoryId`, `categoryName`), its own change. For the event as a whole (no category), the change
+// for all goods and every category's own beside it, named from `categories` ([{ id, name }]): "demand +80%; Chilled
+// demand +150%". A change given for one category alone is said too, where it was once left out.
+export function describeHoliday(event, categoryId = null, categoryName = null, categories = []) {
     const signed = (percent) => `${percent > 0 ? '+' : ''}${Number(percent)}%`;
     const during = demandChange(event, categoryId);
+    const own = categoryId ? [] : Object.entries(event.demand ?? {}).filter(([id, percent]) => id !== 'all' && Number(percent))
+        .map(([id, percent]) => `${categories.find((category) => category.id === id)?.name ?? id} demand ${signed(percent)}`);
     const parts = [
         ...(during ? [`${categoryName ? `${categoryName} ` : ''}demand ${signed(during)}`] : []),
+        ...own,
         ...(event.beforeDays > 0 && event.beforePercent ? [`the ${event.beforeDays} days before ${signed(event.beforePercent)}`] : []),
         ...(event.afterDays > 0 && event.afterPercent ? [`the ${event.afterDays} days after ${signed(event.afterPercent)}`] : []),
         ...(event.suppliersClosed ? ['suppliers do not dispatch'] : [])

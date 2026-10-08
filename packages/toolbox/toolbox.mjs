@@ -16,7 +16,7 @@ import { createNetworkRouter } from './lib/routing.mjs';
 import { compareSites } from './lib/siteComparison.mjs';
 import { differs, outNoise, sameSeries, shortDays, storesParts, unchangedText } from './lib/summary.mjs';
 import { createHoliday, describeHoliday, holidayProblem } from './lib/holidays.mjs';
-import { completeFields, createPin, isCandidate, kindOf, openNetwork, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
+import { completeFields, createPin, isCandidate, kindOf, openNetwork, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, setCandidate, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
 import { calibration, calibrationAdvised, calibrationMinimum, formatDuration, googleMapsUrl, howLabels, modelHours, openStreetMapUrl, parseTravelTimes, suspectTime, timeFrom, whenLabels, writeTravelTimes } from './lib/travelTimes.mjs';
 import { affectedAcross, closureAcross, diversionAcross, mergeSeries, siteView } from './lib/builtView.mjs';
 import { calendarKinds, calendarOf, dayNames, describeCalendar, kindsFor, setHours, wholeCalendar } from './lib/calendars.mjs';
@@ -1133,7 +1133,7 @@ function renderHolidays() {
             <div class="row small" title="People stock up before it, and buy less after">${field(event, 'beforeDays', 'The', 'days before:', event.beforeDays || '', 'min="0" step="1" placeholder="0"')}${field(event, 'beforePercent', '', '%', event.beforePercent || '', 'min="-100" placeholder="0" aria-label="Change in demand in the days before"')}</div>
             <div class="row small">${field(event, 'afterDays', 'The', 'days after:', event.afterDays || '', 'min="0" step="1" placeholder="0"')}${field(event, 'afterPercent', '', '%', event.afterPercent || '', 'min="-100" placeholder="0" aria-label="Change in demand in the days after"')}</div>
             <label class="row small"><input type="checkbox" data-holiday-suppliers ${event.suppliersClosed ? 'checked' : ''}> Suppliers do not dispatch while it lasts</label>
-            ${issue ? `<div class="notice error">${escape(issue)}</div>` : `<div class="detail">${escape(describeHoliday(event))}</div>`}
+            ${issue ? `<div class="notice error">${escape(issue)}</div>` : `<div class="detail">${escape(describeHoliday(event, null, null, state.categories))}</div>`}
         </li>`;
     }).join('');
     panel.querySelectorAll('[data-holiday]').forEach((row) => {
@@ -1657,7 +1657,8 @@ function renderCard() {
         // Being typed in: keep the fields as they are.
         if (card.dataset.for === pin.id && card.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
         card.dataset.for = pin.id;
-        const found = pin.candidate;
+        // The public record it was adopted from, if any (not the mark of a candidate site: network.mjs, isCandidate).
+        const found = pin.candidate && typeof pin.candidate === 'object' ? pin.candidate : null;
         // Its links, as lists to add to and take from: what supplies it, and what it supplies.
         const linkList = (direction) => {
             const own = state.links.filter((item) => (direction === 'in' ? item.to : item.from) === pin.id);
@@ -1698,7 +1699,7 @@ function renderCard() {
         wireHours(pin, card);
         $('#pinCandidate')?.addEventListener('change', (event) => {
             checkpoint(event.target.checked ? `making ${pin.name} a candidate` : `opening ${pin.name}`);
-            if (event.target.checked) pin.candidate = true; else delete pin.candidate;
+            setCandidate(pin, event.target.checked);
             card.dataset.for = '';
             networkChanged();
         });
@@ -2865,7 +2866,7 @@ function renderSiteComparison() {
 $('#siteStressSelect').addEventListener('change', () => keepSessionSoon());
 
 // ---- the weakest link: every failure run in turn, and ranked -------------------------------------------------------
-// The failures the Weakest link tab runs, as ticked: each supplier making nothing, each warehouse down, each road into
+// The failures the Weakest link tab runs, as ticked: each supplier starting nothing new (what it is making ships), each warehouse down, each road into
 // a warehouse closed and, when asked for, each road to a store. Each is one of the window's own scenarios, with its
 // sites waiting (no one orders elsewhere), so the ranking says what each failure costs if nothing is done about it.
 function failuresToRank() {
@@ -2873,7 +2874,7 @@ function failuresToRank() {
     const ticked = (id) => $(id).checked;
     const roads = view().lanes.filter((lane) => !lane.standby && lane.rate > 0 && (lane.kind === 'store' ? ticked('#rankStoreRoads') : ticked('#rankRoads')));
     return [
-        ...(ticked('#rankSuppliers') ? builtSuppliers().map((supplier) => ({ kind: 'supplier', name: supplier.name, what: `${supplier.name} makes nothing` })) : []),
+        ...(ticked('#rankSuppliers') ? builtSuppliers().map((supplier) => ({ kind: 'supplier', name: supplier.name, what: `${supplier.name} starts nothing new` })) : []),
         ...(ticked('#rankWarehouses') ? downSites().filter((site) => site.kind === 'warehouse').map((site) => ({ kind: 'warehouse', name: site.name, what: `${site.name} is down` })) : []),
         ...roads.map((lane) => ({ kind: 'road', name: lane.name, what: `${laneEnds(lane)} is closed` }))
     ];
@@ -2948,7 +2949,7 @@ function renderRanking() {
         ${stale ? notice('warning', 'The network has been built again since these were run: run them again to rank it as it is now.') : ''}
         <table class="business" id="rankingTable"><thead><tr><th></th><th>If, from day ${number(ranking.start)} for ${number(ranking.days)} days</th>${head}<th></th></tr></thead>
             <tbody>${ranking.rows.map((row, index) => `<tr><td class="number">${index + 1}</td><td>${escape(row.what)}${row.of?.length ? `<div class="basis">out of ${escape(listed(row.of))}</div>` : ''}${row.unchanged ? '<div class="basis worse">its run is the baseline\'s to the last digit: it touches nothing that moves, or was never applied</div>' : ''}</td>${cells(row)}<td><button class="link" type="button" data-run-failure="${index}" title="Run this one alone, for its map and details">Run it</button></td></tr>`).join('')}</tbody></table>
-        <p class="muted small">Each failure was run on its own, with nothing done about it: no one orders elsewhere. Values are in the model's cost units, beyond the baseline's.</p>`;
+        <p class="muted small">Each failure was run on its own, with nothing done about it: no one orders elsewhere. A supplier that starts nothing new still ships what it was already making, over its lead time, so a short stop of a supplier with a long lead time costs less than a road from it closed for the same days. Values are in the model's cost units, beyond the baseline's.</p>`;
     panel.querySelectorAll('[data-run-failure]').forEach((button) => button.addEventListener('click', () => runFailureAlone(ranking.rows[Number(button.dataset.runFailure)])));
 }
 function rankingHeadline(ranking, harmless) {
@@ -2957,7 +2958,7 @@ function rankingHeadline(ranking, harmless) {
         : worst.storesOut ? `${worst.storesOut} store${worst.storesOut === 1 ? '' : 's'} running out` : worst.fillDrop > 0.0005 ? `${number(worst.fillDrop * 100, 1)} points of demand not met` : null;
     if (!costs) return `None of the ${ranking.rows.length} failures run lost a sale or emptied a store over ${number(ranking.days)} days.`;
     const safe = harmless ? ` ${harmless} of the ${ranking.rows.length} cost nothing.` : '';
-    return `The weakest link: ${worst.what.replace(/ (makes nothing|is down|is closed)$/, '')}. If ${worst.what} for ${number(ranking.days)} days, it costs most, ${costs}.${safe}`;
+    return `The weakest link: ${worst.what.replace(/ (starts nothing new|is down|is closed)$/, '')}. If ${worst.what} for ${number(ranking.days)} days, it costs most, ${costs}.${safe}`;
 }
 // One failure of the ranking, run from its own tab as it was ranked, so its map and details show.
 function runFailureAlone(row) {
@@ -3290,7 +3291,7 @@ function scenarioRun(id, start, runTime, status) {
     if (id === 'asPlanned') {
         return {
             ...quietRun(common), resultId: 'asPlanned', absolute: true,
-            describe: `The network as planned, counted from day ${$('#startInput').value}: ${state.holidays.length ? state.holidays.map((event) => describeHoliday(event)).join('; ') : 'no holiday or peak'}; no disruption.`
+            describe: `The network as planned, counted from day ${$('#startInput').value}: ${state.holidays.length ? state.holidays.map((event) => describeHoliday(event, null, null, state.categories)).join('; ') : 'no holiday or peak'}; no disruption.`
         };
     }
     if (id === 'roadClosure') {

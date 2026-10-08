@@ -582,6 +582,12 @@ test('holidays and peaks: an event\'s effect on a category\'s demand as a schedu
     assert.deepEqual(closeDuring([[0, 0], [8 * 3600, 3], [16 * 3600, 0], [32 * 3600, 3], [40 * 3600, 0]], [{ from: 86400, to: 2 * 86400 }]), [[0, 0], [8 * 3600, 3], [16 * 3600, 0]], 'a day shift, with the second day closed');
     assert.deepEqual(closeDuring([[0, 1]], []), [[0, 1]]);
     assert.equal(describeHoliday(festival, 'chilled', 'Chilled'), 'Festival (day 12 for 3 days): Chilled demand +150%; the 3 days before +30%; the 2 days after -20%; suppliers do not dispatch');
+    // The event as a whole says every category's own change beside the one for all goods, by the category's name.
+    const named = [{ id: 'ambient', name: 'Ambient' }, { id: 'chilled', name: 'Chilled' }];
+    assert.equal(describeHoliday(festival, null, null, named), 'Festival (day 12 for 3 days): demand +80%; Chilled demand +150%; the 3 days before +30%; the 2 days after -20%; suppliers do not dispatch');
+    // A change for one category alone was once left out of the list and of the run's description.
+    assert.equal(describeHoliday({ name: 'Diwali', day: 20, days: 3, demand: { chilled: 80, ambient: 0 }, beforeDays: 3, beforePercent: 30, suppliersClosed: true }, null, null, named),
+        'Diwali (day 20 for 3 days): Chilled demand +80%; the 3 days before +30%; suppliers do not dispatch');
     // What is wrong, said; and only sound events reach the model.
     assert.equal(holidayProblem({ ...festival, name: ' ' }), 'A holiday or peak needs a name.');
     assert.equal(holidayProblem({ ...festival, days: 0 }), 'Festival: it lasts a day or more.');

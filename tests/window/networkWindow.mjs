@@ -579,7 +579,7 @@ try {
     await page.check('#holidayList [data-holiday-suppliers]');
     const made = await event();
     assert.deepEqual([made.day, made.days, made.demand, made.beforeDays, made.beforePercent, made.suppliersClosed], [20, 3, { chilled: 100 }, 2, 30, true]);
-    assert.equal(await page.textContent('#holidayList .detail'), 'Holiday 1 (day 20 for 3 days): the 2 days before +30%; suppliers do not dispatch');
+    assert.equal(await page.textContent('#holidayList .detail'), 'Holiday 1 (day 20 for 3 days): Chilled demand +100%; the 2 days before +30%; suppliers do not dispatch');
     assert.equal(await page.textContent('#holidaysSummary'), 'Holiday 1');
     await change('#holidayList [data-holiday-field="days"]', '0');
     assert.match(await page.textContent('#networkStatus'), /Holiday 1: it lasts a day or more\./);
@@ -844,7 +844,8 @@ try {
     await page.waitForSelector('#selectionCard:not([hidden]) #pinCandidate');
     assert.equal(await page.inputValue('#pinName'), 'Warehouse 3');
     await page.check('#pinCandidate');
-    assert.equal(await stateOf(() => window.logisticsToolboxState.pins.at(-1).candidate), true);
+    assert.deepEqual(await stateOf(() => { const pin = window.logisticsToolboxState.pins.at(-1); return [pin.proposed, 'candidate' in pin]; }), [true, false]);
+    assert.doesNotMatch(await page.textContent('#selectionCard'), /Adopted from OpenStreetMap/, 'a site placed by hand is not said to be adopted');
     assert.equal(await page.locator('#map .site.candidate').count(), 1, 'drawn as an outline');
     await change('#field-fixedCost', '2000');
     await change('#field-openingCost', '50000');
@@ -977,7 +978,7 @@ try {
         const closedHeadline = await page.textContent('#scenarioResult .headline');
         assert.match(closedHeadline, /^No store ran out, but [\d,.]+ pallets of sales were lost, worth [\d,]+;/, closedHeadline);
         assert.equal(await page.isVisible('#legendDown'), true);
-        // The weakest link: each supplier making nothing and each warehouse down, run in turn for the ten days and
+        // The weakest link: each supplier starting nothing new and each warehouse down, run in turn for the ten days and
         // ranked by the sales they lose, worst first, none of them kept as a run of its own; then the worst run alone.
         await page.click('#scenarioTabs [data-scenario="weakestLink"]');
         await page.click('#runScenarioButton');
@@ -992,6 +993,9 @@ try {
         assert.match(await page.textContent('#rankingResult .headline'), new RegExp(`^The weakest link: ${worst.name}\\. If ${worst.what} for 10 days, it costs most, losing sales worth [\\d,]+\\.`));
         assert.equal(await page.locator('#rankingTable tbody tr').count(), 4);
         assert.match(await page.textContent('#rankingTable tbody tr'), new RegExp(`^1${worst.what}`));
+        // A supplier's failure is named for what it is: it starts nothing new, and what it was making still ships.
+        assert.ok((await stateOf(() => window.logisticsToolboxState.ranking.rows.map((row) => row.what))).some((what) => /^Supplier \d+ starts nothing new$/.test(what)));
+        assert.match(await page.textContent('#rankingResult'), /A supplier that starts nothing new still ships what it was already making/);
         assert.deepEqual(await stateOf(() => window.logisticsToolboxState.runs.map((run) => run.number)), [1, 2, 3, 4], 'the failures ranked are not runs of their own');
         // (Kept a moment after it is shown, as every change is.)
         for (let waited = 0; waited < 50 && !host.session?.ranking; waited += 1) await new Promise((resolve) => setTimeout(resolve, 100));
@@ -1024,7 +1028,7 @@ try {
         const planned = await stateOf(() => window.logisticsToolboxState.scenario);
         assert.equal(planned.absolute, true);
         assert.equal(planned.id, 'asPlanned');
-        assert.match(planned.describe, /^The network as planned, counted from day 5: Holiday 1 \(day 20 for 3 days\); no disruption\.$/);
+        assert.match(planned.describe, /^The network as planned, counted from day 5: Holiday 1 \(day 20 for 3 days\): Chilled demand \+100%; no disruption\.$/);
         assert.equal(planned.totals.lost.baseline, 0, 'what the plan loses is its own: set against nothing');
         const chilledLost = planned.byCategory.find((item) => item.name === 'Chilled').lost.scenario;
         assert.ok(chilledLost > 0.1 && planned.byCategory.find((item) => item.name === 'Ambient').lost.scenario < 1e-6, `the festival loses sales of chilled goods alone (${chilledLost})`);

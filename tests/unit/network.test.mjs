@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildRoadGraph } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { compactRoadGraph, createNetworkRouter } from '../../packages/toolbox/lib/routing.mjs';
-import { completeSupplyUpTo, createPin, defaultName, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, roles, routeLinks, setField, sourcesPerWarehouse, suggestLinks, warehousesPerSource } from '../../packages/toolbox/lib/network.mjs';
+import { completeSupplyUpTo, createPin, defaultName, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, roles, routeLinks, setCandidate, setField, sourcesPerWarehouse, suggestLinks, warehousesPerSource } from '../../packages/toolbox/lib/network.mjs';
 import { parseSites, writeSites } from '../../packages/toolbox/lib/sites.mjs';
 import { defaultCategoryCatalogue, setLeadDays, setMix } from '../../packages/toolbox/lib/categories.mjs';
 import { gridRoads, randomPoint, seeded } from '../fixtures/roadGrid.mjs';
@@ -296,12 +296,27 @@ test('a candidate warehouse is left out of the network, with its links, until it
     const supplier = createPin('supplier', { lat: 25.1, lon: 55.1 }, { name: 'Mill' });
     const depot = createPin('warehouse', { lat: 25.2, lon: 55.2 }, { name: 'Depot' });
     const site = createPin('warehouse', { lat: 25.25, lon: 55.25 }, { name: 'New site', fields: { fixedCost: 9000, openingCost: 120000 } });
-    site.candidate = true;
+    setCandidate(site, true);
     const shop = createPin('store', { lat: 25.3, lon: 55.3 }, { name: 'Shop' });
     const pins = [supplier, depot, site, shop];
     const link = (from, to) => ({ id: linkId(from.id, to.id), from: from.id, to: to.id, basis: 'user' });
     const links = [link(supplier, depot), link(depot, shop), link(supplier, site), link(site, shop)];
     assert.deepEqual([isCandidate(site), isCandidate(depot), isCandidate({ role: 'store', candidate: true })], [true, false, false]);
+    // The mark is its own: a site placed by hand gains no record of having been adopted, and a warehouse adopted from
+    // OpenStreetMap keeps its record through being made a candidate and opened again.
+    assert.deepEqual([site.proposed, 'candidate' in site], [true, false]);
+    const record = { id: 'way/7', name: 'Shed', lat: 25.4, lon: 55.4, floorAreaSquareMetres: 4000 };
+    const adopted = pinFromCandidate(record, 'zones', pins);
+    assert.equal(isCandidate(adopted), false, 'adopted is not proposed');
+    setCandidate(adopted, true);
+    assert.deepEqual([isCandidate(adopted), adopted.candidate], [true, record]);
+    setCandidate(adopted, false);
+    assert.deepEqual([isCandidate(adopted), adopted.candidate, 'proposed' in adopted], [false, record, false]);
+    // A session kept before the mark had its own field: read as it was meant, and put right when next changed.
+    const old = { ...createPin('warehouse', { lat: 25.5, lon: 55.5 }), candidate: true };
+    assert.equal(isCandidate(old), true);
+    setCandidate(old, true);
+    assert.deepEqual([old.proposed, 'candidate' in old], [true, false]);
     assert.deepEqual(site.fields.fixedCost, { value: 9000, basis: 'user' });
     assert.deepEqual(depot.fields.fixedCost, { value: null, basis: null }, 'no fixed cost until one is given');
     // As it is: the candidate and both its links are not there.
