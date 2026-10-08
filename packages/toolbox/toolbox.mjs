@@ -14,7 +14,7 @@ import { portwatchActivityUrl, portwatchPortsUrl } from './lib/portwatch.mjs';
 import { closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan, mostLateDays, siteDownPlan, supplierPlan } from './lib/scenarios.mjs';
 import { createNetworkRouter } from './lib/routing.mjs';
 import { compareSites } from './lib/siteComparison.mjs';
-import { differs, outNoise, sameSeries, shortDays, storesParts, unchangedText } from './lib/summary.mjs';
+import { cleanCurrency, differs, money, moneyIn, outNoise, sameSeries, shortDays, storesParts, unchangedText } from './lib/summary.mjs';
 import { createHoliday, describeHoliday, holidayProblem } from './lib/holidays.mjs';
 import { completeFields, createPin, isCandidate, kindOf, openNetwork, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, setCandidate, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
 import { calibration, calibrationAdvised, calibrationMinimum, formatDuration, googleMapsUrl, howLabels, modelHours, openStreetMapUrl, parseTravelTimes, suspectTime, timeFrom, whenLabels, writeTravelTimes } from './lib/travelTimes.mjs';
@@ -47,7 +47,7 @@ const state = {
     roads: null, router: null,
     // The user's network: pins and links, the suggested links the user deleted and what is selected; and the vehicle
     // types its links run on.
-    pins: [], links: [], dismissed: new Set(), selection: [], selected: null, listRole: 'all', vehicles: defaultCatalogue(), categories: defaultCategoryCatalogue(), holidays: [],
+    pins: [], links: [], dismissed: new Set(), selection: [], selected: null, listRole: 'all', vehicles: defaultCatalogue(), categories: defaultCategoryCatalogue(), holidays: [], currency: '',
     // Suggestions from public data, by source, once asked for; the roles whose answers the host holds.
     suggestions: {}, available: new Set(), sourceTab: null,
     // When the data in hand was fetched, by kind ({ at, cached }), and whether this area was loaded fresh.
@@ -116,7 +116,7 @@ const selectedLinks = () => state.selection.filter((item) => item.kind === 'link
 // kept. Changes of one kind in quick succession (a pin nudged with the arrow keys, a figure typed) are one step.
 const history = { past: [], future: [], lastLabel: null, lastTime: 0 };
 const copyLink = (link) => ({ ...link, ...(link.vehicles ? { vehicles: link.vehicles.map((item) => ({ ...item })) } : {}) });
-const snapshot = () => ({ pins: structuredClone(state.pins), links: state.links.map(copyLink), dismissed: [...state.dismissed], selection: [...state.selection], vehicles: structuredClone(state.vehicles), categories: structuredClone(state.categories), holidays: structuredClone(state.holidays), useCalibration: Boolean(state.useCalibration) });
+const snapshot = () => ({ pins: structuredClone(state.pins), links: state.links.map(copyLink), dismissed: [...state.dismissed], selection: [...state.selection], vehicles: structuredClone(state.vehicles), categories: structuredClone(state.categories), holidays: structuredClone(state.holidays), currency: state.currency, useCalibration: Boolean(state.useCalibration) });
 function checkpoint(label, { merge = false } = {}) {
     const now = performance.now();
     if (merge && label === history.lastLabel && now - history.lastTime < 1500) { history.lastTime = now; return; }
@@ -135,6 +135,8 @@ function restore(network) {
     state.categories = structuredClone(network.categories ?? state.categories);
     state.holidays = structuredClone(network.holidays ?? state.holidays);
     renderHolidays();
+    state.currency = network.currency ?? '';
+    renderMoney();
     state.useCalibration = Boolean(network.useCalibration);
     renderVehicles();
     renderCategories();
@@ -1117,6 +1119,25 @@ renderVehicles();
 // ---- holidays and peaks ------------------------------------------------------------------------------------------------
 // The network's calendar of dated events (lib/holidays.mjs): a list to add to, change and delete from, as the vehicle
 // types and the categories are. Every figure is the user's.
+// What the network's money is in: the user's word for it, written beside every sum. Nothing is converted.
+function renderMoney() {
+    const input = $('#currencyInput');
+    if (!input) return;
+    if (document.activeElement !== input) input.value = state.currency;
+    $('#moneySummary').textContent = state.currency ? `in ${state.currency}` : 'no currency given';
+}
+function wireMoney() {
+    $('#currencyInput')?.addEventListener('change', (event) => {
+        const next = cleanCurrency(event.target.value);
+        if (next === state.currency) return;
+        checkpoint(next ? `giving money in ${next}` : 'taking the currency off');
+        state.currency = next;
+        renderMoney();
+        networkChanged();
+        if (state.scenario || state.ranking || state.siteComparison) renderScenarioResult();
+    });
+}
+
 function renderHolidays() {
     const panel = $('#holidayList');
     if (!panel) return;
@@ -1177,6 +1198,8 @@ $('#addHolidayButton').addEventListener('click', () => {
     $(`#holidayList [data-holiday="${event.id}"] [data-holiday-name]`)?.select();
 });
 renderHolidays();
+wireMoney();
+renderMoney();
 
 // ---- the product categories ------------------------------------------------------------------------------------------
 // The kinds of goods the network carries (lib/categories.mjs): a list to rename, change, add to and delete from, as the
@@ -2398,7 +2421,7 @@ function sessionState() {
         version: 2, place: state.place ? { display_name: state.place.display_name, boundingbox: state.place.boundingbox } : null,
         margin: $('#marginSelect').value, bbox: state.bbox, roadLevel: state.roadLevel, sample: Boolean(state.sample), portVolume: state.portVolume,
         // Links without their legs, which are routed again when the session is restored (from the same roads, the same legs).
-        holidays: state.holidays, pins: state.pins, links: state.links.map(({ id, from, to, basis, vehicles, time, backup, share }) => ({ id, from, to, basis, ...(vehicles ? { vehicles } : {}), ...(time ? { time } : {}), ...(backup ? { backup: true } : {}), ...(Number(share) > 0 ? { share: Number(share) } : {}) })), vehicles: state.vehicles, categories: state.categories,
+        holidays: state.holidays, currency: state.currency, pins: state.pins, links: state.links.map(({ id, from, to, basis, vehicles, time, backup, share }) => ({ id, from, to, basis, ...(vehicles ? { vehicles } : {}), ...(time ? { time } : {}), ...(backup ? { backup: true } : {}), ...(Number(share) > 0 ? { share: Number(share) } : {}) })), vehicles: state.vehicles, categories: state.categories,
         useCalibration: Boolean(state.useCalibration),
         dismissed: [...state.dismissed], suggestions: Object.keys(state.suggestions), available: [...state.available], listRole: state.listRole,
         built: state.built, keepInStep: $('#keepInStep').checked,
@@ -2499,6 +2522,8 @@ async function restoreSession() {
         state.categories = completeCategories(saved.categories);
         state.holidays = Array.isArray(saved.holidays) ? saved.holidays : [];
         renderHolidays();
+        state.currency = cleanCurrency(saved.currency);
+        renderMoney();
         state.useCalibration = Boolean(saved.useCalibration);
         renderVehicles();
         renderCategories();
@@ -2861,7 +2886,7 @@ function renderSiteComparison() {
             <tbody>${comparison.rows.map((row) => (row.error
         ? `<tr><td>${escape(row.name)}</td><td colspan="${stressed ? 4 : 2}" class="muted">${escape(row.verdict)}</td></tr>`
         : `<tr><td>${escape(row.name)}${row === asIs ? '' : `<div class="basis">${escape(row.verdict)}</div>`}</td><td class="number${mark(row, row.monthlyCost, asIs.monthlyCost)}">${number(row.monthlyCost)}</td><td class="number">${number(row.fixedMonthly)}</td>${stressed ? `<td class="number${mark(row, row.stress.storesOut, asIs.stress?.storesOut)}">${number(row.stress.storesOut)}</td><td class="number${mark(row, row.stress.lostValue, asIs.stress?.lostValue)}">${number(row.stress.lostValue)}</td>` : ''}</tr>`)).join('')}</tbody></table>
-        <p class="muted small">Each network was built and run on its own over the same days. A store linked to a candidate and to another warehouse draws on both, by their size and nearness. Fixed costs and the cost to open are your figures: a site with none given counts for nothing. Costs are in the model's cost units.</p>`;
+        <p class="muted small">Each network was built and run on its own over the same days. A store linked to a candidate and to another warehouse draws on both, by their size and nearness. Fixed costs and the cost to open are your figures: a site with none given counts for nothing. Costs are in ${escape(moneyIn(state.currency))}.</p>`;
 }
 $('#siteStressSelect').addEventListener('change', () => keepSessionSoon());
 
@@ -2949,12 +2974,12 @@ function renderRanking() {
         ${stale ? notice('warning', 'The network has been built again since these were run: run them again to rank it as it is now.') : ''}
         <table class="business" id="rankingTable"><thead><tr><th></th><th>If, from day ${number(ranking.start)} for ${number(ranking.days)} days</th>${head}<th></th></tr></thead>
             <tbody>${ranking.rows.map((row, index) => `<tr><td class="number">${index + 1}</td><td>${escape(row.what)}${row.of?.length ? `<div class="basis">out of ${escape(listed(row.of))}</div>` : ''}${row.unchanged ? '<div class="basis worse">its run is the baseline\'s to the last digit: it touches nothing that moves, or was never applied</div>' : ''}</td>${cells(row)}<td><button class="link" type="button" data-run-failure="${index}" title="Run this one alone, for its map and details">Run it</button></td></tr>`).join('')}</tbody></table>
-        <p class="muted small">Each failure was run on its own, with nothing done about it: no one orders elsewhere. A supplier that starts nothing new still ships what it was already making, over its lead time, so a short stop of a supplier with a long lead time costs less than a road from it closed for the same days. Values are in the model's cost units, beyond the baseline's.</p>`;
+        <p class="muted small">Each failure was run on its own, with nothing done about it: no one orders elsewhere. Values are in ${escape(moneyIn(state.currency))}, beyond the baseline's. A supplier that starts nothing new still ships what it was already making, over its lead time, so a short stop of a supplier with a long lead time costs less than a road from it closed for the same days.</p>`;
     panel.querySelectorAll('[data-run-failure]').forEach((button) => button.addEventListener('click', () => runFailureAlone(ranking.rows[Number(button.dataset.runFailure)])));
 }
 function rankingHeadline(ranking, harmless) {
     const [worst] = ranking.rows;
-    const costs = worst.lostValue > 0.5 ? `losing sales worth ${number(worst.lostValue)}` : worst.lost > 0.05 ? `losing ${number(worst.lost, 1)} ${goods()} of sales`
+    const costs = worst.lostValue > 0.5 ? `losing sales worth ${money(worst.lostValue, state.currency)}` : worst.lost > 0.05 ? `losing ${number(worst.lost, 1)} ${goods()} of sales`
         : worst.storesOut ? `${worst.storesOut} store${worst.storesOut === 1 ? '' : 's'} running out` : worst.fillDrop > 0.0005 ? `${number(worst.fillDrop * 100, 1)} points of demand not met` : null;
     if (!costs) return `None of the ${ranking.rows.length} failures run lost a sale or emptied a store over ${number(ranking.days)} days.`;
     const safe = harmless ? ` ${harmless} of the ${ranking.rows.length} cost nothing.` : '';
@@ -3559,6 +3584,8 @@ function summariseRun(answer, id, run, start, duration) {
         id, describe: run.describe, start: start / day, days, until: end / day, ...run.extra, ...(run.absolute ? { absolute: true } : {}),
         // A scenario's run that is its baseline's to the last digit is said to be, not read as good news.
         ...(!run.absolute && sameSeries(raw[0], raw[1]) ? { unchanged: true } : {}),
+        // Whether a sale lost was priced at a value of a pallet nobody gave.
+        ...((built.stores ?? []).some((store) => store.saleValueBasis === 'assumed') ? { assumedValue: true } : {}),
         // Per lane, TEU a day while the scenario lasts: [baseline, scenario].
         flows: Object.fromEntries(laneNames.map((name) => [name, [during(baseline[name]?.arriving), during(scenario[name]?.arriving)]])),
         totals: {
@@ -3705,7 +3732,7 @@ function scenarioHeadline(result) {
     if (stores.length) {
         // A closed store sold nothing with stock on its shelves: it was not short of anything.
         const closed = result.siteDown && result.siteDown.kind !== 'warehouse' ? result.siteDown.site : null;
-        parts.push(...storesParts({ stores: stores.map((item) => (item.name === closed ? { ...item, shortDays: null } : item)), totals, byCategory: result.byCategory, unit: goods() }));
+        parts.push(...storesParts({ stores: stores.map((item) => (item.name === closed ? { ...item, shortDays: null } : item)), totals, byCategory: result.byCategory, unit: goods(), currency: state.currency, assumedValue: Boolean(result.assumedValue) }));
     } else {
         const fell = totals.fill.baseline - totals.fill.scenario;
         parts.push(fell > 0.0005 ? `${number(totals.fill.scenario * 100, 1)}% of demand was met, against ${number(totals.fill.baseline * 100, 1)}% in the baseline` : 'Demand was met as in the baseline');
@@ -3828,7 +3855,7 @@ function renderScenarioResult() {
         <table><thead><tr><th>${view()?.stores ? 'Shoppers waiting' : 'Town'}</th><th class="number">Highest backlog</th><th class="number">baseline</th><th class="number">day</th></tr></thead>
             <tbody>${towns.map((item) => `<tr><td><div class="nameWithSpark"><span>${escape(item.name)}</span>${drawSpark(item.scenPts, item.basePts, { stroke: 'var(--danger)' })}</div></td><td${worse(item.peak, item.baseline)}>${number(item.peak)}</td><td class="number">${number(item.baseline)}</td><td class="number">${number(item.day, 1)}</td></tr>`).join('')}</tbody></table>
         </details>
-        <p class="muted small">Costs and values are in the model's cost units, counted from the day the scenario starts. The forked run is in the canvas beside the baseline; Show in Konjugate brings it forward.</p>`;
+        <p class="muted small">Costs and values are in ${escape(moneyIn(state.currency))}, counted from the day the scenario starts.${result.assumedValue ? ' Sales lost are priced at a value of a pallet that is assumed, a placeholder: give each store, or each category, your own.' : ''} The forked run is in the canvas beside the baseline; Show in Konjugate brings it forward.</p>`;
     $('#compareSelect')?.addEventListener('change', () => {
         state.compareWith = $('#compareSelect').value ? Number($('#compareSelect').value) : null;
         renderScenarioResult();

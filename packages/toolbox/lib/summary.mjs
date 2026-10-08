@@ -7,6 +7,12 @@ import { listed, lostSalesOf } from './categories.mjs';
 
 const day = 86400;
 const number = (value, digits = 0) => Number(value).toLocaleString('en', { maximumFractionDigits: digits, minimumFractionDigits: digits });
+// A sum of money as it is written: with what the user says money is in, when they have said ("35,781 INR").
+export const money = (value, currency = '') => `${number(value)}${currency ? ` ${currency}` : ''}`;
+// What money is in, for a sentence: the user's word, or that none was given.
+export const moneyIn = (currency = '') => (currency ? currency : 'no currency (the figures you gave, and the placeholders you did not replace, as they are)');
+// What the user typed as their currency, made fit to show: trimmed, at most 12 characters.
+export const cleanCurrency = (text) => String(text ?? '').trim().slice(0, 12);
 // Days out or short under this are the baseline's own noise.
 export const outNoise = 0.04;
 
@@ -43,7 +49,9 @@ export function shortDays(lost, demand, start = 0, share = 0.02) {
 // The sentence's parts on the stores: which ran out and for how long or, when none did, which ran short, and the sales
 // lost with what they were worth. `stores` are a result's (emptyDays, shortDays and categories, each a baseline and a
 // scenario), `totals` its lost and lostValue, `byCategory` its categories, `unit` the goods' ("pallets").
-export function storesParts({ stores, totals, byCategory, unit }) {
+// `currency` is what the user says money is in ('' for none said); `assumedValue` whether any sale lost was priced at
+// a value of a pallet nobody gave: the sentence then says so, where it once gave the sum as if it were known.
+export function storesParts({ stores, totals, byCategory, unit, currency = '', assumedValue = false }) {
     const parts = [];
     const beyond = (pair) => (pair ? pair.scenario - pair.baseline : 0);
     // Of what, when it sells several categories: those it ran out of.
@@ -55,7 +63,7 @@ export function storesParts({ stores, totals, byCategory, unit }) {
     // Of what, when the sales lost were of some categories and not of all.
     const lostOf = lostSalesOf(byCategory);
     const amount = (of) => `${number(lost, lost < 10 ? 1 : 0)} ${unit} of ${of ? `${of} ` : ''}sales`;
-    const worth = value > 0.5 ? `, worth ${number(value)}` : '';
+    const worth = value > 0.5 ? `, worth ${money(value, currency)}${assumedValue ? ' at an assumed value of a pallet' : ''}` : '';
     if (out.length === 1) parts.push(`${out[0].name} ran out${out[0].of ? ` of ${out[0].of}` : ''} for ${number(out[0].days, 1)} days`);
     else if (out.length) parts.push(`${out.length} stores ran out, ${out[0].name} longest at ${number(out[0].days, 1)} days${out[0].of ? ` (of ${out[0].of})` : ''}`);
     else if (lost > 0.05 && short.length) {

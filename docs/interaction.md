@@ -67,6 +67,7 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 | Change a vehicle type | Vehicles in the Network step: its name, figures, "May deliver to stores", "Refrigerated" and the hours it runs; Add a vehicle type; ✕ to delete one | | |
 | Set the hours a site keeps (open, receives, dispatches) | The hours and the days on its card (empty, every day: round the clock) | | |
 | Add or change a holiday or peak | Holidays and peaks in the Network step: its name, days, effect on each category's demand, the days before and after, and whether suppliers dispatch; Add a holiday or peak; ✕ to delete one | | |
+| Say what money is in | Money in the Network step: the currency, as a word or a symbol | | |
 | Run the network as planned | The As planned tab in the Scenarios step; Run it as planned | | |
 | Change a category | Categories in the Network step: its name, usual share, supplier lead time, how long it keeps, the value of a pallet of it and "Needs refrigerated vehicles"; Add a category; ✕ to delete one | | |
 | Give a site its own mix of categories | The share beside each category on its card (0: it does not carry it); Use the usual shares | | |

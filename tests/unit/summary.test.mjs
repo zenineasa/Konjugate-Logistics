@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { differs, sameSeries, shortDays, storesParts, unchangedText } from '../../packages/toolbox/lib/summary.mjs';
+import { cleanCurrency, differs, money, moneyIn, sameSeries, shortDays, storesParts, unchangedText } from '../../packages/toolbox/lib/summary.mjs';
 
 const day = 86400;
 
@@ -55,4 +55,15 @@ test('two runs\' figures differ beyond noise: an amount by half a percent, a sha
     assert.equal(differs(1004000, 1000000, 0.5), false);
     assert.equal(differs(1010000, 1000000, 0.5), true);
     assert.equal(differs(0.3, 0, 0.5), false);
+});
+
+test('money is written with what the user says it is in, and a sum priced at an assumed value of a pallet says so', () => {
+    assert.deepEqual([money(35781.4), money(35781.4, 'INR'), money(0, '₹')], ['35,781', '35,781 INR', '0 ₹']);
+    assert.deepEqual([cleanCurrency('  INR '), cleanCurrency(undefined), cleanCurrency('a currency with a long name')], ['INR', '', 'a currency w']);
+    assert.equal(moneyIn('INR'), 'INR');
+    assert.match(moneyIn(''), /^no currency/);
+    const pair = (scenario, baseline = 0) => ({ baseline, scenario });
+    const result = { stores: [{ name: 'A', emptyDays: pair(5), shortDays: pair(6) }], totals: { lost: pair(30), lostValue: pair(30000) }, byCategory: null, unit: 'pallets' };
+    assert.equal(storesParts(result).join(', '), 'A ran out for 5.0 days, losing 30 pallets of sales, worth 30,000');
+    assert.equal(storesParts({ ...result, currency: 'INR', assumedValue: true }).join(', '), 'A ran out for 5.0 days, losing 30 pallets of sales, worth 30,000 INR at an assumed value of a pallet');
 });

@@ -89,6 +89,11 @@
                         <ul class="vehicles" id="holidayList"></ul>
                         <button class="button small" type="button" id="addHolidayButton">Add a holiday or peak</button>
                     </details>
+                    <details id="money">
+                        <summary>Money <span class="muted small" id="moneySummary"></span></summary>
+                        <p class="muted small">What your costs and values are in. The toolbox converts nothing: it writes this beside every sum. The figures a network starts with (a vehicle's costs, the value of a pallet sold) are placeholders in no currency, labelled assumed: replace them with your own, in this money.</p>
+                        <div class="field"><label for="currencyInput">Money is in</label><span><input type="text" id="currencyInput" maxlength="12" placeholder="INR, EUR, ₹ …" autocomplete="off"></span></div>
+                    </details>
                     <details id="travelTimes">
                         <summary>Travel times <span class="muted small" id="travelSummary"></span></summary>
                         <p class="muted small">The time each link takes door to door (loading, the drive and unloading), where you know it better than the route: type it here or on the link's card (T), paste a column from a spreadsheet, load a file, or read it off Google Maps or OpenStreetMap and type it back. A time of yours replaces the route's estimate in the model. Say when it holds: a road at the morning peak is not the road at night.</p>

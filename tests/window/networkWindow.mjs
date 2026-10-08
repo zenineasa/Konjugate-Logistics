@@ -473,6 +473,17 @@ try {
     assert.equal(await page.inputValue(worth('chilled')), '');
     await change(worth('chilled'), '2500');
     assert.deepEqual(await stateOf(() => window.logisticsToolboxState.categories[1].fields.saleValue), { value: 2500, basis: 'user' });
+    // What money is in: the user's word, written beside every sum, undone as any change is, and kept with the session.
+    assert.equal(await page.textContent('#moneySummary'), 'no currency given');
+    await page.evaluate(() => { document.querySelector('#money').open = true; });
+    await change('#currencyInput', ' INR ');
+    assert.deepEqual([await stateOf(() => window.logisticsToolboxState.currency), await page.textContent('#moneySummary')], ['INR', 'in INR']);
+    await page.click('#undoButtonTool');
+    assert.deepEqual([await stateOf(() => window.logisticsToolboxState.currency), await page.inputValue('#currencyInput'), await page.textContent('#moneySummary')], ['', '', 'no currency given']);
+    await page.click('#redoButtonTool');
+    assert.equal(await stateOf(() => window.logisticsToolboxState.currency), 'INR');
+    for (let waited = 0; waited < 50 && host.session?.currency !== 'INR'; waited += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(host.session.currency, 'INR');
     await page.click('#addCategoryButton');
     assert.deepEqual(await stateOf(() => window.logisticsToolboxState.categories.map((category) => category.name)), ['Ambient', 'Chilled', 'Frozen', 'Category 1']);
     await page.click('#undoButtonTool');
@@ -887,7 +898,7 @@ try {
         assert.match(result, /fullest/, 'a warehouse with room for 400 pallets says how full it got');
         // In business terms first: one sentence, then demand met, sales lost and running costs; the rest under Details.
         const headline = await page.textContent('#scenarioResult .headline');
-        assert.match(headline, /^Harbour shop ran out of Ambient, Chilled and Frozen for [\d.]+ days, losing [\d,.]+ pallets of sales, worth [\d,]+; running costs ((up|down) [\d,]+ \([\d.]+%\) against|as in) the baseline\.$/, headline);
+        assert.match(headline, /^Harbour shop ran out of Ambient, Chilled and Frozen for [\d.]+ days, losing [\d,.]+ pallets of sales, worth [\d,]+ INR at an assumed value of a pallet; running costs ((up|down) [\d,]+ \([\d.]+%\) against|as in) the baseline\.$/, headline);
         // By category: the closed road carried all three, so one store ran out of each, and the sales lost add up.
         const byCategory = await stateOf(() => window.logisticsToolboxState.scenario.byCategory);
         assert.deepEqual(byCategory.map((item) => [item.name, item.storesOut]), [['Ambient', 1], ['Chilled', 1], ['Frozen', 1]]);
@@ -976,7 +987,7 @@ try {
         assert.equal(await page.locator('#map .siteMark.supplier').count(), 0, 'the supplier\'s ring goes with its scenario');
         // Closed, it sold nothing with stock on its shelves: that is not a store running short, and the headline does not call it one.
         const closedHeadline = await page.textContent('#scenarioResult .headline');
-        assert.match(closedHeadline, /^No store ran out, but [\d,.]+ pallets of sales were lost, worth [\d,]+;/, closedHeadline);
+        assert.match(closedHeadline, /^No store ran out, but [\d,.]+ pallets of sales were lost, worth [\d,]+ INR at an assumed value of a pallet;/, closedHeadline);
         assert.equal(await page.isVisible('#legendDown'), true);
         // The weakest link: each supplier starting nothing new and each warehouse down, run in turn for the ten days and
         // ranked by the sales they lose, worst first, none of them kept as a run of its own; then the worst run alone.
@@ -990,7 +1001,7 @@ try {
         assert.ok(ranking.rows[0].lostValue > 0 && ranking.rows[0].storesOut > 0, 'the worst failure empties stores and loses sales');
         assert.deepEqual([ranking.start, ranking.days], [5, 10]);
         const worst = ranking.rows[0];
-        assert.match(await page.textContent('#rankingResult .headline'), new RegExp(`^The weakest link: ${worst.name}\\. If ${worst.what} for 10 days, it costs most, losing sales worth [\\d,]+\\.`));
+        assert.match(await page.textContent('#rankingResult .headline'), new RegExp(`^The weakest link: ${worst.name}\\. If ${worst.what} for 10 days, it costs most, losing sales worth [\\d,]+ INR\\.`));
         assert.equal(await page.locator('#rankingTable tbody tr').count(), 4);
         assert.match(await page.textContent('#rankingTable tbody tr'), new RegExp(`^1${worst.what}`));
         // A supplier's failure is named for what it is: it starts nothing new, and what it was making still ships.
