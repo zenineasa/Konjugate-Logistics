@@ -38,6 +38,8 @@ test('the manifest declares a file role for every kind the importer reads, and e
     assert.deepEqual(addon.network.hosts.sort(), ['nominatim.openstreetmap.org', 'overpass-api.de', 'services9.arcgis.com']);
     // Pages it may open in the browser, for the user to read a travel time off: only the two maps.
     assert.ok(addon.permissions.includes('links.open') && addon.requires.includes('openLink'));
+    // A Konjugate whose engine drops a scenario's changes on some models is refused, not run.
+    assert.ok(addon.requires.includes('scenarioEveryBackend'));
     assert.deepEqual(addon.links.hosts.sort(), ['www.google.com', 'www.openstreetmap.org']);
     // The scenarios: each follows paths the window supplies, per parameter, forked when the window says.
     assert.ok(addon.permissions.includes('scenario.run'));

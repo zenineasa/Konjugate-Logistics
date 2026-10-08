@@ -14,6 +14,7 @@ import { portwatchActivityUrl, portwatchPortsUrl } from './lib/portwatch.mjs';
 import { closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan, mostLateDays, siteDownPlan, supplierPlan } from './lib/scenarios.mjs';
 import { createNetworkRouter } from './lib/routing.mjs';
 import { compareSites } from './lib/siteComparison.mjs';
+import { differs, outNoise, sameSeries, shortDays, storesParts, unchangedText } from './lib/summary.mjs';
 import { createHoliday, describeHoliday, holidayProblem } from './lib/holidays.mjs';
 import { completeFields, createPin, isCandidate, kindOf, openNetwork, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
 import { calibration, calibrationAdvised, calibrationMinimum, formatDuration, googleMapsUrl, howLabels, modelHours, openStreetMapUrl, parseTravelTimes, suspectTime, timeFrom, whenLabels, writeTravelTimes } from './lib/travelTimes.mjs';
@@ -2900,7 +2901,8 @@ function failureCost(failure, result) {
     return {
         ...failure, storesOut: out.length, longest: Math.max(0, ...out), lost: Math.max(0, beyond(result.totals.lost)), lostValue: Math.max(0, beyond(result.totals.lostValue)),
         fillDrop: Math.max(0, -beyond(result.totals.fill)), wait: Math.max(0, beyond(result.totals.wait)),
-        of: (result.byCategory ?? []).filter((item) => item.storesOut > 0).map((item) => item.name)
+        of: (result.byCategory ?? []).filter((item) => item.storesOut > 0).map((item) => item.name),
+        ...(result.unchanged ? { unchanged: true } : {})
     };
 }
 // Worst first: by the value of the sales lost, then the stores out and how long, then the demand not met and how long
@@ -2945,7 +2947,7 @@ function renderRanking() {
         <p class="headline">${escape(rankingHeadline(ranking, harmless.length))}</p>
         ${stale ? notice('warning', 'The network has been built again since these were run: run them again to rank it as it is now.') : ''}
         <table class="business" id="rankingTable"><thead><tr><th></th><th>If, from day ${number(ranking.start)} for ${number(ranking.days)} days</th>${head}<th></th></tr></thead>
-            <tbody>${ranking.rows.map((row, index) => `<tr><td class="number">${index + 1}</td><td>${escape(row.what)}${row.of?.length ? `<div class="basis">out of ${escape(listed(row.of))}</div>` : ''}</td>${cells(row)}<td><button class="link" type="button" data-run-failure="${index}" title="Run this one alone, for its map and details">Run it</button></td></tr>`).join('')}</tbody></table>
+            <tbody>${ranking.rows.map((row, index) => `<tr><td class="number">${index + 1}</td><td>${escape(row.what)}${row.of?.length ? `<div class="basis">out of ${escape(listed(row.of))}</div>` : ''}${row.unchanged ? '<div class="basis worse">its run is the baseline\'s to the last digit: it touches nothing that moves, or was never applied</div>' : ''}</td>${cells(row)}<td><button class="link" type="button" data-run-failure="${index}" title="Run this one alone, for its map and details">Run it</button></td></tr>`).join('')}</tbody></table>
         <p class="muted small">Each failure was run on its own, with nothing done about it: no one orders elsewhere. Values are in the model's cost units, beyond the baseline's.</p>`;
     panel.querySelectorAll('[data-run-failure]').forEach((button) => button.addEventListener('click', () => runFailureAlone(ranking.rows[Number(button.dataset.runFailure)])));
 }
@@ -3524,13 +3526,17 @@ function summariseRun(answer, id, run, start, duration) {
         const valueLost = item.members.map((member) => priced(lostOf(member), member.saleValue)).reduce((all, each) => ({ baseline: all.baseline + each.baseline, scenario: all.scenario + each.scenario }), { baseline: 0, scenario: 0 });
         const categories = shown.categories && item.members.length > 1 ? item.members.map((member) => {
             const itsLost = lostOf(member);
-            return { name: member.categoryName, emptyDays: { baseline: ref(outDays(raw[0], member.stock, member.demand)), scenario: outDays(raw[1], member.stock, member.demand) }, lost: itsLost, lostValue: priced(itsLost, member.saleValue) };
+            return { name: member.categoryName, emptyDays: { baseline: ref(outDays(raw[0], member.stock, member.demand)), scenario: outDays(raw[1], member.stock, member.demand) },
+                shortDays: { baseline: ref(shortDays(raw[0][member.name]?.lost, member.demand, start)), scenario: shortDays(raw[1][member.name]?.lost, member.demand, start) }, lost: itsLost, lostValue: priced(itsLost, member.saleValue) };
         }) : null;
         const worst = (side) => Math.max(...categories.map((each) => each.emptyDays[side]));
         return {
             name: item.name, baseline: extreme(baseline[item.stock]?.stock, (value, best) => value < best)[1], low: low[1], day: low[0] / day,
             lost, lostValue: valueLost,
             emptyDays: categories ? { baseline: worst('baseline'), scenario: worst('scenario') } : { baseline: ref(outDays(baseline, item.stock, item.demand)), scenario: outDays(scenario, item.stock, item.demand) },
+            // Short of any category it sells: it lost sales for want of stock, empty or not.
+            shortDays: categories ? { baseline: Math.max(...categories.map((each) => each.shortDays.baseline)), scenario: Math.max(...categories.map((each) => each.shortDays.scenario)) }
+                : { baseline: ref(shortDays(baseline[item.name]?.lost, item.demand, start)), scenario: shortDays(scenario[item.name]?.lost, item.demand, start) },
             ...(categories ? { categories } : {}),
             scenPts: sampleSpark(scenario[item.stock]?.stock, start), basePts: sampleSpark(baseline[item.stock]?.stock, start)
         };
@@ -3550,6 +3556,8 @@ function summariseRun(answer, id, run, start, duration) {
     }) : null;
     return {
         id, describe: run.describe, start: start / day, days, until: end / day, ...run.extra, ...(run.absolute ? { absolute: true } : {}),
+        // A scenario's run that is its baseline's to the last digit is said to be, not read as good news.
+        ...(!run.absolute && sameSeries(raw[0], raw[1]) ? { unchanged: true } : {}),
         // Per lane, TEU a day while the scenario lasts: [baseline, scenario].
         flows: Object.fromEntries(laneNames.map((name) => [name, [during(baseline[name]?.arriving), during(scenario[name]?.arriving)]])),
         totals: {
@@ -3609,7 +3617,6 @@ function summariseRun(answer, id, run, start, duration) {
 // beside an earlier one: the same closure with more stock cover, say, or the same network under two scenarios.
 const runsKept = 8;
 // Days a store was out beyond the baseline's, under which it did not run out (an hour).
-const outNoise = 0.04;
 
 function keepRun(result) {
     const next = (state.runs.at(-1)?.number ?? 0) + 1;
@@ -3649,7 +3656,8 @@ function renderComparison(result) {
     const hasStores = latest.stores.length && other.stores.length;
     // [label, value of a run, format, higher is better, noise]
     const rows = [
-        ['Share of demand met', (run) => run.totals.fill.scenario, percent, true, 0.001, (value) => `${value > 0 ? '+' : ''}${number(value * 100, 1)} points`],
+        // A share differs by what shows at a decimal of a point, whatever its size.
+        ['Share of demand met', (run) => run.totals.fill.scenario, percent, true, 0.0005, (value) => `${value > 0 ? '+' : ''}${number(value * 100, 1)} points`, 0],
         ...(hasStores ? [
             ['Stores that ran out', (run) => outOf(run).length, (value) => number(value), false, 0.5],
             ['Longest a store was out (days)', longest, (value) => number(value, 1), false, 0.05],
@@ -3662,10 +3670,10 @@ function renderComparison(result) {
         ...(latest.totals.wait && other.totals.wait ? [['Days an order waited', (run) => run.totals.wait.scenario, (value) => number(value, 2), false, 0.01]] : []),
         ['Running cost', (run) => runningCost(run.totals).scenario, (value) => number(value), false, 0.5]
     ];
-    const body = rows.map(([label, value, format, higherIsBetter, noise, formatDifference]) => {
+    const body = rows.map(([label, value, format, higherIsBetter, noise, formatDifference, relative]) => {
         const [now, then] = [value(latest), value(other)];
         const difference = now - then;
-        const significant = Math.abs(difference) > Math.max(noise, 0.005 * Math.abs(then));
+        const significant = differs(now, then, noise, relative);
         const better = significant && (difference > 0) === higherIsBetter;
         const shown = significant ? (formatDifference ?? ((change) => `${change > 0 ? '+' : '−'}${format(Math.abs(change))}`))(difference) : 'same';
         return `<tr><td>${label}</td><td class="number">${format(now)}</td><td class="number">${format(then)}</td><td class="number${significant ? (better ? ' better' : ' worse') : ' muted'}">${shown}</td></tr>`;
@@ -3689,24 +3697,14 @@ function runningCost(totals) {
 // what they were worth, and what running the network cost against the baseline. A network of towns (no stores) says
 // how much of its demand was met and how long orders waited instead.
 function scenarioHeadline(result) {
+    if (result.unchanged) return unchangedText;
     const totals = result.totals;
     const parts = [];
     const stores = result.stores ?? [];
     if (stores.length) {
-        // Of what, when it sells several categories: those it ran out of.
-        const ofWhat = (item) => listed((item.categories ?? []).filter((each) => each.emptyDays.scenario - each.emptyDays.baseline > outNoise).map((each) => each.name));
-        const out = stores.map((item) => ({ name: item.name, days: item.emptyDays.scenario - item.emptyDays.baseline, of: ofWhat(item) })).filter((item) => item.days > outNoise).sort((a, b) => b.days - a.days);
-        if (!out.length) parts.push('No store ran out');
-        else if (out.length === 1) parts.push(`${out[0].name} ran out${out[0].of ? ` of ${out[0].of}` : ''} for ${number(out[0].days, 1)} days`);
-        else parts.push(`${out.length} stores ran out, ${out[0].name} longest at ${number(out[0].days, 1)} days${out[0].of ? ` (of ${out[0].of})` : ''}`);
-        const lost = totals.lost ? totals.lost.scenario - totals.lost.baseline : 0;
-        const value = totals.lostValue ? totals.lostValue.scenario - totals.lostValue.baseline : 0;
-        // Of what, when the sales lost were of some categories and not of all.
-        const lostOf = lostSalesOf(result.byCategory);
-        const amount = `${number(lost, lost < 10 ? 1 : 0)} ${goods()} of ${lostOf ? `${lostOf} ` : ''}sales`;
-        const worth = value > 0.5 ? `, worth ${number(value)}` : '';
-        if (lost > 0.05) parts.push(out.length ? `losing ${amount}${worth}` : `but ${amount} were lost${worth}`);
-        else if (totals.lost) parts.push(out.length ? 'but shoppers waited and no sales were lost' : 'and no sales were lost');
+        // A closed store sold nothing with stock on its shelves: it was not short of anything.
+        const closed = result.siteDown && result.siteDown.kind !== 'warehouse' ? result.siteDown.site : null;
+        parts.push(...storesParts({ stores: stores.map((item) => (item.name === closed ? { ...item, shortDays: null } : item)), totals, byCategory: result.byCategory, unit: goods() }));
     } else {
         const fell = totals.fill.baseline - totals.fill.scenario;
         parts.push(fell > 0.0005 ? `${number(totals.fill.scenario * 100, 1)}% of demand was met, against ${number(totals.fill.baseline * 100, 1)}% in the baseline` : 'Demand was met as in the baseline');
@@ -3808,8 +3806,8 @@ function renderScenarioResult() {
         return touched.length ? `${closed}<div class="basis">${touched.map((each) => `${escape(each.name)}: ${each.days > outNoise ? `out ${number(each.days, 1)} days, ` : ''}${number(Math.max(0, each.lost), 1)} lost`).join('; ')}</div>` : '';
     };
     const storesTable = businessStores.length ? `
-        <table class="business"><thead><tr><th>Store</th><th class="number" title="Days its shelves were all but empty since the scenario began">days out</th><th class="number">baseline</th><th class="number">sales lost (${goods()})</th><th class="number">value lost</th></tr></thead>
-            <tbody>${businessStores.map((item) => `<tr><td>${escape(item.name)}${outOf(item)}</td><td${worse(item.emptyDays.scenario, item.emptyDays.baseline, { noise: 0.04 })}>${number(item.emptyDays.scenario, 1)}</td><td class="number">${number(item.emptyDays.baseline, 1)}</td><td${worse(item.lost?.scenario ?? 0, item.lost?.baseline ?? 0, { noise: 0.05 })}>${number(item.lost?.scenario ?? 0, 1)}</td><td${worse(lostOf(item), item.lostValue?.baseline ?? 0)}>${number(lostOf(item))}</td></tr>`).join('')}</tbody></table>` : '';
+        <table class="business"><thead><tr><th>Store</th><th class="number" title="Days its shelves were all but empty since the scenario began">days out</th><th class="number">baseline</th><th class="number" title="Days it sold less than was asked of it for want of stock, empty or not, since the scenario began">days short</th><th class="number">sales lost (${goods()})</th><th class="number">value lost</th></tr></thead>
+            <tbody>${businessStores.map((item) => `<tr><td>${escape(item.name)}${outOf(item)}</td><td${worse(item.emptyDays.scenario, item.emptyDays.baseline, { noise: 0.04 })}>${number(item.emptyDays.scenario, 1)}</td><td class="number">${number(item.emptyDays.baseline, 1)}</td>${result.siteDown?.site === item.name && result.siteDown.kind !== 'warehouse' ? '<td class="number muted" title="Closed, not short of stock">closed</td>' : `<td${worse(item.shortDays?.scenario ?? 0, item.shortDays?.baseline ?? 0, { noise: 0.04 })}>${number(item.shortDays?.scenario ?? 0, 1)}</td>`}<td${worse(item.lost?.scenario ?? 0, item.lost?.baseline ?? 0, { noise: 0.05 })}>${number(item.lost?.scenario ?? 0, 1)}</td><td${worse(lostOf(item), item.lostValue?.baseline ?? 0)}>${number(lostOf(item))}</td></tr>`).join('')}</tbody></table>` : '';
     // By category: how many stores ran out of each, the longest, and the sales of it lost.
     const categoriesTable = result.byCategory?.length ? `
         <table class="business" id="byCategory"><thead><tr><th>Category</th><th class="number" title="Stores that ran out of it for longer than in the baseline">stores out</th><th class="number">longest (days)</th><th class="number">sales lost (${goods()})</th><th class="number">baseline</th><th class="number">value lost</th>${result.byCategory.some((item) => item.wasted) ? `<th class="number" title="Goods past their shelf life">wasted (${goods()})</th>` : ''}</tr></thead>

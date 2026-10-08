@@ -56,3 +56,13 @@ test('a more populous place is named before a smaller one of the same kind where
     const places = [{ name: 'Littleton', place: 'town', x: 0, y: 0, population: 5000 }, { name: 'Greatton', place: 'town', x: 0.5, y: 0, population: 50000 }];
     assert.deepEqual(choosePlaceLabels(places, view(kilometresPerPixel.town / 2)).map((item) => item.place.name), ['Greatton']);
 });
+
+test('a place name gives way to a site\'s name already written there, and is written where the map is clear', () => {
+    const places = [{ name: 'Nelamangala', place: 'town', x: 100, y: 100 }, { name: 'Hoskote', place: 'town', x: 400, y: 100 }];
+    const options = { unit: 0.1, size: () => 11, toScreen: (place) => ({ x: place.x, y: place.y }) };
+    assert.deepEqual(choosePlaceLabels(places, options).map((item) => item.place.name), ['Hoskote', 'Nelamangala']);
+    // "Nelamangala DC" is written beside its pin, over where the town's name would go.
+    const taken = [{ left: 95, right: 190, top: 90, bottom: 104 }];
+    assert.deepEqual(choosePlaceLabels(places, { ...options, taken }).map((item) => item.place.name), ['Hoskote']);
+    assert.deepEqual(taken.length, 1, 'the boxes given are left as they were');
+});

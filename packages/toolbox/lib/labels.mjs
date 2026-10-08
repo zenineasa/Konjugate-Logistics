@@ -14,13 +14,14 @@ export const maximumNames = 60;
 
 // `places`: [{ name, place, lat, lon, population }]; `unit`: kilometres per pixel; `toScreen(place)`: its position in
 // pixels, or null when off the map; `size(place)`: its font size in pixels. Returns the places to write, in order, with
-// their position: [{ place, x, y }].
-export function choosePlaceLabels(places, { unit, toScreen, size, gap = 4 }) {
+// their position: [{ place, x, y }]. `taken`: boxes in pixels ({ left, right, top, bottom }) already written on, the
+// sites' own names and marks: a place name gives way to them, as it does to a larger place's.
+export function choosePlaceLabels(places, { unit, toScreen, size, gap = 4, taken = [] }) {
     const ranked = places
         .filter((place) => unit <= (kilometresPerPixel[place.place] ?? kilometresPerPixel.quarter))
         .sort((a, b) => ((placeRank[a.place] ?? 4) - (placeRank[b.place] ?? 4)) || ((b.population ?? 0) - (a.population ?? 0)) || a.name.localeCompare(b.name));
     const written = [];
-    const boxes = [];
+    const boxes = [...taken];
     for (const place of ranked) {
         if (written.length >= maximumNames) break;
         const at = toScreen(place);

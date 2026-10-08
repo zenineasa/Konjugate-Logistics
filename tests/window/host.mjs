@@ -159,7 +159,9 @@ export async function createHost() {
                     .map((state) => [state.symbol, run.series(`${node.name}.${state.symbol}`).map((value, index) => [index * step, value])]))]));
             };
             const forked = structuredClone(host.imported.document);
-            for (const [key, { entities, samples }] of Object.entries(supplied?.byParameter ?? {})) {
+            // `dropChanges`: a host that runs the fork and applies none of its changes, as Konjugate up to 1.1.10 did on a
+            // model its engine partitioned.
+            for (const [key, { entities, samples }] of host.dropChanges ? [] : Object.entries(supplied?.byParameter ?? {})) {
                 for (const entity of entities) {
                     const indexed = host.imported.parameterIndex.find((entry) => entry.key === key && entry.entity === entity);
                     if (!indexed) throw new Error(`No ${key} of ${entity} to change.`);
@@ -171,7 +173,7 @@ export async function createHost() {
         }
     };
     const host = {
-        files, requests, opened, chosen, cache, kept: 0, imported: null, scenarioRuns: 0,
+        files, requests, opened, chosen, cache, kept: 0, imported: null, scenarioRuns: 0, dropChanges: false,
         get session() { return session; },
         set session(value) { session = value; },
         async call(name, args) {

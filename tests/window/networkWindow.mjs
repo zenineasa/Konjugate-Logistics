@@ -973,6 +973,9 @@ try {
         assert.equal(await page.locator('#map .siteMark.down').count(), 1);
         assert.match(await page.textContent('#map .siteMark.down title'), /^Harbour shop: closed from day 5 for 10 days$/);
         assert.equal(await page.locator('#map .siteMark.supplier').count(), 0, 'the supplier\'s ring goes with its scenario');
+        // Closed, it sold nothing with stock on its shelves: that is not a store running short, and the headline does not call it one.
+        const closedHeadline = await page.textContent('#scenarioResult .headline');
+        assert.match(closedHeadline, /^No store ran out, but [\d,.]+ pallets of sales were lost, worth [\d,]+;/, closedHeadline);
         assert.equal(await page.isVisible('#legendDown'), true);
         // The weakest link: each supplier making nothing and each warehouse down, run in turn for the ten days and
         // ranked by the sales they lose, worst first, none of them kept as a run of its own; then the worst run alone.
@@ -1048,6 +1051,14 @@ try {
         assert.ok(!(await stateOf(() => window.logisticsToolboxState.built.lanes.some((lane) => lane.fromSite === 'Warehouse 3'))));
         assert.deepEqual(await stateOf(() => window.logisticsToolboxState.runs.map((run) => run.number)), [1, 2, 3, 4, 5, 6]);
         await page.click('#scenarioTabs [data-scenario="roadClosure"]');
+        // A host that applies none of a scenario's changes (Konjugate up to 1.1.10, on a model its engine partitioned)
+        // answers with the baseline twice: the window says the run is the baseline's, and not that nothing was lost.
+        host.dropChanges = true;
+        await page.click('#runScenarioButton');
+        await page.waitForFunction(() => /^This run is the baseline's in every figure/.test(document.querySelector('#scenarioResult .headline')?.textContent ?? '') || document.querySelector('#scenarioStatus .notice.error'), null, { timeout: 120000 }).catch(fail);
+        assert.match(await page.textContent('#scenarioResult .headline'), /^This run is the baseline's in every figure, to the last digit: .* Do not read this as "nothing was lost"\.$/);
+        assert.equal(await stateOf(() => window.logisticsToolboxState.scenario.unchanged), true);
+        host.dropChanges = false;
         noErrors();
     }
 

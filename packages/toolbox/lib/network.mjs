@@ -32,7 +32,7 @@ const coverField = (value, detail) => ({ key: 'cover', label: 'Stock cover', uni
 // What a store loses when its shelves are short, and what a sale is worth: the summary counts lost sales in pallets and
 // in money. 0 lost is a figure (everyone waits), so the field takes it; it is a share, so no more than 100.
 const lostField = (value, detail) => ({ key: 'lostSales', label: 'Sales lost when out', unit: '%', value, max: 100, detail });
-const saleValueField = () => ({ key: 'saleValue', label: 'Value of a pallet sold', unit: 'a pallet', value: 1000, positive: true, detail: 'What its sales bring in a pallet: the summary prices the sales it loses at this.' });
+const saleValueField = () => ({ key: 'saleValue', label: 'Value of a pallet sold', unit: 'a pallet', value: 1000, positive: true, detail: 'What its sales bring in a pallet: the summary prices the sales it loses at this. The 1,000 it starts with is a placeholder in no currency, not an estimate: give your own, in the money your costs are in.' });
 
 export const roles = {
     supplier: {

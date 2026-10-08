@@ -85,8 +85,11 @@ export class MapView {
         const cy = this.view.y + this.view.height / 2;
         this.svg.setAttribute('viewBox', `${cx - width * unit / 2} ${cy - height * unit / 2} ${width * unit} ${height * unit}`);
         this.box = { x: cx - width * unit / 2, y: cy - height * unit / 2, width, height, unit };
-        this.drawPlaces();
+        // The sites first: place names give way to theirs.
+        this.applying = true;
         this.drawSites();
+        this.applying = false;
+        this.drawPlaces();
         this.drawLinks();
         this.drawFlows();
         this.drawMarks();
@@ -174,7 +177,7 @@ export class MapView {
     }
 
     // The place names the zoom allows: cities always, towns, suburbs and quarters as the map is zoomed in, the larger
-    // first and none over another (lib/labels.mjs). Cities are larger than towns, suburbs smaller.
+    // first and none over another or over a site's mark or name (lib/labels.mjs). Cities are larger than towns, suburbs smaller.
     drawPlaces() {
         this.placeLayer.replaceChildren();
         const box = this.box;
@@ -183,6 +186,7 @@ export class MapView {
         const written = choosePlaceLabels(this.places, {
             unit: box.unit,
             size: (place) => sizes[place.place] ?? 9,
+            taken: this.taken ?? [],
             toScreen: (place) => {
                 const x = (place.x - box.x) / box.unit;
                 const y = (place.y - box.y) / box.unit;
@@ -411,6 +415,16 @@ export class MapView {
                 label.remove();
             }
         }
+        // Where the sites' marks and names are, in pixels: place names are written clear of them, again when these moved.
+        const box = this.box;
+        if (!box) return;
+        const pixels = (area) => ({ left: (area.left - box.x) / box.unit, right: (area.right - box.x) / box.unit, top: (area.top - box.y) / box.unit, bottom: (area.bottom - box.y) / box.unit });
+        const taken = [...placed, ...labelled.map(({ x, y }) => ({ left: x - 7 * unit, right: x + 7 * unit, top: y - 7 * unit, bottom: y + 7 * unit }))].map(pixels);
+        const key = taken.map((area) => `${Math.round(area.left)},${Math.round(area.top)},${Math.round(area.right)}`).join(';');
+        const moved = key !== this.takenKey;
+        this.taken = taken;
+        this.takenKey = key;
+        if (moved && !this.applying) this.drawPlaces();
     }
 
     drawFlows() {

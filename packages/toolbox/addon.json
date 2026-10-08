@@ -21,7 +21,8 @@
         "suppliedPerParameter",
         "fetchCache",
         "keepSession",
-        "openLink"
+        "openLink",
+        "scenarioEveryBackend"
     ],
     "contributes": {
         "toolstrip": [
