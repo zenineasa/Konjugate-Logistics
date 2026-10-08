@@ -4,7 +4,7 @@ A logistics extension for [Konjugate](https://github.com/zenineasa/Konjugate), t
 
 ## Status
 
-Early development. Where it is going: [docs/direction.md](docs/direction.md) (a general supply network, milestones A to H; the first two, sites with roles on a map and their links, are built as [docs/mapFirst.md](docs/mapFirst.md) describes). Picking up the work: [docs/handover.md](docs/handover.md). What exists today:
+Early development. Where it is going: [docs/direction.md](docs/direction.md) (a general supply network, milestones A to H; the first two, sites with roles on a map and their links, are built as [docs/mapFirst.md](docs/mapFirst.md) describes). Picking up the work: [docs/handover.md](docs/handover.md). Showing it to someone: [docs/walkthrough.md](docs/walkthrough.md), a script on an invented grocery network in Bangalore. What exists today:
 
 - a component library plugin, `konjugate.logistics.engine`, with one example model, verified end to end against a real Konjugate build;
 - the **Logistics Toolbox** add-on (`konjugate.logistics.toolbox`), whose window loads the roads of any city or region, lets the user place a supply network on them (suppliers, ports, warehouses, stores, dark stores and customer areas, with the links between them, each site's storage and stock cover, and the vehicles each link runs on) and builds a runnable model from it. Ports, warehouses and towns found in public data are suggestions the user asks for and adopts, never added on their own.
