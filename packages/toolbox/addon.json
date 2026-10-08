@@ -169,6 +169,7 @@
     },
     "links": {
         "hosts": [
+            "download.geofabrik.de",
             "www.google.com",
             "www.openstreetmap.org"
         ]

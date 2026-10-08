@@ -42,7 +42,7 @@ test('the manifest declares a file role for every kind the importer reads, and e
     assert.ok(addon.requires.includes('scenarioEveryBackend'));
     // Roads are read from an extract as a binary file, which a Konjugate without that feature would not hand over.
     assert.ok(addon.requires.includes('binaryInputs') && addon.contributes.importers[0].files.find((file) => file.role === 'extract').binary === true);
-    assert.deepEqual(addon.links.hosts.sort(), ['www.google.com', 'www.openstreetmap.org']);
+    assert.deepEqual(addon.links.hosts.sort(), ['download.geofabrik.de', 'www.google.com', 'www.openstreetmap.org']);
     // The scenarios: each follows paths the window supplies, per parameter, forked when the window says.
     assert.ok(addon.permissions.includes('scenario.run'));
     for (const feature of ['scenarioForkTime', 'parameterSchedules', 'suppliedPerParameter']) assert.ok(addon.requires.includes(feature), feature);

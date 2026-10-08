@@ -27,7 +27,7 @@ import { buildRegionModel, regionModelDefaults } from '../lib/regionModel.mjs';
 import { generateOperator, parseOperator } from '../lib/operator.mjs';
 import { parseTravelTimes } from '../lib/travelTimes.mjs';
 import { maximumCityKilometres, readOverpass } from '../lib/overpass.mjs';
-import { extractAnswers, extractBounds, readExtract } from '../lib/osmPbf.mjs';
+import { extractAnswers, extractBounds, extractPlaces, readExtract } from '../lib/osmPbf.mjs';
 import { createRouter } from '../lib/roadGraph.mjs';
 import { compactRoadGraph, createNetworkRouter } from '../lib/routing.mjs';
 import { parseSites } from '../lib/sites.mjs';
@@ -235,6 +235,7 @@ export default async function importRegion({ files, helpers, options = {} }) {
         return { ok: true, data: { step: 'sites', sites: parsed.sites }, report: { errors: [], warnings: parsed.warnings } };
     }
     if (options.step === 'extract') return extractStep(files.find((file) => file.role === 'extract'), options);
+    if (options.step === 'extractPlaces') return extractPlacesStep(files.find((file) => file.role === 'extract'));
     if (options.step === 'roads') return roadsStep(answers, options, helpers);
     if (options.step === 'discover' && Array.isArray(options.sources)) return suggestionsStep(answers, options, helpers);
     if (options.step === 'buildNetwork') return buildNetworkStep(answers, options, helpers, operatorText);
@@ -390,6 +391,20 @@ async function extractStep(file, options) {
         ],
         report: { errors: [], warnings: [] }
     };
+}
+
+// The cities and towns of an extract, for choosing the place to load from a file that covers too much to load whole:
+// with no map server to search, the file's own places are the search.
+async function extractPlacesStep(file) {
+    if (!file?.data) return failure('Choose an OpenStreetMap extract (a .osm.pbf file) first.');
+    const { inflateSync } = await import('node:zlib');
+    try {
+        const places = extractPlaces(file.data, { inflate: inflateSync });
+        if (!places.length) return failure(`${file.name} names no city or town: search a place first, and the roads around it are read from the file.`);
+        return { ok: true, data: { step: 'extractPlaces', file: file.name, places }, report: { errors: [], warnings: [] } };
+    } catch (error) {
+        return failure(`${file.name} could not be read: ${error.message}`);
+    }
 }
 
 async function roadsStep(answers, options, helpers) {

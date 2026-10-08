@@ -14,7 +14,6 @@ import { portwatchActivityUrl, portwatchPortsUrl } from './lib/portwatch.mjs';
 import { closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan, mostLateDays, siteDownPlan, supplierPlan } from './lib/scenarios.mjs';
 import { createNetworkRouter } from './lib/routing.mjs';
 import { compareSites } from './lib/siteComparison.mjs';
-import { boundsWith } from './lib/geo.mjs';
 import { cleanCurrency, differs, money, moneyIn, outNoise, sameSeries, shortDays, storesParts, unchangedText } from './lib/summary.mjs';
 import { createHoliday, describeHoliday, holidayProblem } from './lib/holidays.mjs';
 import { completeFields, createPin, isCandidate, kindOf, openNetwork, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, setCandidate, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
@@ -55,6 +54,8 @@ const state = {
     fetchedAt: {}, fresh: false,
     // The file the roads were read from, when they were not fetched: its name.
     extract: null,
+    // An extract chosen and not yet read ({ name, bytes }): in hand while the place to read from it is chosen.
+    extractFile: null,
     portVolume: null, built: null, busy: false, rebuildTimer: null,
     // The chokepoint disruption: the user's own shares (port name -> { chokepoint id -> share }), the transits
     // fetched per chokepoint, and the last run's summary.
@@ -279,6 +280,10 @@ function spanOf(bbox) {
 
 function showArea() {
     if (!state.place) return;
+    // A place chosen from a file is a point, with no extent of its own: its area is what is included around it.
+    const point = Boolean(state.place.fromFile);
+    $('#marginSelect option[value="0"]').disabled = point;
+    if (point && $('#marginSelect').value === '0') $('#marginSelect').value = '10';
     state.bbox = boundsAround(state.place, Number($('#marginSelect').value));
     const { width, height } = spanOf(state.bbox);
     const city = $('#roadLevelSelect').value === 'city';
@@ -286,7 +291,8 @@ function showArea() {
     const tooLarge = Math.max(width, height) > limit;
     $('#areaSize').innerHTML = tooLarge
         ? `<span style="color:var(--danger)">${number(width)} × ${number(height)} km: too large${city ? ` for city streets, which are loaded for areas up to ${limit} km across; choose major roads, or a smaller place or area` : `. Public map servers answer areas up to ${limit} km across; choose a smaller place or area`}.</span>`
-        : `${number(width)} × ${number(height)} km${Math.max(width, height) > (city ? 2 * cityTileKilometres : 120) ? '. A large area: loading may take a minute.' : ''}`;
+        : `${number(width)} × ${number(height)} km${Math.max(width, height) > (city ? 2 * cityTileKilometres : 120) && !state.extractFile ? '. A large area: loading from the map server may take a minute.' : ''}`;
+    $('#extractHereButton').disabled = tooLarge || state.busy;
     $('#fetchButton').disabled = tooLarge || state.busy;
     $('#freshButton').disabled = tooLarge || state.busy;
 }
@@ -554,22 +560,42 @@ $('#sampleButton').addEventListener('click', async () => {
 // Roads from a file: an OpenStreetMap extract of the user's (.osm.pbf), read on this computer for the place searched,
 // or for the whole of a file small enough, at the road level chosen. No map server is asked, so a city's streets
 // load in the time it takes to read the file. What is read is kept in the file's place, as fetched roads are.
-$('#extractButton').addEventListener('click', async () => {
+// With no place chosen and a file that covers more than can be loaded whole (a country, a zone of one), the file's own
+// cities and towns are offered to choose from: the place search asks a map server, and a file is for doing without.
+// A file chosen stays in hand (state.extractFile) until it is read, so choosing a place does not ask for it again.
+async function readFromFile({ choose = true } = {}) {
     if (state.busy) return;
     setBusy(true);
     const progress = $('#fetchProgress');
     try {
-        const chosen = await call(api.chooseFile(importerId, 'extract'));
-        if (!chosen.chosen) return;
-        // With a place searched, the road level chosen for it; with none, by the size of what the file covers.
+        if (choose || !state.extractFile) {
+            const chosen = await call(api.chooseFile(importerId, 'extract'));
+            if (!chosen.chosen) return;
+            state.extractFile = { name: chosen.name, bytes: chosen.bytes };
+        }
+        const file = state.extractFile;
+        // With a place chosen, the road level chosen for it; with none, by the size of what the file covers.
         const roadLevel = state.bbox ? $('#roadLevelSelect').value : 'auto';
         progress.hidden = false;
-        progress.innerHTML = `<li data-kind="roads"><span>${roadLevel === 'city' ? 'Roads and city streets' : labels.roads}</span><span class="state">reading ${escape(chosen.name)} (${number(chosen.bytes / 1048576, 1)} MB)…</span></li>`;
+        progress.innerHTML = `<li data-kind="roads"><span>${roadLevel === 'city' ? 'Roads and city streets' : labels.roads}</span><span class="state">reading ${escape(file.name)} (${number(file.bytes / 1048576, 1)} MB)…</span></li>`;
         $('#regionStatus').innerHTML = '';
-        // A new region replaces the last one's data, suggestions included (your own sites file stays).
-        for (const role of allRoles) await call(api.clearFile(importerId, role));
+        const row = progress.querySelector('[data-kind="roads"]');
         const answer = await call(api.runImport(importerId, { step: 'extract', roadLevel, ...(state.bbox ? { bbox: state.bbox } : {}) }));
-        if (answer.report?.errors?.length) throw new Error(answer.report.errors.join(' '));
+        if (answer.report?.errors?.length) {
+            const reason = answer.report.errors.join(' ');
+            // Too much to load whole, and no place chosen: which of the file's places, then?
+            if (!state.bbox && /covers an area that is/.test(reason)) {
+                row.querySelector('.state').textContent = `looking for the places in ${file.name}…`;
+                const found = await call(api.runImport(importerId, { step: 'extractPlaces' }));
+                if (found.report?.errors?.length) throw new Error(found.report.errors.join(' '));
+                progress.hidden = true;
+                showFilePlaces(found.data.places, file, reason.replace(/ Search a place first.*$/, ''));
+                return;
+            }
+            throw new Error(reason);
+        }
+        // A new region replaces the last one's data, suggestions included (your own sites file stays).
+        for (const role of allRoles.filter((item) => item !== 'roads' && item !== 'places')) await call(api.clearFile(importerId, role));
         state.roadLevel = answer.data.roadLevel;
         $('#roadLevelSelect').value = state.roadLevel;
         state.available.clear();
@@ -579,8 +605,8 @@ $('#extractButton').addEventListener('click', async () => {
         state.sample = false;
         state.fetchedAt = {};
         state.extract = answer.data.file;
+        state.extractFile = null;
         state.bbox ??= answer.data.bbox;
-        const row = progress.querySelector('[data-kind="roads"]');
         row.classList.add('done');
         row.querySelector('span').textContent = state.roadLevel === 'city' ? 'Roads and city streets' : labels.roads;
         row.querySelector('.state').textContent = `${number(answer.data.coverage.roads)} roads and ${number(answer.data.coverage.places)} place names, from ${answer.data.file}`;
@@ -591,8 +617,56 @@ $('#extractButton').addEventListener('click', async () => {
         $('#regionStatus').innerHTML = notice('error', error.message);
     } finally {
         setBusy(false);
+        showFileButton();
+    }
+}
+// The file in hand is named on the button that reads from it, and that button leads while there is one.
+function showFileButton() {
+    const button = $('#extractHereButton');
+    button.textContent = state.extractFile ? `Read from ${state.extractFile.name}` : 'Read from a file';
+    button.classList.toggle('primary', Boolean(state.extractFile));
+    $('#fetchButton').classList.toggle('primary', !state.extractFile);
+}
+// The cities and towns of a file, to choose the place to read from it: a box to find one by name, the largest first.
+function showFilePlaces(places, file, why) {
+    const list = $('#searchResults');
+    const million = (count) => (count >= 1e6 ? `${number(count / 1e6, 1)} million` : `${number(count)}`);
+    const item = (place, index) => `<li data-name="${escape(`${place.name} ${place.also ?? ''}`.toLowerCase())}"><button type="button" data-file-place="${index}">${escape(place.name)}${place.also ? ` <span class="kind">${escape(place.also)}</span>` : ''} <span class="kind">${place.place}${place.population ? ` · ${million(place.population)} people` : ''}</span></button></li>`;
+    $('#regionStatus').innerHTML = notice('', `${escape(why)} Choose the place to read from it, below: its ${number(places.length)} cities and towns, the largest first. No map server is asked.`);
+    list.hidden = false;
+    list.innerHTML = `<li class="filter"><input type="search" id="filePlaceFilter" placeholder="A city or town in ${escape(file.name)}" aria-label="Find a place in the file" autocomplete="off"></li>${places.map(item).join('')}`;
+    const filter = $('#filePlaceFilter');
+    filter.addEventListener('input', () => {
+        const wanted = filter.value.trim().toLowerCase();
+        list.querySelectorAll('li[data-name]').forEach((entry) => { entry.hidden = Boolean(wanted) && !entry.dataset.name.includes(wanted); });
+    });
+    list.querySelectorAll('[data-file-place]').forEach((button) => button.addEventListener('click', () => {
+        const place = places[Number(button.dataset.filePlace)];
+        // A place of the file is a point: the area is what is included around it.
+        state.place = { display_name: `${place.name}, from ${file.name}`, boundingbox: [place.lat, place.lat, place.lon, place.lon], fromFile: true };
+        list.hidden = true;
+        $('#regionStatus').innerHTML = '';
+        $('#chosenRegion').hidden = false;
+        $('#chosenName').textContent = state.place.display_name;
+        if ($('#marginSelect').value === '0') $('#marginSelect').value = '25';
+        showArea();
+        showFileButton();
+    }));
+    filter.focus();
+}
+// Where such a file comes from: Geofabrik's download page, opened in the user's browser.
+const extractSourceUrl = 'https://download.geofabrik.de/';
+$('#extractSourceButton').addEventListener('click', async () => {
+    try {
+        if (!api?.openLink) throw new Error('unavailable');
+        await call(api.openLink(extractSourceUrl));
+        toast('Geofabrik\'s downloads are open in your browser: find your region and take the file ending in .osm.pbf, then read the roads from it here.');
+    } catch {
+        try { await navigator.clipboard.writeText(extractSourceUrl); toast('This Konjugate cannot open a browser: the address of Geofabrik\'s downloads is copied, to paste in yours.'); } catch { toast(`Open this in your browser: ${extractSourceUrl}`); }
     }
 });
+$('#extractButton').addEventListener('click', () => readFromFile({ choose: true }));
+$('#extractHereButton').addEventListener('click', () => readFromFile({ choose: !state.extractFile }));
 
 // ---- the network: pins and links ----------------------------------------------------------------------
 
@@ -2052,29 +2126,15 @@ $('#sitesButton').addEventListener('click', async () => {
         state.pins.push(...loaded.pins);
         state.links.push(...loaded.links);
         const warnings = [...(answer.report?.warnings ?? []), ...loaded.problems];
-        $('#regionStatus').innerHTML = notice('ok', `${loaded.pins.length} site${loaded.pins.length === 1 ? '' : 's'} and ${loaded.links.length} link${loaded.links.length === 1 ? '' : 's'} from your file.${state.roads ? '' : ' They have no map yet: their area is chosen above, so press Load roads for it, or Read roads from a file.'}`) + warnings.map((text) => notice('warning', text)).join('');
+        $('#sitesStatus').innerHTML = notice('ok', `${loaded.pins.length} site${loaded.pins.length === 1 ? '' : 's'} and ${loaded.links.length} link${loaded.links.length === 1 ? '' : 's'} from your file.`) + warnings.map((text) => notice('warning', text)).join('');
         for (const section of ['#stepNetwork', '#stepBuild']) $(section).hidden = false;
         networkChanged();
-        // Sites with no roads loaded have no map to be drawn on: the area they span becomes the area to load, as a
-        // place searched would, so the next thing to press is in front of the user.
-        if (!state.roads) {
-            const area = boundsWith({ south: Infinity, west: Infinity, north: -Infinity, east: -Infinity }, state.pins);
-            if (Number.isFinite(area.south)) {
-                state.place = { display_name: `The area of your ${state.pins.length} site${state.pins.length === 1 ? '' : 's'}`, boundingbox: [area.south, area.north, area.west, area.east], fromSites: true };
-                $('#marginSelect').value = '10';
-                $('#searchResults').hidden = true;
-                $('#chosenRegion').hidden = false;
-                $('#chosenName').textContent = state.place.display_name;
-                showArea();
-                $('#stepRegion').scrollIntoView({ block: 'start' });
-            }
-        }
         // Sites of the file that lie beyond the roads loaded are brought into view.
         const area = state.roads?.map?.bbox;
         if (area && loaded.pins.some((pin) => pin.lat < area.south || pin.lat > area.north || pin.lon < area.west || pin.lon > area.east)) map.fit();
         $('#saveSitesButton').disabled = false;
     } catch (error) {
-        $('#regionStatus').innerHTML = notice('error', error.message);
+        $('#sitesStatus').innerHTML = notice('error', error.message);
     } finally {
         setBusy(false);
     }
@@ -2670,7 +2730,7 @@ function setBusy(busy) {
         if ((state.edits ?? 0) !== state.builtEdits) setTimeout(() => build({ focus: false }), 0);
     }
     // Run waits too: a scenario asked for while the model is being built would otherwise be silently ignored.
-    for (const selector of ['#fetchButton', '#sampleButton', '#extractButton', '#sitesButton', '#searchButton', '#runScenarioButton', ...Object.keys(sources).map((source) => `[data-fetch-source="${source}"]`)]) $(selector).disabled = busy;
+    for (const selector of ['#fetchButton', '#sampleButton', '#extractButton', '#extractHereButton', '#sitesButton', '#searchButton', '#runScenarioButton', ...Object.keys(sources).map((source) => `[data-fetch-source="${source}"]`)]) $(selector).disabled = busy;
     if (!busy) showArea();
     const errors = networkProblems(state.pins, state.links, state.vehicles, state.categories, state.holidays).filter((problem) => problem.level === 'error');
     $('#buildButton').disabled = busy || errors.length > 0 || !state.pins.length;

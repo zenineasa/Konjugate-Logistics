@@ -58,6 +58,9 @@ input[type="number"] { width: 72px; }
 .results li button { display: block; width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--border); color: var(--text); padding: 6px 8px; font: inherit; cursor: pointer; }
 .results li:last-child button { border-bottom: 0; }
 .results li button:hover { background: var(--surface-hover); }
+/* A box to find one of many by name stays at the top of its list. */
+.results li.filter { position: sticky; top: 0; background: var(--surface); padding: 4px; border-bottom: 1px solid var(--border); }
+.results li.filter input { width: 100%; }
 .results .kind { color: var(--muted); font-size: 11px; }
 .chosen { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 8px 0; }
 .chosenName { color: var(--bright); font-weight: 600; }

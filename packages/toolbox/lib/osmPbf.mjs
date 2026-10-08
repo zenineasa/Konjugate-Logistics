@@ -222,9 +222,11 @@ export function extractBounds(bytes, inflate) {
 // as OpenStreetMap's server writes elements: a way is { type: 'way', id, tags, nodes: [id], geometry: [{ lat, lon }] },
 // whole when any of it lies in the area (a road is not cut at the edge); a place is { type: 'node', id, lat, lon, tags }.
 // A road whose nodes the file lacks (cut off at the extract's own edge) keeps the stretch the file has.
-export function readExtract(bytes, { bbox, roadLevel = 'major', inflate }) {
+// `roadLevel: 'none'` reads no roads, and `places` names the kinds of place wanted (cities, towns, suburbs and
+// quarters unless said).
+export function readExtract(bytes, { bbox, roadLevel = 'major', inflate, places: wantedPlaces = placeKinds }) {
     if (typeof inflate !== 'function') throw new Error('readExtract needs a function that undoes zlib.');
-    const wantedRoads = new Set(roadLevel === 'city' ? cityRoads : majorRoads);
+    const wantedRoads = new Set(roadLevel === 'none' ? [] : roadLevel === 'city' ? cityRoads : majorRoads);
     // Each road: its id, its tags, and where its nodes start in `refs` (they end where the next road's start).
     const ways = [];
     const refs = new Numbers();
@@ -299,7 +301,7 @@ export function readExtract(bytes, { bbox, roadLevel = 'major', inflate }) {
         if (!nodeBlocks.has(index)) continue;
         const { strings, groups, lat: latOf, lon: lonOf } = block(blob.data());
         const placeKey = strings.indexOf('place');
-        const placeValues = new Set(placeKinds.map((kind) => strings.indexOf(kind)).filter((at) => at >= 0));
+        const placeValues = new Set(wantedPlaces.map((kind) => strings.indexOf(kind)).filter((at) => at >= 0));
         const tagsOf = (pairs) => {
             const tags = {};
             for (let at = 0; at + 1 < pairs.length; at += 2) {
@@ -445,4 +447,20 @@ export function extractAnswers({ roads, places }, { source = 'an OpenStreetMap e
     if (current.length || !parts.length) parts.push(current);
     const wrap = (elements) => `${JSON.stringify(head).slice(0, -1)},"elements":[${elements.join(',')}]}`;
     return { roads: parts.map(wrap), places: wrap(places.map((place) => JSON.stringify(place))) };
+}
+
+// The cities and towns a file holds, for choosing one of them as the place to load when the file covers far more than
+// can be loaded whole: [{ name, place, lat, lon, population }], cities first, then the more populous, then by name. A
+// place with a name in English is listed by it (as the map writes it), and found by its own name too (`also`).
+export function extractPlaces(bytes, { inflate, most = 4000 }) {
+    const world = { south: -90, west: -180, north: 90, east: 180 };
+    const found = readExtract(bytes, { bbox: world, roadLevel: 'none', places: ['city', 'town'], inflate }).places
+        .filter((place) => place.tags.name || place.tags['name:en'])
+        .map((place) => {
+            const name = place.tags['name:en'] ?? place.tags.name;
+            const population = Number.parseInt(String(place.tags.population ?? '').replace(/[^0-9]/g, ''), 10);
+            return { name, ...(place.tags.name && place.tags.name !== name ? { also: place.tags.name } : {}), place: place.tags.place, lat: place.lat, lon: place.lon, ...(population > 0 ? { population } : {}) };
+        });
+    const rank = { city: 0, town: 1 };
+    return found.sort((a, b) => (rank[a.place] - rank[b.place]) || ((b.population ?? 0) - (a.population ?? 0)) || a.name.localeCompare(b.name)).slice(0, most);
 }

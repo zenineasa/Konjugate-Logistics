@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { inflateSync } from 'node:zlib';
-import { extractAnswers, extractBounds, readExtract } from '../../packages/toolbox/lib/osmPbf.mjs';
+import { extractAnswers, extractBounds, extractPlaces, readExtract } from '../../packages/toolbox/lib/osmPbf.mjs';
 import { readOverpass } from '../../packages/toolbox/lib/overpass.mjs';
 import { buildRoadGraph } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { compactRoadGraph, createNetworkRouter } from '../../packages/toolbox/lib/routing.mjs';
@@ -119,4 +119,27 @@ test('the importer reads an extract for the area asked, or for the file\'s own, 
     assert.match((await step(file.slice(), { bbox: { south: 9.9, west: 19.9, north: 10.6, east: 20.9 }, roadLevel: 'city' })).report.errors[0], /^This area is [\d,]+ km across: city streets are loaded for areas up to 40 km across\. Choose a smaller area\.$/);
     assert.match((await step(writeOsmPbf({ nodes, ways }), { roadLevel: 'auto' })).report.errors[0], /does not say what area it covers: search a place first/);
     assert.match((await step(new TextEncoder().encode('not an extract at all, just some text that is long enough'), { bbox: town })).report.errors[0], /^town\.osm\.pbf could not be read: This is not an OpenStreetMap extract/);
+});
+
+test('a file\'s own cities and towns are listed to choose a place from: cities first, the more populous first, by the name the map writes', async () => {
+    const more = [
+        { id: 20, lat: 11, lon: 21, tags: { place: 'city', name: 'Kleinstadt', population: '90 000' } },
+        { id: 21, lat: 12, lon: 22, tags: { place: 'city', name: 'ಬೆಂಗಳೂರು', 'name:en': 'Bengaluru', population: '10839725' } },
+        { id: 22, lat: 13, lon: 23, tags: { place: 'town', name: 'Alpha' } },
+        { id: 23, lat: 14, lon: 24, tags: { place: 'suburb', name: 'A suburb' } },
+        { id: 24, lat: 15, lon: 25, tags: { place: 'town' } }
+    ];
+    const places = extractPlaces(writeOsmPbf({ nodes: [...nodes, ...more], ways, bounds }), { inflate: inflateSync });
+    assert.deepEqual(places.map((place) => [place.name, place.place, place.population ?? null]), [
+        ['Bengaluru', 'city', 10839725], ['Kleinstadt', 'city', 90000], ['Far', 'city', null], ['Alpha', 'town', null], ['Middle', 'town', 12000]
+    ].sort((a, b) => (a[1] === b[1] ? 0 : a[1] === 'city' ? -1 : 1) || ((b[2] ?? 0) - (a[2] ?? 0)) || a[0].localeCompare(b[0])));
+    assert.deepEqual([places[0].also, places[0].lat, places[0].lon], ['ಬೆಂಗಳೂರು', 12, 22]);
+    assert.equal(extractPlaces(writeOsmPbf({ nodes: [...nodes, ...more], ways, bounds }), { inflate: inflateSync, most: 2 }).length, 2);
+    // The importer's step for it, and what it says of a file with no place to offer.
+    const { default: importRegion } = await import('../../packages/toolbox/importers/region.mjs');
+    const step = (data) => importRegion({ files: data ? [{ role: 'extract', name: 'zone.osm.pbf', data }] : [], helpers: {}, options: { step: 'extractPlaces' } });
+    const listed = await step(writeOsmPbf({ nodes: [...nodes, ...more], ways, bounds }));
+    assert.deepEqual([listed.ok, listed.data.file, listed.data.places.length, listed.derived], [true, 'zone.osm.pbf', 5, undefined]);
+    assert.match((await step(writeOsmPbf({ nodes: nodes.slice(0, 7), ways: ways.slice(0, 2), bounds }))).report.errors[0], /^zone\.osm\.pbf names no city or town/);
+    assert.match((await step(null)).report.errors[0], /^Choose an OpenStreetMap extract/);
 });

@@ -39,7 +39,8 @@
                         </label>
                         <div class="muted small" id="areaSize"></div>
                         <div class="row">
-                            <button class="button primary" type="button" id="fetchButton" title="Load the roads and place names: from the maps kept on this computer when they hold this area, else from the map servers">Load roads</button>
+                            <button class="button primary" type="button" id="fetchButton" title="Load the roads and place names from OpenStreetMap's server (or from the maps kept on this computer, when they hold this area)">Load roads</button>
+                            <button class="button" type="button" id="extractHereButton" title="Read this area's roads from an OpenStreetMap extract on this computer (a .osm.pbf file), with no map server">Read from a file</button>
                             <button class="link" type="button" id="freshButton" title="Fetch the roads and place names again from the map servers, not from the maps kept on this computer">Load fresh</button>
                         </div>
                     </div>
@@ -48,10 +49,7 @@
                         <button class="link" type="button" id="sampleButton">Use the sample region</button>
                         <span class="muted">·</span>
                         <button class="link" type="button" id="extractButton" title="Read the roads from an OpenStreetMap extract on this computer (a .osm.pbf file of your region, as download.geofabrik.de publishes them), with no map server to wait for: for the place searched, or else for the whole of a small file. The road level chosen above applies.">Read roads from a file (.osm.pbf)</button>
-                        <span class="muted">·</span>
-                        <button class="link" type="button" id="sitesButton">Load your sites (CSV)</button>
-                        <span class="muted">·</span>
-                        <button class="link" type="button" id="saveSitesButton" disabled>Save your sites (CSV)</button>
+                        <button class="link" type="button" id="extractSourceButton" title="Geofabrik publishes OpenStreetMap extracts by continent, country and region, free and refreshed daily: open its download page in your browser, find your region and take the file ending in .osm.pbf (up to 1 GB; for a large country, a region of it)">where to get one ↗</button>
                     </div>
                     <div id="regionStatus"></div>
                     <div class="row small" id="dataAge" hidden><span id="dataAgeText"></span><button class="link" type="button" id="dataAgeFresh">Load fresh</button></div>
@@ -69,6 +67,13 @@
                 </div>
                 <div class="stepContent">
                     <p class="muted small">Pick a role above the map (or press 1 to 6) and click the map to place sites; they snap to the nearest road. Links are suggested. Click a site or a link to change it here or beside it on the map, right-click for its menu, and press ? for the keyboard shortcuts. Everything can be undone. Goods are counted in pallets; a port's containers as ten pallets each.</p>
+                    <!-- The network as a file: sites and their links, loaded onto the map in hand and saved from it. -->
+                    <div class="row small">
+                        <button class="link" type="button" id="sitesButton" title="Load sites and their links from a CSV of your own: name, kind, latitude, longitude and what each is supplied from. They are added to the map loaded in step 1.">Load your sites (CSV)</button>
+                        <span class="muted">·</span>
+                        <button class="link" type="button" id="saveSitesButton" disabled title="Save the sites and links placed as a CSV, to load back or to edit in a spreadsheet">Save your sites (CSV)</button>
+                    </div>
+                    <div id="sitesStatus"></div>
                     <div id="networkStatus"></div>
                     <div class="card" id="selectionCard" hidden></div>
                     <div class="tabs" role="tablist" id="roleTabs"></div>
