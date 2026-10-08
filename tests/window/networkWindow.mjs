@@ -1272,6 +1272,58 @@ try {
     await macPage.close();
     noErrors();
 
+    // 8. Roads from a file: an OpenStreetMap extract of the user's, read with no map server. A small invented town: a
+    // grid of streets, primary ones around it, and its name. The file's own area is taken, as no place is searched.
+    {
+        const { writeOsmPbf } = await import('../fixtures/osmPbfFixture.mjs');
+        const side = 6;
+        const at = (row, column) => ({ id: 1 + row * side + column, lat: 40 + row * 0.01, lon: 10 + column * 0.01 });
+        const nodes = Array.from({ length: side * side }, (_unused, index) => at(Math.floor(index / side), index % side));
+        nodes.push({ id: 900, lat: 40.025, lon: 10.025, tags: { place: 'town', name: 'Gridtown' } });
+        const ways = [];
+        for (let line = 0; line < side; line += 1) {
+            const edge = line === 0 || line === side - 1;
+            ways.push({ id: 1000 + line, nodes: Array.from({ length: side }, (_unused, column) => at(line, column).id), tags: { highway: edge ? 'primary' : 'tertiary', name: `Row ${line}` } });
+            ways.push({ id: 2000 + line, nodes: Array.from({ length: side }, (_unused, row) => at(row, line).id), tags: { highway: edge ? 'primary' : 'tertiary', name: `Column ${line}` } });
+        }
+        const town = { south: 39.99, west: 9.99, north: 40.06, east: 10.06 };
+        const requestsBefore = host.requests.length;
+        await page.click('#sampleButton');
+        await page.waitForFunction(() => !document.querySelector('#fetchButton').disabled);
+        // A file covering far more than can be loaded, with no place searched, is refused with what to do.
+        host.chosen.extract = { name: 'continent.osm.pbf', data: writeOsmPbf({ nodes, ways, bounds: { south: 30, west: 0, north: 50, east: 20 } }) };
+        await page.click('#extractButton');
+        await page.waitForSelector('#regionStatus .notice.error');
+        assert.match(await page.textContent('#regionStatus .notice.error'), /^continent\.osm\.pbf covers an area that is [\d,]+ km across: roads are loaded for areas up to 250 km across\. Search a place first, and the roads around it are read from the file\.$/);
+        // The town's own file, eight kilometres across: a city's, so its streets are read too.
+        host.chosen.extract = { name: 'gridtown.osm.pbf', data: writeOsmPbf({ nodes, ways, bounds: town }) };
+        await page.click('#extractButton');
+        await page.waitForSelector('#fetchProgress li.done');
+        assert.equal(await page.textContent('#fetchProgress li.done'), 'Roads and city streets12 roads and 1 place names, from gridtown.osm.pbf');
+        assert.equal(await page.locator('#regionStatus .notice.error').count(), 0, await page.textContent('#regionStatus'));
+        assert.equal(await stateOf(() => window.logisticsToolboxState.roadLevel), 'city');
+        // Said where the roads came from, with nothing to fetch fresh; drawn, and routed over.
+        assert.equal(await page.textContent('#dataAgeText'), 'Roads read from gridtown.osm.pbf, a file of yours: as fresh as the file.');
+        assert.equal(await page.isVisible('#dataAgeFresh'), false);
+        assert.deepEqual(await stateOf(() => [window.logisticsToolboxState.extract, window.logisticsToolboxState.roads.graph.vertices.length > 30, window.logisticsToolboxState.roads.map.places.map((place) => place.name)]), ['gridtown.osm.pbf', true, ['Gridtown']]);
+        assert.ok(await page.locator('#map path.road').count() >= 12);
+        // No map server was asked, and the file itself is not kept: what was read from it is, saying where it came from.
+        assert.deepEqual(host.requests.slice(requestsBefore).filter((url) => /overpass/.test(url)), []);
+        const kept = [...host.files.values()];
+        assert.ok(!kept.some((file) => file.binary), 'the extract is not among the inputs');
+        assert.deepEqual(kept.filter((file) => file.source).map((file) => [file.role, file.name, file.source]), [['roads', 'roads-extract-1.json', 'gridtown.osm.pbf'], ['places', 'places-extract.json', 'gridtown.osm.pbf']]);
+        // Two sites placed on it are linked by its streets.
+        await page.click('[data-add="warehouse"]');
+        await clickAt({ lat: 40.0, lon: 10.0 });
+        await page.keyboard.press('Escape');
+        await page.click('[data-add="store"]');
+        await clickAt({ lat: 40.03, lon: 10.03 });
+        await page.keyboard.press('Escape');
+        const leg = await stateOf(() => { const [link] = window.logisticsToolboxState.links; return link ? [link.basis, Math.round(link.kilometres ?? link.leg?.kilometres ?? 0)] : null; });
+        assert.ok(leg, 'the store is linked to the warehouse over the roads read');
+        noErrors();
+    }
+
     console.log(`✓ logistics network window: the sample region loads its roads alone; ${placements.length} pins placed from the palette are linked and routed as suggested; every action works from a button or menu, a drag or a right click, and the keyboard, and undoes; a moved store re-routes its one link in ${routing.milliseconds < 1 ? 'under a millisecond' : `${routing.milliseconds.toFixed(0)} ms`}; links are drawn, refused with a reason, deleted and not suggested again; the model is built from the pins and links, a copy for each of its three categories (${built.match(/\d+ nodes/)[0]}), its stores holding stock and its links on the vehicles chosen on their cards, from their menus and with V;${process.env.KONJUGATE_ENGINE === 'export' ? ' a store whose road closes runs out of stock a supplier short and late is ringed on the map, a closed store keeps its stock and loses its sales and the failures of suppliers and warehouses are ranked by what they cost;' : ''} ports and towns are suggested only when asked for and adopted; the network saves as a CSV and loads back; the session restores it, and an earlier session is migrated; shortcuts behave and read as Windows and Linux users and Mac users expect; a network is kept with the project before any build; an area loaded is kept on the computer and loads again with nothing fetched, fresh on request, and the cache clears; a searched region fetches its roads and place names alone, and ports only when asked for.`);
 } finally {
     await browser.close();

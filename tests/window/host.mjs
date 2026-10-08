@@ -38,7 +38,7 @@ const helpers = {
 };
 
 // The host's limits (Konjugate's launcherHost.mjs).
-export const limits = { options: 2 * 1024 * 1024, importerData: 8 * 1024 * 1024, sessionWindow: 2 * 1024 * 1024 };
+export const limits = { options: 2 * 1024 * 1024, importerData: 8 * 1024 * 1024, sessionWindow: 2 * 1024 * 1024, input: 10 * 1024 * 1024 };
 
 // Konjugate's own cache of what an add-on fetched, in a scratch folder: the window test exercises the real one.
 const { createAddonCache } = await import(pathToFileURL(konjugateModule('src/addonCache.mjs')));
@@ -121,14 +121,33 @@ export async function createHost() {
         },
         async chooseFile({ role }) {
             if (chosen[role] === undefined) return { chosen: false };
+            // A binary role's file is bytes ({ name, data }), noted and handed to the importer when it runs.
+            if (chosen[role]?.data) {
+                files.set(`${role}/chosen`, { role, name: chosen[role].name, data: chosen[role].data, binary: true });
+                const answer = { chosen: true, name: chosen[role].name, names: [chosen[role].name], bytes: chosen[role].data.length };
+                delete chosen[role];
+                return answer;
+            }
             files.set(`${role}/chosen`, { role, name: `${role}.csv`, text: chosen[role] });
             delete chosen[role];
             return { chosen: true };
         },
         async runImport({ options = {} }) {
             if (JSON.stringify(options).length > limits.options) throw new Error('The options are larger than the host accepts.');
-            const result = await importRegion({ files: [...files.values()].map(({ role, name, text }) => ({ role, name, text, encoding: 'utf-8' })), helpers, options });
+            const result = await importRegion({ files: [...files.values()].map(({ role, name, text, data }) => (data ? { role, name, data } : { role, name, text, encoding: 'utf-8' })), helpers, options });
             if (result.data && JSON.stringify(result.data).length > limits.importerData) throw new Error('The importer returned more data than the host accepts.');
+            // As Konjugate's host does: what the importer derived takes the place of the files of those roles and of the
+            // binary file it read, each a text file of a declared role that is not binary and within the size a file may be.
+            if (result.ok && result.derived?.length) {
+                for (const item of result.derived) {
+                    const declared = manifest.contributes.importers[0].files.find((file) => file.role === item.role);
+                    if (!declared || declared.binary || typeof item.text !== 'string') throw new Error('An importer may derive files only of its own roles that are not binary.');
+                    if (Buffer.byteLength(item.text) > limits.input) throw new Error('A derived file is larger than the 10 MB limit.');
+                }
+                for (const [key, file] of files) if (file.binary || result.derived.some((item) => item.role === file.role)) files.delete(key);
+                for (const item of result.derived) files.set(`${item.role}/${item.name}`, { role: item.role, name: item.name, text: item.text, source: item.source });
+                host.imported = null;
+            }
             if (!result.ok || !result.document) return { imported: false, report: result.report, data: result.data };
             host.imported = { document: result.document, parameterIndex: result.parameterIndex };
             return { imported: true, report: result.report, data: result.data };
@@ -142,7 +161,7 @@ export async function createHost() {
             return {};
         },
         async restoreSession() {
-            return { session, savedAt: session ? new Date().toISOString() : null, inputs: [...files.values()].map(({ role, url, retrievedAt }) => ({ role, url, retrievedAt })) };
+            return { session, savedAt: session ? new Date().toISOString() : null, inputs: [...files.values()].filter((file) => !file.binary).map(({ role, url, retrievedAt, source }) => ({ role, url, retrievedAt, ...(source ? { derivedFrom: source } : {}) })) };
         },
         // With KONJUGATE_ENGINE=export, a scenario runs as Konjugate's code export writes the model (see
         // tests/engine/harness.mjs): the baseline, and the model with the supplied paths as stored schedules from the fork,

@@ -32,7 +32,7 @@ const sizeOf = (value) => Buffer.byteLength(JSON.stringify(value));
 
 test('the manifest declares a file role for every kind the importer reads, and every template it builds from', () => {
     const importer = addon.contributes.importers.find((entry) => entry.importerId === 'region');
-    assert.deepEqual(importer.files.map((file) => file.role), [...osmRoles, ...portwatchRoles, 'sites', 'times', 'operator']);
+    assert.deepEqual(importer.files.map((file) => file.role), [...osmRoles, ...portwatchRoles, 'extract', 'sites', 'times', 'operator']);
     const components = plugin.contributes.filter((entry) => entry.kind === 'component').map((entry) => entry.componentId);
     for (const id of templateIds) assert.ok(components.includes(id), `${id} is a component`);
     assert.deepEqual(addon.network.hosts.sort(), ['nominatim.openstreetmap.org', 'overpass-api.de', 'services9.arcgis.com']);
@@ -40,6 +40,8 @@ test('the manifest declares a file role for every kind the importer reads, and e
     assert.ok(addon.permissions.includes('links.open') && addon.requires.includes('openLink'));
     // A Konjugate whose engine drops a scenario's changes on some models is refused, not run.
     assert.ok(addon.requires.includes('scenarioEveryBackend'));
+    // Roads are read from an extract as a binary file, which a Konjugate without that feature would not hand over.
+    assert.ok(addon.requires.includes('binaryInputs') && addon.contributes.importers[0].files.find((file) => file.role === 'extract').binary === true);
     assert.deepEqual(addon.links.hosts.sort(), ['www.google.com', 'www.openstreetmap.org']);
     // The scenarios: each follows paths the window supplies, per parameter, forked when the window says.
     assert.ok(addon.permissions.includes('scenario.run'));

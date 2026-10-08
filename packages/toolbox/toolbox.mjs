@@ -52,6 +52,8 @@ const state = {
     suggestions: {}, available: new Set(), sourceTab: null,
     // When the data in hand was fetched, by kind ({ at, cached }), and whether this area was loaded fresh.
     fetchedAt: {}, fresh: false,
+    // The file the roads were read from, when they were not fetched: its name.
+    extract: null,
     portVolume: null, built: null, busy: false, rebuildTimer: null,
     // The chokepoint disruption: the user's own shares (port name -> { chokepoint id -> share }), the transits
     // fetched per chokepoint, and the last run's summary.
@@ -409,7 +411,9 @@ async function fetchKinds(kinds, progress, { fresh = false } = {}) {
 // When the map data in hand was fetched, and a way to fetch it fresh.
 function renderDataAge() {
     const roads = state.fetchedAt.roads;
-    $('#dataAge').hidden = !roads;
+    $('#dataAge').hidden = !roads && !state.extract;
+    $('#dataAgeFresh').hidden = Boolean(state.extract);
+    if (state.extract) { $('#dataAgeText').textContent = `Roads read from ${state.extract}, a file of yours: as fresh as the file.`; return; }
     if (!roads) return;
     $('#dataAgeText').textContent = `Roads fetched on ${dateOf(roads.at)}${roads.cached ? ', from the cache' : ''}.`;
 }
@@ -460,6 +464,7 @@ async function loadArea({ fresh }) {
         state.available.clear();
         state.suggestions = {};
         state.sample = false;
+        state.extract = null;
         await fetchKinds(['roads', 'places'], progress, { fresh });
         await loadRoads({ keepNetwork: true });
         renderDataAge();
@@ -529,6 +534,7 @@ $('#sampleButton').addEventListener('click', async () => {
         state.place = null;
         state.bbox = null;
         state.sample = true;
+        state.extract = null;
         // The sample holds every kind of data, so its suggestions need no fetch; none is shown until asked for.
         state.available = new Set(allRoles.filter((role) => !role.startsWith('portwatch')));
         state.suggestions = {};
@@ -538,6 +544,49 @@ $('#sampleButton').addEventListener('click', async () => {
         resetNetwork();
         await loadRoads();
     } catch (error) {
+        $('#regionStatus').innerHTML = notice('error', error.message);
+    } finally {
+        setBusy(false);
+    }
+});
+
+// Roads from a file: an OpenStreetMap extract of the user's (.osm.pbf), read on this computer for the place searched,
+// or for the whole of a file small enough, at the road level chosen. No map server is asked, so a city's streets
+// load in the time it takes to read the file. What is read is kept in the file's place, as fetched roads are.
+$('#extractButton').addEventListener('click', async () => {
+    if (state.busy) return;
+    setBusy(true);
+    const progress = $('#fetchProgress');
+    try {
+        const chosen = await call(api.chooseFile(importerId, 'extract'));
+        if (!chosen.chosen) return;
+        // With a place searched, the road level chosen for it; with none, by the size of what the file covers.
+        const roadLevel = state.bbox ? $('#roadLevelSelect').value : 'auto';
+        progress.hidden = false;
+        progress.innerHTML = `<li data-kind="roads"><span>${roadLevel === 'city' ? 'Roads and city streets' : labels.roads}</span><span class="state">reading ${escape(chosen.name)} (${number(chosen.bytes / 1048576, 1)} MB)…</span></li>`;
+        $('#regionStatus').innerHTML = '';
+        // A new region replaces the last one's data, suggestions included (your own sites file stays).
+        for (const role of allRoles) await call(api.clearFile(importerId, role));
+        const answer = await call(api.runImport(importerId, { step: 'extract', roadLevel, ...(state.bbox ? { bbox: state.bbox } : {}) }));
+        if (answer.report?.errors?.length) throw new Error(answer.report.errors.join(' '));
+        state.roadLevel = answer.data.roadLevel;
+        $('#roadLevelSelect').value = state.roadLevel;
+        state.available.clear();
+        state.available.add('roads');
+        state.available.add('places');
+        state.suggestions = {};
+        state.sample = false;
+        state.fetchedAt = {};
+        state.extract = answer.data.file;
+        state.bbox ??= answer.data.bbox;
+        const row = progress.querySelector('[data-kind="roads"]');
+        row.classList.add('done');
+        row.querySelector('span').textContent = state.roadLevel === 'city' ? 'Roads and city streets' : labels.roads;
+        row.querySelector('.state').textContent = `${number(answer.data.coverage.roads)} roads and ${number(answer.data.coverage.places)} place names, from ${answer.data.file}`;
+        await loadRoads({ keepNetwork: true });
+        renderDataAge();
+    } catch (error) {
+        progress.querySelector('[data-kind="roads"]')?.classList.add('failed');
         $('#regionStatus').innerHTML = notice('error', error.message);
     } finally {
         setBusy(false);
@@ -2421,7 +2470,7 @@ function sessionState() {
         version: 2, place: state.place ? { display_name: state.place.display_name, boundingbox: state.place.boundingbox } : null,
         margin: $('#marginSelect').value, bbox: state.bbox, roadLevel: state.roadLevel, sample: Boolean(state.sample), portVolume: state.portVolume,
         // Links without their legs, which are routed again when the session is restored (from the same roads, the same legs).
-        holidays: state.holidays, currency: state.currency, pins: state.pins, links: state.links.map(({ id, from, to, basis, vehicles, time, backup, share }) => ({ id, from, to, basis, ...(vehicles ? { vehicles } : {}), ...(time ? { time } : {}), ...(backup ? { backup: true } : {}), ...(Number(share) > 0 ? { share: Number(share) } : {}) })), vehicles: state.vehicles, categories: state.categories,
+        holidays: state.holidays, currency: state.currency, extract: state.extract, pins: state.pins, links: state.links.map(({ id, from, to, basis, vehicles, time, backup, share }) => ({ id, from, to, basis, ...(vehicles ? { vehicles } : {}), ...(time ? { time } : {}), ...(backup ? { backup: true } : {}), ...(Number(share) > 0 ? { share: Number(share) } : {}) })), vehicles: state.vehicles, categories: state.categories,
         useCalibration: Boolean(state.useCalibration),
         dismissed: [...state.dismissed], suggestions: Object.keys(state.suggestions), available: [...state.available], listRole: state.listRole,
         built: state.built, keepInStep: $('#keepInStep').checked,
@@ -2550,8 +2599,9 @@ async function restoreSession() {
             $('#buildStatus').innerHTML = notice('ok', `The model in the canvas is the one this session built: ${saved.built.nodes} nodes and ${saved.built.edges} relationships.`);
         }
         const when = answer.savedAt ? new Date(answer.savedAt).toLocaleString() : 'earlier';
-        // When the map data the session holds was fetched, by kind.
+        // When the map data the session holds was fetched, by kind, or the file it was read from.
         state.fetchedAt = {};
+        state.extract = (answer.inputs ?? []).find((input) => input.role === 'roads' && input.derivedFrom)?.derivedFrom ?? (typeof saved.extract === 'string' ? saved.extract : null);
         for (const input of (answer.inputs ?? []).filter((item) => item.retrievedAt)) {
             const known = state.fetchedAt[input.role];
             if (!known || input.retrievedAt < known.at) state.fetchedAt[input.role] = { at: input.retrievedAt, cached: false };
@@ -2575,7 +2625,7 @@ function setBusy(busy) {
         if ((state.edits ?? 0) !== state.builtEdits) setTimeout(() => build({ focus: false }), 0);
     }
     // Run waits too: a scenario asked for while the model is being built would otherwise be silently ignored.
-    for (const selector of ['#fetchButton', '#sampleButton', '#sitesButton', '#searchButton', '#runScenarioButton', ...Object.keys(sources).map((source) => `[data-fetch-source="${source}"]`)]) $(selector).disabled = busy;
+    for (const selector of ['#fetchButton', '#sampleButton', '#extractButton', '#sitesButton', '#searchButton', '#runScenarioButton', ...Object.keys(sources).map((source) => `[data-fetch-source="${source}"]`)]) $(selector).disabled = busy;
     if (!busy) showArea();
     const errors = networkProblems(state.pins, state.links, state.vehicles, state.categories, state.holidays).filter((problem) => problem.level === 'error');
     $('#buildButton').disabled = busy || errors.length > 0 || !state.pins.length;

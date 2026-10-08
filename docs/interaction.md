@@ -78,6 +78,7 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 | Adopt a suggestion | Adopt in the list, or Adopt the top N | Click it on the map; its menu | |
 | See the shortcuts | ? above the map | | `?` |
 | Load an area again fresh | Load fresh beside Load roads, or beside the date the roads were fetched | | |
+| Read the roads from a file | Read roads from a file (.osm.pbf) in the Map step: for the place searched, or the whole of a small file | | |
 | Clear the maps kept on this computer | Clear at the foot of the Map step | | |
 | Make a supplier short or late | The Supplier tab in the Scenarios step: which supplier, of which goods, how short, how late and what its warehouses do meanwhile; Run | Its menu on the map, "Make it late or short…", which opens the tab with it chosen | |
 | Take a warehouse down or close a store | The Site down tab in the Scenarios step: which site, and what the stores it restocks do meanwhile; Run | Its menu on the map, "Take it down…" or "Close it…", which opens the tab with it chosen | |
