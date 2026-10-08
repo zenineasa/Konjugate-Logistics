@@ -898,7 +898,7 @@ try {
         assert.match(result, /fullest/, 'a warehouse with room for 400 pallets says how full it got');
         // In business terms first: one sentence, then demand met, sales lost and running costs; the rest under Details.
         const headline = await page.textContent('#scenarioResult .headline');
-        assert.match(headline, /^Harbour shop ran out of Ambient, Chilled and Frozen for [\d.]+ days, losing [\d,.]+ pallets of sales, worth [\d,]+ INR at an assumed value of a pallet; running costs ((up|down) [\d,]+ \([\d.]+%\) against|as in) the baseline\.$/, headline);
+        assert.match(headline, /^Harbour shop ran out of Ambient, Chilled and Frozen for [\d.]+ days( and was short for [\d.]+)?, losing [\d,.]+ pallets of sales, worth [\d,]+ INR at an assumed value of a pallet; running costs ((up|down) [\d,]+ \([\d.]+%\) against|as in) the baseline\.$/, headline);
         // By category: the closed road carried all three, so one store ran out of each, and the sales lost add up.
         const byCategory = await stateOf(() => window.logisticsToolboxState.scenario.byCategory);
         assert.deepEqual(byCategory.map((item) => [item.name, item.storesOut]), [['Ambient', 1], ['Chilled', 1], ['Frozen', 1]]);

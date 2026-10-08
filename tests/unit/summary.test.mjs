@@ -40,7 +40,7 @@ test('the sentence on the stores: which ran out, which ran short when none did, 
         'No store ran out, but 2 stores ran short of Chilled, A longest at 6.5 days, losing 36 pallets of sales, worth 36,000');
     assert.equal(say([store('A', 0, 6.5), store('C', 0, 0)], 4, byCategory(0, 4, 0)), 'No store ran out, but A ran short of Chilled for 6.5 days, losing 4.0 pallets of sales, worth 4,000');
     // One that ran out is said as before, and nothing lost as before.
-    assert.equal(say([{ ...store('A', 5, 6), categories: byCategory(1, 1, 1).map((each) => ({ ...each, emptyDays: pair(5) })) }], 30, byCategory(10, 10, 10)),
+    assert.equal(say([{ ...store('A', 5, 5), categories: byCategory(1, 1, 1).map((each) => ({ ...each, emptyDays: pair(5) })) }], 30, byCategory(10, 10, 10)),
         'A ran out of Ambient, Chilled and Frozen for 5.0 days, losing 30 pallets of sales, worth 30,000');
     assert.equal(say([store('A', 0, 0)], 0, byCategory(0, 0, 0)), 'No store ran out, and no sales were lost');
     // Sales lost with no store short by the measure (spread thin over many): said as lost, of what.
@@ -63,7 +63,20 @@ test('money is written with what the user says it is in, and a sum priced at an 
     assert.equal(moneyIn('INR'), 'INR');
     assert.match(moneyIn(''), /^no currency/);
     const pair = (scenario, baseline = 0) => ({ baseline, scenario });
-    const result = { stores: [{ name: 'A', emptyDays: pair(5), shortDays: pair(6) }], totals: { lost: pair(30), lostValue: pair(30000) }, byCategory: null, unit: 'pallets' };
+    const result = { stores: [{ name: 'A', emptyDays: pair(5), shortDays: pair(5) }], totals: { lost: pair(30), lostValue: pair(30000) }, byCategory: null, unit: 'pallets' };
     assert.equal(storesParts(result).join(', '), 'A ran out for 5.0 days, losing 30 pallets of sales, worth 30,000');
     assert.equal(storesParts({ ...result, currency: 'INR', assumedValue: true }).join(', '), 'A ran out for 5.0 days, losing 30 pallets of sales, worth 30,000 INR at an assumed value of a pallet');
+});
+
+test('a store empty for hours and short for weeks is said to be both, so the days out do not stand alone against what was lost', () => {
+    const pair = (scenario, baseline = 0) => ({ baseline, scenario });
+    const store = (name, out, short) => ({ name, emptyDays: pair(out), shortDays: pair(short) });
+    const say = (stores, lost) => storesParts({ stores, totals: { lost: pair(lost), lostValue: pair(0) }, byCategory: null, unit: 'pallets' }).join(', ');
+    // Out for a third of a day, short on 22.5 of 28: 57 pallets are not lost in 0.3 days.
+    assert.equal(say([store('Koramangala store', 0.3, 22.5)], 57), 'Koramangala store ran out for 0.3 days and was short for 22.5, losing 57 pallets of sales');
+    // Short no longer than it was out, to half a day: the days out say it.
+    assert.equal(say([store('A', 5, 5.4)], 30), 'A ran out for 5.0 days, losing 30 pallets of sales');
+    // Several stores: the longest out, and the longest short where that is longer.
+    assert.equal(say([store('A', 0.3, 2), store('B', 0.2, 22.5), store('C', 0, 9)], 80), '2 stores ran out, A longest at 0.3 days; 3 were short, B longest at 22.5 days, losing 80 pallets of sales');
+    assert.equal(say([store('A', 6, 6), store('B', 4, 4.2)], 80), '2 stores ran out, A longest at 6.0 days, losing 80 pallets of sales');
 });

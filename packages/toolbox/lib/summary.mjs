@@ -64,8 +64,20 @@ export function storesParts({ stores, totals, byCategory, unit, currency = '', a
     const lostOf = lostSalesOf(byCategory);
     const amount = (of) => `${number(lost, lost < 10 ? 1 : 0)} ${unit} of ${of ? `${of} ` : ''}sales`;
     const worth = value > 0.5 ? `, worth ${money(value, currency)}${assumedValue ? ' at an assumed value of a pallet' : ''}` : '';
-    if (out.length === 1) parts.push(`${out[0].name} ran out${out[0].of ? ` of ${out[0].of}` : ''} for ${number(out[0].days, 1)} days`);
-    else if (out.length) parts.push(`${out.length} stores ran out, ${out[0].name} longest at ${number(out[0].days, 1)} days${out[0].of ? ` (of ${out[0].of})` : ''}`);
+    // A store empty for a few hours may have been short for weeks, and its sales were lost all that while: the days
+    // short are said beside the days out wherever they are longer by more than half a day, or the days out alone would
+    // not account for what was lost.
+    const shortOf = (name) => short.find((item) => item.name === name)?.days ?? 0;
+    const longer = (days, than) => days - than > 0.5;
+    if (out.length === 1) {
+        const its = shortOf(out[0].name);
+        parts.push(`${out[0].name} ran out${out[0].of ? ` of ${out[0].of}` : ''} for ${number(out[0].days, 1)} days${longer(its, out[0].days) ? ` and was short for ${number(its, 1)}` : ''}`);
+    } else if (out.length) {
+        const worst = short[0];
+        const alsoShort = worst && longer(worst.days, out[0].days)
+            ? `; ${short.length === 1 ? `${worst.name} was short for ${number(worst.days, 1)} days` : `${short.length} were short, ${worst.name} longest at ${number(worst.days, 1)} days`}` : '';
+        parts.push(`${out.length} stores ran out, ${out[0].name} longest at ${number(out[0].days, 1)} days${out[0].of ? ` (of ${out[0].of})` : ''}${alsoShort}`);
+    }
     else if (lost > 0.05 && short.length) {
         // None was empty, and yet sales were lost: the stores that ran short, which a manager would otherwise read as a contradiction.
         const of = lostOf ? ` of ${lostOf}` : '';
