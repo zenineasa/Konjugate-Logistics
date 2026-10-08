@@ -227,6 +227,8 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
     // The room the real port has shown beyond its trade in the period modelled, in the model's unit: by port id. Cargo
     // diverted to it competes for the real port's berths, not for berths sized to the network's own share.
     const portRoom = new Map();
+    // Each port's berth capacity as the model has it, by port id.
+    const berthsOf = new Map();
     const assumedPorts = ports.filter((port) => !port.supplier && !(Number(port.teuPerDay) > 0) && !sourced(port));
     const landOf = (port) => Number(port.areaSquareKilometres) || 0;
     const largestLand = Math.max(0, ...assumedPorts.map(landOf));
@@ -620,6 +622,8 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         // not modelled, and would take some of that room.
         const room = portRoom.get(port.id);
         const berthCapacity = room ? Math.max(arrivals * settings.berthHeadroom, arrivals + room.units) : arrivals * settings.berthHeadroom;
+        // Kept for the list of ports the window plans a diversion from: the berths the model has, not a figure worked out again.
+        berthsOf.set(port.id, berthCapacity);
         if (room && berthCapacity > arrivals * settings.berthHeadroom) {
             note(port.name, 'Berth capacity', berthCapacity, `${unit}/day`, 'sourced', `Its own arrivals and the room the real port has shown: its busiest week in IMF PortWatch's ${room.days} days handled ${number(room.busiest)} ${unit}/day, ${number(room.units)} more than its trade in the period modelled. Cargo diverted to it competes for that room; other shippers' diverted cargo is not modelled and would take some of it.`);
         } else note(port.name, 'Berth capacity', berthCapacity, `${unit}/day`, 'assumed', `${settings.berthHeadroom} times its arrivals.`);
@@ -1155,7 +1159,7 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         // scenario that changes them starts from. A supplier's: what is ordered from it, the most it can make and its lead time.
         ports: ports.map((port) => ({
             name: label(port.name), site: port.name, category, supplier: Boolean(port.supplier), arrivals: supply.get(port.id),
-            berths: suppliers.get(port.id)?.capacity ?? supply.get(port.id) * settings.berthHeadroom, schedule: histories.get(port.id)?.samples ?? null,
+            berths: suppliers.get(port.id)?.capacity ?? berthsOf.get(port.id) ?? supply.get(port.id) * settings.berthHeadroom, schedule: histories.get(port.id)?.samples ?? null,
             ...(suppliers.has(port.id) ? { leadDays: suppliers.get(port.id).leadTime } : {}),
             usual: normals.get(port.id) ?? null, shift: port.activity?.shift ?? null
         })),

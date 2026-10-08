@@ -1126,6 +1126,13 @@ test('a port with a history and a figure of the user\'s takes the figure as its 
     close(berthsOf(before).value, supplyOf(before).value + 60, 1e-6, 'the real port\'s room');
     assert.equal(berthsOf(before).basis, 'sourced');
     assert.match(berthsOf(before).detail, /^Its own arrivals and the room the real port has shown: its busiest week in IMF PortWatch's 150 days handled 160 TEU\/day, 60 more than its trade in the period modelled\. Cargo diverted to it competes for that room; other shippers' diverted cargo is not modelled/);
+    // The list of ports the window plans a diversion from has the berths the model has: it once gave one and a half
+    // times the network's own volume, so cargo diverted to a port with room was planned, and shown, as not fitting.
+    const listed = (built) => built.ports.find((port) => port.name === 'Port Alder').berths;
+    close(listed(before), berthsOf(before).value, 1e-9, 'the port list\'s berths are the model\'s');
+    const modelBerths = (built) => built.document.sharedParameters.find((item) => item.id === built.parameterIndex.find((entry) => entry.entity === 'Port Alder' && entry.key === 'berthCapacity').sharedParameterId).value;
+    close(modelBerths(before), listed(before), 1e-9, 'and the model\'s parameter');
+    close(listed(whole), 150, 1e-9, 'a port left to PortWatch keeps one and a half times its arrivals');
     // After the fall the port has all the more room.
     close(berthsOf(after).value, supplyOf(after).value + 150, 1e-6, 'more room once its trade fell');
     // And demand follows the network's level, not the port's.
