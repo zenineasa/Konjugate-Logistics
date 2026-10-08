@@ -14,6 +14,7 @@ import { portwatchActivityUrl, portwatchPortsUrl } from './lib/portwatch.mjs';
 import { closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan, mostLateDays, siteDownPlan, supplierPlan } from './lib/scenarios.mjs';
 import { createNetworkRouter } from './lib/routing.mjs';
 import { compareSites } from './lib/siteComparison.mjs';
+import { boundsWith } from './lib/geo.mjs';
 import { cleanCurrency, differs, money, moneyIn, outNoise, sameSeries, shortDays, storesParts, unchangedText } from './lib/summary.mjs';
 import { createHoliday, describeHoliday, holidayProblem } from './lib/holidays.mjs';
 import { completeFields, createPin, isCandidate, kindOf, openNetwork, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, setCandidate, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
@@ -2051,9 +2052,23 @@ $('#sitesButton').addEventListener('click', async () => {
         state.pins.push(...loaded.pins);
         state.links.push(...loaded.links);
         const warnings = [...(answer.report?.warnings ?? []), ...loaded.problems];
-        $('#regionStatus').innerHTML = notice('ok', `${loaded.pins.length} site${loaded.pins.length === 1 ? '' : 's'} and ${loaded.links.length} link${loaded.links.length === 1 ? '' : 's'} from your file.${state.roads ? '' : ' Load the roads of their region, or use the sample region, to route them.'}`) + warnings.map((text) => notice('warning', text)).join('');
+        $('#regionStatus').innerHTML = notice('ok', `${loaded.pins.length} site${loaded.pins.length === 1 ? '' : 's'} and ${loaded.links.length} link${loaded.links.length === 1 ? '' : 's'} from your file.${state.roads ? '' : ' They have no map yet: their area is chosen above, so press Load roads for it, or Read roads from a file.'}`) + warnings.map((text) => notice('warning', text)).join('');
         for (const section of ['#stepNetwork', '#stepBuild']) $(section).hidden = false;
         networkChanged();
+        // Sites with no roads loaded have no map to be drawn on: the area they span becomes the area to load, as a
+        // place searched would, so the next thing to press is in front of the user.
+        if (!state.roads) {
+            const area = boundsWith({ south: Infinity, west: Infinity, north: -Infinity, east: -Infinity }, state.pins);
+            if (Number.isFinite(area.south)) {
+                state.place = { display_name: `The area of your ${state.pins.length} site${state.pins.length === 1 ? '' : 's'}`, boundingbox: [area.south, area.north, area.west, area.east], fromSites: true };
+                $('#marginSelect').value = '10';
+                $('#searchResults').hidden = true;
+                $('#chosenRegion').hidden = false;
+                $('#chosenName').textContent = state.place.display_name;
+                showArea();
+                $('#stepRegion').scrollIntoView({ block: 'start' });
+            }
+        }
         // Sites of the file that lie beyond the roads loaded are brought into view.
         const area = state.roads?.map?.bbox;
         if (area && loaded.pins.some((pin) => pin.lat < area.south || pin.lat > area.north || pin.lon < area.west || pin.lon > area.east)) map.fit();

@@ -92,6 +92,17 @@ try {
 
     // 1. The sample region: its roads and place names, and no suggestions until asked for.
     await openWindow(page, host);
+    // 0. Sites loaded before any roads have no map to be drawn on: the area they span becomes the area to load, with
+    // Load roads ready, where there was once only a sentence saying roads were needed.
+    host.chosen.sites = 'name,kind,latitude,longitude,teuPerDay,from\nMill,supplier,-29.72,-19.88,30,\nDepot,warehouse,-29.9,-19.7,,Mill\nShop,store,-29.95,-19.52,30,Depot\n';
+    await page.click('#sitesButton');
+    await page.waitForSelector('#chosenRegion:not([hidden])', { timeout: 30000 }).catch(fail);
+    assert.equal(await page.textContent('#chosenName'), 'The area of your 3 sites');
+    assert.match(await page.textContent('#areaSize'), /^5\d × 4\d km/, 'their span, with ten kilometres around it');
+    assert.equal(await page.inputValue('#marginSelect'), '10');
+    assert.equal(await page.isDisabled('#fetchButton'), false);
+    assert.match(await page.textContent('#regionStatus'), /^3 sites and 2 links from your file\. They have no map yet: their area is chosen above, so press Load roads for it, or Read roads from a file\./);
+    assert.deepEqual(await stateOf(() => { const area = window.logisticsToolboxState.bbox; return [area.south < -29.95, area.north > -29.72, area.west < -19.88, area.east > -19.52]; }), [true, true, true, true]);
     await page.click('#sampleButton');
     await page.waitForSelector('#stepNetwork:not([hidden])', { timeout: 30000 }).catch(fail);
     await settled();
