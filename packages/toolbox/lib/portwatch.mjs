@@ -155,3 +155,14 @@ export function matchPorts(ports, portwatchPorts) {
 }
 // Container ship calls a year that make a port major enough to be matched across its whole port land.
 const majorContainerVessels = 1000;
+
+// The periods a model may start from around a break in a port's history ({ month: 'YYYY-MM' }): `before`, the
+// `days` days up to the break (normal traffic: what a disruption is set against, and where a model starts unless the
+// user chooses), no earlier than the history's first day (`earliest`); and `across`, from thirty days before it, to
+// replay the break itself. Dates as YYYY-MM-DD.
+export function breakPeriods(shift, { days, earliest = null }) {
+    const breakTime = Date.parse(`${shift.month}-01T00:00:00Z`);
+    const back = (count) => new Date(breakTime - count * 86400000).toISOString().slice(0, 10);
+    const before = back(days);
+    return { before: earliest && before < earliest ? earliest : before, across: back(30) };
+}

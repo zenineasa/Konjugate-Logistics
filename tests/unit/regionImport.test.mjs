@@ -8,7 +8,7 @@ import { maximumSplitDepth, maximumStatusWaitSeconds, overpassQueries, overpassR
 import { nominatimSearchUrl, rankPlaces } from '../../packages/toolbox/lib/places.mjs';
 import { chokepointById, chokepointDependence, chokepointRecentUrl, chokepoints, chokepointYearlyUrl, disruptionPath, disruptionPlan, summariseTransits } from '../../packages/toolbox/lib/chokepoints.mjs';
 import { allocateFleet, generateOperator, parseOperator } from '../../packages/toolbox/lib/operator.mjs';
-import { findShift, historyWindow, matchPorts, portwatchActivityUrl, portwatchPortsUrl, readPortwatchActivity, readPortwatchPorts, summariseActivity } from '../../packages/toolbox/lib/portwatch.mjs';
+import { breakPeriods, findShift, historyWindow, matchPorts, portwatchActivityUrl, portwatchPortsUrl, readPortwatchActivity, readPortwatchPorts, summariseActivity } from '../../packages/toolbox/lib/portwatch.mjs';
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
 import { closureModes, closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan } from '../../packages/toolbox/lib/scenarios.mjs';
 import { clipLine, clipRing, decode, tileName, tilesFor } from '../../packages/toolbox/lib/geography.mjs';
@@ -1088,4 +1088,54 @@ test('a road-only load asks for the roads and place names alone, and city street
     assert.ok(splitRequest(city[0]).every((request) => /secondary\|tertiary/.test(request.query)), 'a tile split into quarters keeps its road level');
     assert.ok(!/secondary/.test(overpassQueries(bbox).roads));
     assert.match(overpassQueries(bbox, { roadLevel: 'city' }).roads, /tertiary_link/);
+});
+
+test('a port with a history and a figure of the user\'s takes the figure as its level and the history as its shape, and its berths from the real port', () => {
+    // 150 days: about 1,000 t a day through March (one week in February at 1,600), then 100 t a day from April.
+    const dayOf = (index) => new Date(Date.UTC(2026, 0, 1 + index)).toISOString().slice(0, 10);
+    const days = Array.from({ length: 150 }, (_unused, index) => ({ date: dayOf(index), containerCalls: 3, calls: 5, importTonnes: index >= 90 ? 100 : index >= 40 && index < 47 ? 1600 : 1000, exportTonnes: 0 }));
+    const activity = summariseActivity({ portid: 'port9001', name: 'Alder', days });
+    assert.equal(activity.shift.month, '2026-04');
+    const usual = activity.shift.before;
+    const withPort = (teuPerDay) => (selection) => ({ ...selection, ports: selection.ports.map((port, index) => (index === 0 ? { ...port, activity, ...(teuPerDay ? { teuPerDay } : {}) } : port)) });
+    const supplyOf = (built) => built.provenance.find((entry) => entry.entity === 'Port Alder' && entry.parameter === 'Containers handed inland');
+    const berthsOf = (built) => built.provenance.find((entry) => entry.entity === 'Port Alder' && entry.parameter === 'Berth capacity');
+    // Left to PortWatch, the port hands inland the whole of its trade: about 100 TEU a day before the fall.
+    const whole = regionModel(withPort(null), { historyFrom: '2026-01-01', days: 30 });
+    close(supplyOf(whole).value, 100, 1e-9, 'the port\'s own trade');
+    assert.equal(supplyOf(whole).basis, 'sourced');
+    assert.match(berthsOf(whole).detail, /^1\.5 times its arrivals\.$/);
+    // With the network's own 20 TEU a day through it, that is the level in its usual period, before the fall...
+    const before = regionModel(withPort(20), { historyFrom: '2026-01-01', days: 30 });
+    close(supplyOf(before).value, 20 * 1000 / usual, 1e-9, 'its usual level');
+    assert.equal(supplyOf(before).basis, 'user');
+    assert.match(supplyOf(before).detail, /^Your figure sets the level and IMF PortWatch \(Source: International Monetary Fund\), Alder, the period's: 20 TEU\/day is what you take through it in its usual period \(before its history fell 9\d% from 2026-04\); over 2026-01-01 to 2026-01-30 the port's container imports average 9\d% of usual\.$/);
+    // ...and a tenth of it in the months after: the real fall, at the network's own scale.
+    const after = regionModel(withPort(20), { historyFrom: '2026-04-10', days: 30 });
+    close(supplyOf(after).value, 20 * 100 / usual, 1e-9, 'after the fall');
+    close(supplyOf(after).value / supplyOf(before).value, 0.1, 1e-9, 'the port\'s fall, kept');
+    // Following each day, the arrivals are the history's, from that level.
+    const replay = regionModel(withPort(20), { historyFrom: '2026-03-25', days: 14, arrivals: 'history' });
+    const indexed = replay.parameterIndex.find((entry) => entry.entity === 'Port Alder' && entry.key === 'vesselArrivals');
+    const schedule = replay.document.sharedParameters.find((item) => item.id === indexed.sharedParameterId).schedule;
+    close(schedule.samples[0][1], 20 * 1000 / usual, 1e-9, 'a day before the fall');
+    close(schedule.samples.at(-1)[1], 20 * 100 / usual, 1e-9, 'a day after it');
+    assert.match(supplyOf(replay).detail, /each day follows the port's container imports from that level, from 2026-03-25 \(model day 0\) to 2026-04-07 \(14 days\)/);
+    // Its berths are the real port's: its own arrivals and the room its busiest week showed over its trade in the period
+    // (1,600 t against 1,000 t a day: 60 TEU a day), where they were once one and a half times the network's 20.
+    close(berthsOf(before).value, supplyOf(before).value + 60, 1e-6, 'the real port\'s room');
+    assert.equal(berthsOf(before).basis, 'sourced');
+    assert.match(berthsOf(before).detail, /^Its own arrivals and the room the real port has shown: its busiest week in IMF PortWatch's 150 days handled 160 TEU\/day, 60 more than its trade in the period modelled\. Cargo diverted to it competes for that room; other shippers' diverted cargo is not modelled/);
+    // After the fall the port has all the more room.
+    close(berthsOf(after).value, supplyOf(after).value + 150, 1e-6, 'more room once its trade fell');
+    // And demand follows the network's level, not the port's.
+    const totalDemand = (built) => built.served.reduce((total, item) => total + item.demand, 0);
+    close(totalDemand(whole) - totalDemand(before), 100 - 20 * 1000 / usual, 1e-6, 'demand is less by what the port no longer hands the network (the other port keeps its own)');
+});
+
+test('around a break in a port\'s history a model starts from the days before it, or across it, within the history there is', () => {
+    assert.deepEqual(breakPeriods({ month: '2026-04' }, { days: 90 }), { before: '2026-01-01', across: '2026-03-02' });
+    // The history starts later than ninety days before the break: from its first day.
+    assert.deepEqual(breakPeriods({ month: '2026-04' }, { days: 90, earliest: '2026-02-10' }), { before: '2026-02-10', across: '2026-03-02' });
+    assert.equal(breakPeriods({ month: '2026-03' }, { days: 30 }).before, '2026-01-30');
 });

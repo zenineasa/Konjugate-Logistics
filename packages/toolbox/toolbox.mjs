@@ -10,7 +10,7 @@ import { MapView } from './mapView.mjs';
 import { cityTileKilometres, maximumCityKilometres, maximumSplitDepth, overpassRequests, overpassStatusUrl, overpassUrl, retryDelaysSeconds, retryPauseSeconds, splitRequest, statusWaitSeconds } from './lib/overpass.mjs';
 import { nominatimSearchUrl, rankPlaces } from './lib/places.mjs';
 import { chokepointById, chokepointDependence, chokepointRecentUrl, chokepoints, chokepointYearlyUrl, disruptionPlan, summariseTransits } from './lib/chokepoints.mjs';
-import { portwatchActivityUrl, portwatchPortsUrl } from './lib/portwatch.mjs';
+import { portwatchActivityUrl, portwatchPortsUrl, breakPeriods } from './lib/portwatch.mjs';
 import { closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan, mostLateDays, siteDownPlan, supplierPlan } from './lib/scenarios.mjs';
 import { createNetworkRouter } from './lib/routing.mjs';
 import { compareSites } from './lib/siteComparison.mjs';
@@ -2321,7 +2321,7 @@ $('#portVolume').addEventListener('change', () => {
     networkChanged();
 });
 $('#arrivalsSelect').addEventListener('change', () => networkChanged());
-$('#historyFromInput').addEventListener('change', () => networkChanged());
+$('#historyFromInput').addEventListener('change', () => { state.historyChosen = true; state.historyAuto = null; networkChanged(); });
 // How PortWatch's tonnes become TEU handed inland: the weight of a TEU, and the share not transhipped.
 function conversion() {
     const tonnes = Number($('#tonnesPerTeuInput').value);
@@ -2529,8 +2529,11 @@ function renderBuilt() {
 
 // A lane's trucks: of the first size, plus the second when it has any; with vehicle types, each by its name.
 const trucksOf = (lane) => (lane.vehicles
-    ? lane.vehicles.map((item) => `${item.fleet} ${item.name.toLowerCase()}${item.fleet === 1 ? '' : 's'}`).join(' + ')
-    : lane.fleet2 ? `${lane.fleet} + ${lane.fleet2}` : `${lane.fleet}`);
+    // A fleet shared among categories is added up again here, and comes back a hair off a whole number: written to a
+    // tenth, not to the last digit the sum left.
+    ? lane.vehicles.map((item) => `${vehicleCount(item.fleet)} ${item.name.toLowerCase()}${vehicleCount(item.fleet) === '1' ? '' : 's'}`).join(' + ')
+    : lane.fleet2 ? `${vehicleCount(lane.fleet)} + ${vehicleCount(lane.fleet2)}` : `${vehicleCount(lane.fleet)}`);
+const vehicleCount = (count) => String(Number(Number(count).toFixed(1)));
 // What the model counts: pallets for a network with vehicle types, TEU for one built before them.
 const goods = () => state.built?.unit ?? 'TEU';
 // A lane's ends as the user named them: a store's lane ends at the store, not at its stock room's node.
@@ -2579,7 +2582,7 @@ function sessionState() {
         useCalibration: Boolean(state.useCalibration),
         dismissed: [...state.dismissed], suggestions: Object.keys(state.suggestions), available: [...state.available], listRole: state.listRole,
         built: state.built, keepInStep: $('#keepInStep').checked,
-        arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, ...conversion(),
+        arrivals: $('#arrivalsSelect').value, historyFrom: $('#historyFromInput').value || null, historyChosen: Boolean(state.historyChosen), ...conversion(),
         operator: $('#operatorSelect').value || null, operatorFile: Boolean(state.operatorFile), standby: [...state.standby],
         disruption: { ...disruptionSettings(), dependence: [...state.dependence], transits: [...state.transits].filter(([, value]) => value && !value.error) },
         scenarioTab: state.scenarioTab, scenarioSettings: scenarioSettings(), scenario: state.scenario,
@@ -2640,6 +2643,8 @@ async function restoreSession() {
         $('#keepInStep').checked = saved.keepInStep !== false;
         if (saved.arrivals) $('#arrivalsSelect').value = saved.arrivals;
         $('#historyFromInput').value = saved.historyFrom ?? '';
+        // A session from before the period was chosen for the user keeps the period it had.
+        state.historyChosen = saved.historyChosen ?? true;
         $('#tonnesPerTeuInput').value = saved.tonnesPerTeu ?? 10;
         $('#inlandShareInput').value = Math.round((saved.inlandShare ?? 1) * 100);
         $('#operatorSelect').value = saved.operator ?? '';
@@ -4046,15 +4051,20 @@ function renderHistoryHint() {
     if (!shifted) { hint.textContent = 'empty: the latest days'; return; }
     const shift = shifted.activity.shift;
     const breakDate = `${shift.month}-01`;
-    const before = new Date(Date.parse(`${breakDate}T00:00:00Z`) - modelDays * 86400000).toISOString().slice(0, 10);
-    const usable = before >= input.min ? before : input.min;
-    // Across the break: a month of normal traffic first, so the replay shows the fall and what follows it.
-    const across = new Date(Date.parse(`${breakDate}T00:00:00Z`) - 30 * 86400000).toISOString().slice(0, 10);
+    // Before the break, or across it: a month of normal traffic first, so the replay shows the fall and what follows it.
+    const { before: usable, across } = breakPeriods(shift, { days: modelDays, earliest: input.min || null });
     const month = new Date(`${breakDate}T00:00:00Z`).toLocaleString('en', { month: 'long', year: 'numeric', timeZone: 'UTC' });
-    hint.innerHTML = `${escape(shifted.name)}'s imports ${shift.change < 0 ? 'fell' : 'rose'} ${Math.round(Math.abs(shift.change) * 100)}% from ${month}: `
+    // Until the user chooses a period, the model starts from the days before the break: normal traffic, which a
+    // disruption is then set against. The latest days, the old start, are already the disruption.
+    const chosenForUser = !input.value && !state.historyChosen;
+    if (chosenForUser) { input.value = usable; state.historyAuto = usable; }
+    const auto = state.historyAuto && input.value === state.historyAuto ? ' The model starts before it, chosen for you, so its baseline is normal traffic: ' : ' ';
+    hint.innerHTML = `${escape(shifted.name)}'s imports ${shift.change < 0 ? 'fell' : 'rose'} ${Math.round(Math.abs(shift.change) * 100)}% from ${month}.${auto}`
         + `<button class="link" type="button" data-history-from="${usable}">before it</button> · <button class="link" type="button" data-history-from="${across}">across it</button> · <button class="link" type="button" data-history-from="">the latest days</button>`;
     hint.querySelectorAll('[data-history-from]').forEach((button) => button.addEventListener('click', () => {
         input.value = button.dataset.historyFrom;
+        state.historyChosen = true;
+        state.historyAuto = null;
         networkChanged();
     }));
 }

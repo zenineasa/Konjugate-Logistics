@@ -732,6 +732,8 @@ try {
     assert.ok(host.session?.version === 2 && host.session.pins.length === placements.length, 'the session went with the model');
     assert.match(await page.textContent('#buildResult'), /pallets\/day.*medium truck/s, 'each lane says the vehicles it runs on, under its name');
     await fitsPanel('the built model\'s tables');
+    // Vehicles are counted to a tenth: a fleet shared among categories and added up again is not written to its last digit.
+    assert.doesNotMatch(await page.textContent('#buildResult table'), /\d\.\d{2,} (heavy|medium|refrigerated|mini)/);
     assert.ok(storeLanes.some((lane) => lane.site === 'Harbour shop' && lane.category === 'ambient' && lane.vehicles[0].type === 'smallTruck'), 'Harbour shop restocked by small trucks');
     assert.ok(storeLanes.some((lane) => lane.site === 'Harbour shop' && lane.category === 'chilled' && lane.vehicles[0].type === 'refrigeratedTruck'), 'and its chilled goods by refrigerated trucks');
     // Its time is yours, door to door; a lane without one is the route's estimate scaled by your times.

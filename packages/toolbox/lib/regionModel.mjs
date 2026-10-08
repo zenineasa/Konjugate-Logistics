@@ -220,6 +220,13 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
     const normalOf = (activity, port) => (activity.shift ? Math.max(activity.shift.before, activity.shift.after) / settings.tonnesPerTeu * settings.inlandShare * perTeu * part(port) : null);
     const secondsPerDay = templateValue(templates, 'port', 'secondsPerDay');
     const sourced = (port) => !port.supplier && !(Number(port.teuPerDay) > 0) && port.activity?.importTonnesPerDay > 0;
+    // A port with a history and a figure of the user's: the figure is the network's own share of the port, and sets the
+    // level; the history sets the shape. A grocery chain takes its few pallets a day through Jebel Ali, not the port's
+    // whole trade, and still sees the port's real fall on the real dates.
+    const levelled = (port) => !port.supplier && Number(port.teuPerDay) > 0 && port.activity?.importTonnesPerDay > 0;
+    // The room the real port has shown beyond its trade in the period modelled, in the model's unit: by port id. Cargo
+    // diverted to it competes for the real port's berths, not for berths sized to the network's own share.
+    const portRoom = new Map();
     const assumedPorts = ports.filter((port) => !port.supplier && !(Number(port.teuPerDay) > 0) && !sourced(port));
     const landOf = (port) => Number(port.areaSquareKilometres) || 0;
     const largestLand = Math.max(0, ...assumedPorts.map(landOf));
@@ -227,6 +234,47 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
     const portWeight = (port) => (largestLand > 0 ? Math.max(landOf(port), 0.1 * largestLand) : 1);
     const assumedWeight = assumedPorts.reduce((total, port) => total + portWeight(port), 0);
     for (const port of ports) {
+        if (levelled(port)) {
+            const activity = port.activity;
+            const own = Number(port.teuPerDay) * perTeu * part(port);
+            // Its usual level: before the break in its history when there is one, else the whole history's average.
+            const usualTonnes = activity.shift ? activity.shift.before : activity.importTonnesPerDay;
+            const scaled = (tonnes) => tonnes / usualTonnes * own;
+            const real = (tonnes) => tonnes / settings.tonnesPerTeu * settings.inlandShare * perTeu * part(port);
+            const period = activity.daily?.length ? historyWindow(activity.daily, { from: settings.historyFrom, days: settings.days }) : [];
+            if (settings.historyFrom && !period.length) warnings.push(`${port.name}'s PortWatch history has no days from ${settings.historyFrom}; its latest ${settings.days} days are used instead.`);
+            const chosen = period.length ? period : activity.daily?.slice(-settings.days) ?? [];
+            const usual = activity.shift
+                ? `before its history ${activity.shift.change < 0 ? 'fell' : 'rose'} ${Math.round(Math.abs(activity.shift.change) * 100)}% from ${activity.shift.month}`
+                : `over PortWatch's ${activity.days} days`;
+            const basisOf = port.teuPerDayBasis ?? 'user';
+            const replay = settings.arrivals === 'history' && chosen.length ? chosen : null;
+            // What the port handled in the period modelled: each day's when the arrivals follow them, else an average,
+            // over the period when one is chosen and over the whole history when none is (as for a port left to PortWatch).
+            const over = replay ?? (settings.historyFrom && period.length ? period : null);
+            const meanTonnes = over ? over.reduce((total, row) => total + row[1], 0) / over.length : activity.importTonnesPerDay;
+            if (replay) {
+                const start = Date.parse(`${replay[0][0]}T00:00:00Z`);
+                const samples = replay.map(([date, tonnes]) => [Math.round((Date.parse(`${date}T00:00:00Z`) - start) / 86400000) * secondsPerDay, scaled(tonnes)]);
+                const value = samples.reduce((total, sample) => total + sample[1], 0) / samples.length;
+                supply.set(port.id, value);
+                histories.set(port.id, { samples, from: replay[0][0], to: replay.at(-1)[0] });
+                note(port.name, 'Containers handed inland', value, `${unit}/day`, basisOf,
+                    `Your figure sets the level and IMF PortWatch (Source: International Monetary Fund), ${activity.name}, the shape: ${number(own, 1)} ${unit}/day is what you take through it in its usual period (${usual}), and each day follows the port's container imports from that level, from ${replay[0][0]} (model day 0) to ${replay.at(-1)[0]} (${samples.length} days), when they average ${number(meanTonnes / usualTonnes * 100)}% of usual.${partNote(port)}`);
+            } else {
+                const value = scaled(meanTonnes);
+                supply.set(port.id, value);
+                note(port.name, 'Containers handed inland', value, `${unit}/day`, basisOf,
+                    `Your figure sets the level and IMF PortWatch (Source: International Monetary Fund), ${activity.name}, the period's: ${number(own, 1)} ${unit}/day is what you take through it in its usual period (${usual}); over ${over ? `${over[0][0]} to ${over.at(-1)[0]}` : `${activity.from} to ${activity.to}`} the port's container imports average ${number(meanTonnes / usualTonnes * 100)}% of usual.${partNote(port)}`);
+            }
+            normals.set(port.id, activity.shift ? own * Math.max(activity.shift.before, activity.shift.after) / usualTonnes : null);
+            // Its busiest week on record against its trade in the period modelled: the room the real port has shown.
+            const daily = activity.daily ?? [];
+            let busiest = 0;
+            for (let at = 0; at + 7 <= daily.length; at += 1) busiest = Math.max(busiest, daily.slice(at, at + 7).reduce((total, row) => total + row[1], 0) / 7);
+            if (busiest > 0) portRoom.set(port.id, { units: Math.max(0, real(busiest - meanTonnes)), busiest: real(busiest), days: daily.length });
+            continue;
+        }
         if (sourced(port)) {
             const activity = port.activity;
             // In the model's unit: TEU, or pallets at `palletsPerTeu` a TEU.
@@ -567,8 +615,14 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
             makeLive(portName, 'supplierCapacity', niceCeiling(4 * Math.max(capacity, totalSupply, 1)));
             continue;
         }
-        const berthCapacity = arrivals * settings.berthHeadroom;
-        note(port.name, 'Berth capacity', berthCapacity, `${unit}/day`, 'assumed', `${settings.berthHeadroom} times its arrivals.`);
+        // Where the network takes a share of a real port, its berths are the real port's: its own arrivals, and the room
+        // the port has shown on top of its trade, which cargo diverted to it may take. Other shippers' diverted cargo is
+        // not modelled, and would take some of that room.
+        const room = portRoom.get(port.id);
+        const berthCapacity = room ? Math.max(arrivals * settings.berthHeadroom, arrivals + room.units) : arrivals * settings.berthHeadroom;
+        if (room && berthCapacity > arrivals * settings.berthHeadroom) {
+            note(port.name, 'Berth capacity', berthCapacity, `${unit}/day`, 'sourced', `Its own arrivals and the room the real port has shown: its busiest week in IMF PortWatch's ${room.days} days handled ${number(room.busiest)} ${unit}/day, ${number(room.units)} more than its trade in the period modelled. Cargo diverted to it competes for that room; other shippers' diverted cargo is not modelled and would take some of it.`);
+        } else note(port.name, 'Berth capacity', berthCapacity, `${unit}/day`, 'assumed', `${settings.berthHeadroom} times its arrivals.`);
         portNodes.set(port.id, place('port', portName, {
             name: portName, position: position(port),
             // The wait counts at least a TEU a day of berths, as the template does, so a port with none is not 0/0.

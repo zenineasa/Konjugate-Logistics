@@ -234,7 +234,7 @@ try {
         assert.equal(log.filter((line) => line.startsWith('pageerror') || line.startsWith('error')).length, 0, log.join('\n'));
 
         // 5b. A chokepoint disruption. Port Alder lies on open sea, so it depends on Suez only once its share is set; then
-        // three days at a quarter of the usual transits (the drop PortWatch shows) cost it 150 x 75% x 3 TEU, 3,375 pallets.
+        // three days at a quarter of the usual transits (the drop PortWatch shows) cost it 150 x 7/8 x 75% x 3 TEU, 2,953 pallets (its history's ordinary days are 7/8 of its average).
         await toolbox.waitForFunction(() => !document.querySelector('#stepScenario').hidden && !document.querySelector('#buildButton').disabled, null, { timeout: 30000 }).catch(fail);
         await toolbox.selectOption('#chokepointSelect', 'chokepoint1');
         await toolbox.waitForFunction(() => /10\.0 container ships a day .* against 40\.0 in 2023, its busiest full year: 75% fewer/.test(document.querySelector('#transitSummary').textContent), null, { timeout: 30000 }).catch(fail);
@@ -252,18 +252,20 @@ try {
         await toolbox.waitForFunction(() => /Kept out \(pallets\)/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
         const alderRow = () => toolbox.evaluate(() => [...[...document.querySelectorAll('#scenarioResult tr')].find((row) => row.cells[0]?.textContent === 'Port Alder').cells].map((cell) => Number(cell.textContent.replace(/,/g, ''))));
         const [, keptOut, caughtUp, lost] = await alderRow();
-        assert.ok(Math.abs(keptOut - 3375) <= 10 && Math.abs(lost - 3375) <= 10 && caughtUp === 0, `Port Alder should miss 1,500 x 75% x 3 = 3,375 pallets, all of it lost (shown ${keptOut}, ${caughtUp}, ${lost}).`);
-        // Again with 60% of it delayed, arriving over 5 days after: 2,025 pallets arrive later, and 1,350 never do.
+        // Your 1,500 pallets a day is the port's usual level, and each day follows its PortWatch history from there: the
+        // three days of the cut are ordinary days of a history whose average has one double day a week, 7/8 of the level.
+        assert.ok(Math.abs(keptOut - 2953) <= 10 && Math.abs(lost - 2953) <= 10 && caughtUp === 0, `Port Alder should miss 1,500 x 7/8 x 75% x 3 = 2,953 pallets, all of it lost (shown ${keptOut}, ${caughtUp}, ${lost}).`);
+        // Again with 60% of it delayed, arriving over 5 days after: 1,772 pallets arrive later, and 1,181 never do.
         await toolbox.fill('#delayedInput', '60');
         await toolbox.fill('#catchUpInput', '5');
         await toolbox.click('#runScenarioButton');
         await toolbox.waitForFunction(() => /60% of the cargo kept out arrives over the 5 days after/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
         const [, keptOutAgain, caughtUpAgain, lostAgain] = await alderRow();
-        assert.ok(Math.abs(keptOutAgain - 3375) <= 10 && Math.abs(caughtUpAgain - 2025) <= 10 && Math.abs(lostAgain - 1350) <= 10, `60% of 3,375 pallets should arrive later and 1,350 never (shown ${keptOutAgain}, ${caughtUpAgain}, ${lostAgain}).`);
+        assert.ok(Math.abs(keptOutAgain - 2953) <= 10 && Math.abs(caughtUpAgain - 1772) <= 10 && Math.abs(lostAgain - 1181) <= 10, `60% of 2,953 pallets should arrive later and 1,181 never (shown ${keptOutAgain}, ${caughtUpAgain}, ${lostAgain}).`);
         assert.match(await toolbox.textContent('#scenarioResult'), /Suez Canal: transits cut by 75% from day 2 for 3 days, reaching Port Alder \(100% of its ships\)/);
         assert.equal(await toolbox.locator('#showScenarioButton').isDisabled(), false);
         // Again with half of it diverted to Birch Harbour, outside the canal, whose berths take 400 TEU a day meanwhile:
-        // 168.75 TEU (1,687.5 pallets) land there instead, and its lanes hire trucks for them.
+        // 147.7 TEU (1,476.6 pallets) land there instead, and its lanes hire trucks for them.
         await toolbox.fill('#delayedInput', '0');
         await toolbox.fill('#divertedInput', '50');
         await toolbox.dispatchEvent('#divertedInput', 'input');
@@ -271,7 +273,7 @@ try {
         assert.deepEqual(await toolbox.evaluate(() => [...document.querySelectorAll('#divertToSelect option')].map((option) => option.value)), ['Birch Harbour'], 'only ports outside the chokepoint');
         await toolbox.fill('#divertBerthsInput', '400');
         await toolbox.click('#runScenarioButton');
-        await toolbox.waitForFunction(() => /50% of it is diverted to Birch Harbour \(1,688 pallets\), whose berths take 4,000 pallets\/day, and carried inland over \d lanes? with \d+ vehicles/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
+        await toolbox.waitForFunction(() => /50% of it is diverted to Birch Harbour \(1,477 pallets\), whose berths take 4,000 pallets\/day, and carried inland over \d lanes? with \d+ vehicles/.test(document.querySelector('#scenarioResult').textContent), null, { timeout: 120000 }).catch(fail);
         // Birch Harbour shows the cargo it received as diverted here, not as a negative loss.
         const birchRow = await toolbox.evaluate(() => {
             const table = [...document.querySelectorAll('#scenarioResult table')].find((item) => /Kept out/.test(item.textContent));
@@ -279,7 +281,7 @@ try {
             return [...row.cells].map((cell) => Number(cell.textContent.replace(/,/g, '')));
         });
         assert.deepEqual(birchRow.slice(1, 4), [0, 0, 0], 'it kept nothing out');
-        assert.ok(Math.abs(birchRow[4] - 1687.5) <= 10, `about 1,688 pallets diverted here (shown ${birchRow[4]})`);
+        assert.ok(Math.abs(birchRow[4] - 1476.6) <= 10, `about 1,477 pallets diverted here (shown ${birchRow[4]})`);
         // The summary says how long orders waited, not only whether they were delivered.
         assert.match(await toolbox.textContent('#scenarioResult'), /Days an order waited/);
         // The map shows what the lanes carried while the cut lasted: Port Alder's less, Birch Harbour's standby lanes more.
