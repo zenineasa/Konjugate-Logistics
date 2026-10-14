@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-    categoriesForModel, categoriesProblem, clearMix, completeCategories, createCategory, defaultCategoryCatalogue, listed, lostSalesOf, mixForModel, mixOf,
+    categoriesForModel, categoriesProblem, clearMix, completeCategories, createCategory, defaultCategoryCatalogue, eitherOf, listed, lostSalesOf, mixForModel, mixOf,
     mostCategories, setCategoryField, setLeadDays, setMix
 } from '../../packages/toolbox/lib/categories.mjs';
 import { affectedAcross, closureAcross, mergeSeries, mergeSupplied, siteView } from '../../packages/toolbox/lib/builtView.mjs';
@@ -168,6 +168,7 @@ test('a network with categories is a copy of itself for each: named after both, 
 
 test('names are listed as a sentence does, and a run names the categories it lost sales of when it was not all of them', () => {
     assert.deepEqual([[], ['Ambient'], ['Ambient', 'Chilled'], ['Ambient', 'Chilled', 'Frozen'], ['A', 'B', 'C', 'D']].map(listed), ['', 'Ambient', 'Ambient and Chilled', 'Ambient, Chilled and Frozen', 'A, B, C and D']);
+    assert.deepEqual([['Geofabrik', 'BBBike'], ['A', 'B', 'C']].map(eitherOf), ['Geofabrik or BBBike', 'A, B or C']);
     const run = (...lost) => ['Ambient', 'Chilled', 'Frozen'].map((name, index) => ({ name, lost: { baseline: 1, scenario: 1 + lost[index] } }));
     assert.equal(lostSalesOf(run(0, 36, 0)), 'Chilled');
     assert.equal(lostSalesOf(run(0, 36, 2)), 'Chilled and Frozen');

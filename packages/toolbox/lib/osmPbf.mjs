@@ -198,24 +198,39 @@ const inside = (lat, lon, bbox) => lat >= bbox.south && lat <= bbox.north && lon
 
 // The area a file says it covers ({ south, west, north, east }), or null when it does not say.
 export function extractBounds(bytes, inflate) {
+    return extractHeader(bytes, inflate).bounds;
+}
+
+// What a file says of itself in its header: { bounds (null when it does not say), dataDate (when its data was taken from
+// OpenStreetMap, as ISO, or null), program (what wrote it), source, replicationUrl }. Geofabrik's extracts give all of
+// it; a file cut by hand may give only its bounds. Reads the first block alone.
+export function extractHeader(bytes, inflate) {
+    const header = { bounds: null, dataDate: null, program: null, source: null, replicationUrl: null };
     for (const blob of blobs(bytes, inflate)) {
-        if (blob.type !== 'OSMHeader') return null;
+        if (blob.type !== 'OSMHeader') return header;
         const reader = new Reader(blob.data());
         while (reader.more) {
             const [field, wire] = reader.tag();
-            if (field !== 1 || wire !== 2) { reader.skip(wire); continue; }
-            const box = reader.sub();
-            const sides = {};
-            while (box.more) {
-                const [side, sideWire] = box.tag();
-                if (sideWire === 0 && side >= 1 && side <= 4) sides[['west', 'east', 'north', 'south'][side - 1]] = box.signed() * 1e-9;
-                else box.skip(sideWire);
-            }
-            return ['south', 'west', 'north', 'east'].every((side) => Number.isFinite(sides[side])) ? { south: sides.south, west: sides.west, north: sides.north, east: sides.east } : null;
+            if (field === 1 && wire === 2) {
+                const box = reader.sub();
+                const sides = {};
+                while (box.more) {
+                    const [side, sideWire] = box.tag();
+                    if (sideWire === 0 && side >= 1 && side <= 4) sides[['west', 'east', 'north', 'south'][side - 1]] = box.signed() * 1e-9;
+                    else box.skip(sideWire);
+                }
+                if (['south', 'west', 'north', 'east'].every((side) => Number.isFinite(sides[side]))) header.bounds = { south: sides.south, west: sides.west, north: sides.north, east: sides.east };
+            } else if (field === 16 && wire === 2) header.program = reader.text();
+            else if (field === 17 && wire === 2) header.source = reader.text();
+            else if (field === 32 && wire === 0) {
+                const seconds = reader.varint();
+                if (seconds > 0) header.dataDate = new Date(seconds * 1000).toISOString();
+            } else if (field === 34 && wire === 2) header.replicationUrl = reader.text();
+            else reader.skip(wire);
         }
-        return null;
+        return header;
     }
-    return null;
+    return header;
 }
 
 // Reads `bytes` (a .osm.pbf file) for `bbox` ({ south, west, north, east }) at `roadLevel` ('major', or 'city' for

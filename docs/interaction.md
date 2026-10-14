@@ -79,7 +79,12 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 | Adopt a suggestion | Adopt in the list, or Adopt the top N | Click it on the map; its menu | |
 | See the shortcuts | ? above the map | | `?` |
 | Load an area again fresh | Load fresh beside Load roads, or beside the date the roads were fetched | | |
-| Read the roads from a file | Read roads from a file (.osm.pbf) in the Map step, or Read from a file beside Load roads: for the place chosen, the whole of a small file, or a place chosen from a large file's own cities and towns; several files chosen together are read as one map | | |
+| Read the roads from a file | Read from map files beside Load roads, or Read files without keeping them under Map files: for the place chosen, the whole of a small file, or a place chosen from a large file's own cities and towns; several files chosen together are read as one map | | |
+| Load an area's roads from where it is proposed | The button on the place card (Load roads, or Download and load); Change for the others | | |
+| Keep a map file on this computer | Download and load on the place card; or Manage maps: Add files of yours (.osm.pbf only), or a link and Download, with each server's downloads a link away | | |
+| Read roads from kept maps | Load roads on the place card when they cover the area; or tick them under Manage maps and Read roads from the maps ticked | | |
+| Update or remove a kept map | Update, or Remove pressed twice, under Manage maps | | |
+| Open or close Manage maps | Manage maps at the foot of the Map step; Done | | Escape closes it |
 | Clear the maps kept on this computer | Clear at the foot of the Map step | | |
 | Make a supplier short or late | A supplier short or late, in the Scenarios step's picker: which supplier, of which goods, how short, how late and what its warehouses do meanwhile; Run | Its menu on the map, "Make it late or short…", which opens that scenario with it chosen | |
 | Take a warehouse down or close a store | A site down, in the Scenarios step's picker: which site, and what the stores it restocks do meanwhile; Run | Its menu on the map, "Take it down…" or "Close it…", which opens that scenario with it chosen | |

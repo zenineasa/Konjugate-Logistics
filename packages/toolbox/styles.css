@@ -118,6 +118,40 @@ td.number { text-align: right; font-variant-numeric: tabular-nums; }
 .progress li.reading { display: block; }
 .progress li.reading progress { width: 100%; height: 6px; accent-color: var(--accent); }
 .progress li.reading span { display: block; margin-top: 2px; }
+/* The map files kept: one row each, what it is and how old, and a map that may be out of date in red. */
+.mapList { list-style: none; margin: 6px 0; padding: 0; }
+.mapList li { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 2px 6px; align-items: start; padding: 6px 4px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.mapList li .what { overflow-wrap: anywhere; }
+.mapList li .about { grid-column: 2 / 4; color: var(--muted); font-size: 11px; }
+.mapList li.old .age { color: var(--danger); }
+.mapList li.empty { display: block; color: var(--muted); }
+#roadDetails { margin: 8px 0; }
+/* Where the roads come from: one line, why, one button and Change. */
+.source { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.sourceText { font-size: 13px; margin-bottom: 2px; }
+.sourceButtons { margin-top: 6px; }
+.sourceChoices { list-style: none; margin: 6px 0 0; padding: 0; }
+.sourceChoices li { display: flex; flex-direction: column; align-items: flex-start; padding: 4px 0; border-top: 1px solid var(--border); }
+.sourceChoices li button { text-align: left; padding-left: 0; }
+.stepFooter { margin-top: 10px; align-items: baseline; }
+.stepFooter .spacer { flex: 1; }
+.danger { color: var(--danger); }
+/* Manage maps: a sheet over the steps, the panel held still beneath it. */
+.panel { position: relative; }
+.panel.sheetOpen { overflow: hidden; }
+.sheet { position: absolute; inset: 0; z-index: 20; overflow-y: auto; background: var(--bg, #0b131a); padding: 12px 16px 24px; }
+.sheet h2 { margin: 0; font-size: 16px; }
+.sheet h3 { margin: 16px 0 6px; font-size: 13px; color: var(--muted); }
+.sheetHeader { align-items: center; margin-bottom: 6px; }
+.sheetHeader .spacer { flex: 1; }
+.mapList li .actions { white-space: nowrap; display: flex; gap: 10px; }
+#roadDetails > summary { cursor: pointer; font-size: 13px; }
+#otherServers { margin-top: 8px; }
+#otherServers > summary { cursor: pointer; color: var(--muted); }
+#useMapsButton { margin: 4px 0; }
+.mapActions { margin-top: 4px; }
+.mapDownload input[type="url"] { flex: 1 1 auto; min-width: 0; }
+.mapCovering li { display: flex; justify-content: space-between; gap: 6px; padding: 3px 0; font-size: 12px; }
 /* A long explanation shows its first two lines, and the rest when asked for: whole, they pushed what they explain out
    of sight. */
 .panel p.clamped { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; margin-bottom: 0; }

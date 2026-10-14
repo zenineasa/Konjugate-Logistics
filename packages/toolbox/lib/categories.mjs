@@ -163,7 +163,10 @@ export function mixForModel(pin, catalogue) {
 }
 
 // Names as a list in a sentence: "A", "A and B", "A, B and C".
-export const listed = (items) => (items.length <= 2 ? items.join(' and ') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`);
+const joined = (items, word) => (items.length <= 2 ? items.join(` ${word} `) : `${items.slice(0, -1).join(', ')} ${word} ${items.at(-1)}`);
+export const listed = (items) => joined(items, 'and');
+// Names to choose one of: "A, B or C".
+export const eitherOf = (items) => joined(items, 'or');
 
 // Which categories a run lost sales of beyond its baseline, as a sentence names them: listed when it was some of them,
 // and '' when it was all of them, none of them or there is one category alone (then "sales" says it).

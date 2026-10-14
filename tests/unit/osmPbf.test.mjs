@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { inflateSync } from 'node:zlib';
-import { extractAnswers, extractBounds, extractPlaces, readExtract } from '../../packages/toolbox/lib/osmPbf.mjs';
+import { extractAnswers, extractBounds, extractHeader, extractPlaces, readExtract } from '../../packages/toolbox/lib/osmPbf.mjs';
 import { readOverpass } from '../../packages/toolbox/lib/overpass.mjs';
 import { buildRoadGraph } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { compactRoadGraph, createNetworkRouter } from '../../packages/toolbox/lib/routing.mjs';
@@ -201,4 +201,14 @@ test('a reading says how far it has got, file by file, each its share by its siz
     const firstDone = heard.filter((item) => item.message.includes('a.osm.pbf')).at(-1).done;
     close(firstDone, Math.round(file.length / (file.length + other.length) * 1000), 1);
     assert.equal(heard.at(-1).done, 1000);
+});
+
+test('a file says when its data was taken from OpenStreetMap, and what wrote it, where it says so', () => {
+    const dated = writeOsmPbf({ nodes, ways, bounds, dataDate: '2026-10-13T20:21:31Z', program: 'osmium/1.16.0' });
+    const header = extractHeader(dated, inflateSync);
+    assert.deepEqual({ ...header, bounds: null }, { bounds: null, dataDate: '2026-10-13T20:21:31.000Z', program: 'osmium/1.16.0', source: null, replicationUrl: 'https://download.geofabrik.de/europe/switzerland-updates' });
+    assert.ok(Math.abs(header.bounds.north - bounds.north) < 1e-9);
+    // A file that does not say: its bounds alone, if those.
+    assert.deepEqual({ ...extractHeader(file, inflateSync), bounds: null }, { bounds: null, dataDate: null, program: null, source: null, replicationUrl: null });
+    assert.deepEqual(extractHeader(writeOsmPbf({ nodes, ways }), inflateSync).bounds, null);
 });

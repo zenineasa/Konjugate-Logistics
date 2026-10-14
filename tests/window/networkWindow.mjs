@@ -1229,7 +1229,7 @@ try {
     // 13b. What was fetched is kept on this computer: the same area loads again with nothing fetched, and says when it
     // was fetched; Load fresh fetches it again; Clear empties the cache.
     const interpreter = () => host.requests.filter((url) => url.includes('/api/interpreter')).length;
-    assert.match(await page.textContent('#cacheSummary'), /Maps kept on this computer: [\d.]+ MB/);
+    assert.match(await page.textContent('#cacheSummary'), /Roads fetched from map servers, kept on this computer: [\d,.]+ (KB|MB|GB), fetched from \d+ [A-Z][a-z]+ \d{4}/);
     assert.match(await page.textContent('#dataAgeText'), /^Roads fetched on .+\.$/);
     assert.ok(!/from the cache/.test(await page.textContent('#dataAgeText')), 'fetched from the servers the first time');
     const fetchedBefore = interpreter();
@@ -1255,10 +1255,15 @@ try {
     assert.ok(interpreter() > fetchedBefore, 'fetched again');
     assert.ok(!/from the cache/.test(await page.textContent('#dataAgeText')));
     // Clear: the cache is emptied, and says so.
+    // What is kept from the map servers is under Manage maps, a sheet over the steps.
+    await page.click('#manageMapsButton');
     await page.click('#clearCacheButton');
-    await page.waitForFunction(() => /No maps kept on this computer yet/.test(document.querySelector('#cacheSummary').textContent), null, { timeout: 10000 }).catch(fail);
+    await page.waitForFunction(() => /No roads fetched from map servers kept on this computer yet/.test(document.querySelector('#cacheSummary').textContent), null, { timeout: 10000 }).catch(fail);
     assert.match(await page.textContent('#undoText'), /^Cleared [\d.]+ MB of kept maps\./);
     assert.equal((await host.cache.info()).entries, 0);
+    // Done (or Escape) closes the sheet, and the steps are as they were beneath it.
+    await page.click('#manageMapsDone');
+    assert.equal(await page.isVisible('#manageMaps'), false);
     noErrors();
 
     // 14. On a Mac: ⌘ and ⌫ in every label, ⌘Z to undo (Control+Z does nothing), ⌘-click to add to the selection, and
@@ -1317,10 +1322,13 @@ try {
     await macPage.close();
     noErrors();
 
-    // 8. Roads from a file: an OpenStreetMap extract of the user's, read with no map server. A small invented town: a
-    // grid of streets, primary ones around it, and its name. The file's own area is taken, as no place is searched.
+    // 8. Map files: roads read from OpenStreetMap extracts kept on this computer, with no map server. A small invented
+    // town: a grid of streets, primary ones around it, and its name.
     {
         const { writeOsmPbf } = await import('../fixtures/osmPbfFixture.mjs');
+        const { mkdtemp, writeFile } = await import('node:fs/promises');
+        const disk = await mkdtemp(join(tmpdir(), 'konjugate-window-maps-'));
+        const onDisk = async (name, bytes) => { const path = join(disk, name); await writeFile(path, bytes); return path; };
         const side = 6;
         const at = (row, column) => ({ id: 1 + row * side + column, lat: 40 + row * 0.01, lon: 10 + column * 0.01 });
         const nodes = Array.from({ length: side * side }, (_unused, index) => at(Math.floor(index / side), index % side));
@@ -1333,30 +1341,47 @@ try {
         }
         const town = { south: 39.99, west: 9.99, north: 40.06, east: 10.06 };
         const requestsBefore = host.requests.length;
-        // Where to get such a file: Geofabrik's downloads, opened in the user's browser, and the window says what to take.
-        await page.click('#extractSourceButton');
-        await page.waitForFunction(() => /Geofabrik/.test(document.querySelector('#undoToast')?.textContent ?? ''));
-        assert.equal(host.opened.at(-1), 'https://download.geofabrik.de/');
-        assert.match(await page.textContent('#undoToast'), /find your region and take the file ending in \.osm\.pbf/);
         await page.click('#sampleButton');
         await page.waitForFunction(() => !document.querySelector('#fetchButton').disabled);
-        // A file covering far more than can be loaded whole, with no place chosen: its own cities and towns are offered,
-        // so the place is chosen without a map server, and the file stays in hand while it is.
-        host.chosen.extract = { name: 'continent.osm.pbf', data: writeOsmPbf({ nodes: [...nodes, { id: 901, lat: 45, lon: 15, tags: { place: 'city', name: 'Fernstadt', 'name:en': 'Far City', population: '2400000' } }, { id: 902, lat: 44, lon: 14, tags: { place: 'suburb', name: 'A suburb' } }], ways, bounds: { south: 30, west: 0, north: 50, east: 20 } }) };
-        await page.click('#extractButton');
+        // Manage maps, a sheet over the steps: nothing kept yet, and each server's downloads to browse, no server to choose
+        // first (which one a link is from is read from the link).
+        await page.click('#manageMapsButton');
+        assert.equal(await page.isVisible('#manageMaps'), true);
+        assert.match(await page.textContent('#manageMapsUsage'), /^No map files kept yet/);
+        assert.equal(await page.$('#mapServerSelect'), null);
+        assert.equal(await page.textContent('#mapServerLinks'), 'Geofabrik ↗, OpenStreetMap France ↗ or BBBike ↗');
+        await page.click('#mapServerLinks [data-server="bbbike"]');
+        await page.waitForFunction(() => /BBBike/.test(document.querySelector('#undoToast')?.textContent ?? ''));
+        assert.equal(host.opened.at(-1), 'https://download.bbbike.org/osm/bbbike/');
+        await page.click('#mapServerLinks [data-server="geofabrik"]');
+        for (let tries = 0; host.opened.at(-1) !== 'https://download.geofabrik.de/' && tries < 50; tries += 1) await page.waitForTimeout(100);
+        assert.equal(host.opened.at(-1), 'https://download.geofabrik.de/');
+        // Files of the user's: the dialog offers .osm.pbf files only, and another chosen all the same is refused with
+        // nothing kept, a good one beside it included.
+        host.chosen.store = [await onDisk('switzerland-latest-free.shp.zip', Buffer.from('not a map')), await onDisk('gridtown.osm.pbf', writeOsmPbf({ nodes, ways }))];
+        await page.click('#addMapButton');
+        await page.waitForFunction(() => /was not kept/.test(document.querySelector('#mapLibraryStatus').textContent));
+        assert.match(await page.textContent('#mapLibraryStatus'), /^switzerland-latest-free\.shp\.zip was not kept: only \.osm\.pbf files are kept here\.$/);
+        assert.deepEqual(host.storeDialog, { title: 'OpenStreetMap extracts (.osm.pbf) to keep', filters: [{ name: '.osm.pbf', extensions: ['pbf'] }] });
+        assert.match(await page.textContent('#manageMapsUsage'), /^No map files kept yet/);
+        // A country's file added with no place chosen: copied in, marked as the user's, and its cities and towns offered to
+        // choose the place from, since it covers more than is read whole.
+        const continent = writeOsmPbf({ nodes: [...nodes, { id: 901, lat: 45, lon: 15, tags: { place: 'city', name: 'Fernstadt', 'name:en': 'Far City', population: '2400000' } }, { id: 902, lat: 44, lon: 14, tags: { place: 'suburb', name: 'A suburb' } }], ways, bounds: { south: 30, west: 0, north: 50, east: 20 } });
+        host.chosen.store = [await onDisk('continent.osm.pbf', continent)];
+        await page.click('#addMapButton');
         await page.waitForSelector('#filePlaceFilter');
+        assert.equal(await page.isVisible('#manageMaps'), false, 'the sheet gives way to the places');
         assert.match(await page.textContent('#regionStatus'), /^continent\.osm\.pbf covers an area that is [\d,]+ km across: more than is read whole \(250 km\)\. Choose the place to read from it, below: its 2 cities and towns, the largest first\. No map server is asked\.$/);
         const offered = () => page.$$eval('#searchResults li[data-name]:not([hidden]) button', (buttons) => buttons.map((button) => button.textContent.replace(/\s+/g, ' ').trim()));
         assert.deepEqual(await offered(), ['Far City Fernstadt city · 2.4 million people', 'Gridtown town']);
-        await page.fill('#filePlaceFilter', 'fern');
-        assert.deepEqual(await offered(), ['Far City Fernstadt city · 2.4 million people'], 'found by its own name too');
         await page.fill('#filePlaceFilter', 'grid');
         assert.deepEqual(await offered(), ['Gridtown town']);
         await page.click('#searchResults li[data-name]:not([hidden]) button');
         assert.equal(await page.textContent('#chosenName'), 'Gridtown, from continent.osm.pbf');
-        assert.deepEqual([await page.textContent('#extractHereButton'), await page.evaluate(() => [document.querySelector('#extractHereButton').classList.contains('primary'), document.querySelector('#fetchButton').classList.contains('primary')])], ['Read from continent.osm.pbf', [true, false]]);
-        // How far around it: a slider and a figure in step, from 1 km (a point has no extent of its own) to 500. Beyond
-        // what the public server is asked for, the file still reads it; beyond what a file is read for, neither does.
+        // The place card says where the roads come from: the file in hand.
+        await page.waitForFunction(() => /^From continent\.osm\.pbf$/.test(document.querySelector('#sourceText').textContent));
+        assert.deepEqual(await page.evaluate(() => ['#fetchButton', '#extractHereButton', '#downloadLoadButton'].map((id) => !document.querySelector(id).hidden)), [false, true, false]);
+        // How far around it: a slider and a figure in step, from 1 km (a point has no extent of its own) to 500.
         const area = async (kilometres, level) => {
             await page.selectOption('#roadLevelSelect', level);
             await page.fill('#marginInput', String(kilometres));
@@ -1365,8 +1390,8 @@ try {
         };
         const [range, size, noServer, noFile] = await area(300, 'major');
         assert.deepEqual([range, noServer, noFile], ['300', true, false]);
-        // The file is in hand: the area is read from it, whatever the public server would take.
         assert.match(size, /^\d+ × \d+ km: read from continent\.osm\.pbf, in hand\.$/);
+        assert.equal(await page.textContent('#stepRegionSummary'), 'Gridtown · 300 km', 'the step says the area chosen, as it is chosen');
         assert.deepEqual((await area(900, 'major')).slice(0, 1), ['500'], 'at most 500 km around it');
         const [, citySize, , cityNoFile] = await area(60, 'city');
         assert.match(citySize, /too large for city streets, which are read for areas up to 100 km across/);
@@ -1374,73 +1399,84 @@ try {
         assert.deepEqual((await area(0, 'major')).slice(0, 1), ['10'], 'a place of a file is given some area around it');
         await page.evaluate(() => { const slider = document.querySelector('#marginRange'); slider.value = '40'; slider.dispatchEvent(new Event('input')); });
         assert.equal(await page.inputValue('#marginInput'), '40', 'the slider sets the figure');
-        // The area is what is included around the place; the file in hand is read for it, with no dialog and no server.
-        await page.fill('#marginInput', '10');
-        await page.dispatchEvent("#marginInput", "change");
-        await page.selectOption('#roadLevelSelect', 'city');
-        assert.equal(host.chosen.extract, undefined, 'the file was chosen once');
+        await area(10, 'city');
+        // Load roads: while the file is read, a bar says how far it has got (held open here to look at it).
+        let release;
+        host.holdImport = new Promise((resolve) => { release = resolve; });
         await page.click('#extractHereButton');
+        await page.waitForSelector('#readingBar');
+        await page.evaluate(() => window.logisticsProgress({ stage: 'import', importerId: 'region', done: 500, total: 1000, message: 'Reading the roads of continent.osm.pbf' }));
+        assert.equal(await page.evaluate(() => document.querySelector('#readingBar').value), 500);
+        assert.match(await page.textContent('#readingText'), /^Reading the roads of continent\.osm\.pbf: 50%, \d+ s/);
+        host.holdImport = null;
+        release();
         await page.waitForSelector('#fetchProgress li.done');
+        assert.equal(await page.locator('#readingBar').count(), 0, 'the bar goes when the reading is done');
+        assert.ok(host.progress.some((item) => /^Reading the roads of continent\.osm\.pbf$/.test(item.message)), 'the importer said how far it had got');
         assert.equal(await page.textContent('#fetchProgress li.done'), 'Roads and city streets12 roads and 1 place names, from continent.osm.pbf');
-        // The file stays in hand: a larger area is read from it again, with no dialog, whatever the public server would take.
-        assert.deepEqual([await page.textContent('#extractHereButton'), await stateOf(() => window.logisticsToolboxState.extractFile?.name)], ['Read from continent.osm.pbf', 'continent.osm.pbf']);
-        await page.selectOption('#roadLevelSelect', 'major');
-        await page.fill('#marginInput', '300');
-        await page.dispatchEvent('#marginInput', 'change');
-        assert.match(await page.textContent('#areaSize'), /^\d+ × \d+ km: read from continent\.osm\.pbf, in hand\.$/);
-        assert.deepEqual([await page.isDisabled('#fetchButton'), await page.isDisabled('#extractHereButton')], [true, false]);
-        assert.equal(await page.textContent('#stepRegionSummary'), 'Gridtown · 300 km', 'the step says the area chosen, as it is chosen');
+        assert.equal(await page.textContent('#dataAgeText'), 'Roads read from continent.osm.pbf (yours): as fresh as the file.');
+        // More around it is read again from the file in hand, with no dialog, whatever the public server would take.
+        await area(300, 'major');
         await page.click('#extractHereButton');
         await page.waitForFunction(() => /^Roads4 roads and 1 place names, from continent\.osm\.pbf$/.test(document.querySelector('#fetchProgress li.done')?.textContent ?? ''));
         assert.deepEqual(host.requests.slice(requestsBefore).filter((url) => /overpass|nominatim/.test(url)), []);
+        // Two files at a border added together, no place chosen: read whole, as one map, a street in both once; the one
+        // whose data is two months old is kept in red.
         await page.click('#sampleButton');
         await page.waitForFunction(() => !document.querySelector('#fetchButton').disabled);
-        // Two extracts chosen together, a town on a border with one for each country, are read as one map: the town's
-        // streets from both, a street in both once.
         const westNodes = nodes.filter((node) => node.lon <= 10.025 || node.tags);
         const eastNodes = nodes.filter((node) => node.lon >= 10.025);
         const crossing = (list) => ways.filter((way) => way.nodes.every((id) => list.some((node) => node.id === id)));
-        host.chosen.extract = [
-            { name: 'west.osm.pbf', data: writeOsmPbf({ nodes: westNodes, ways: crossing(westNodes), bounds: { ...town, east: 10.03 } }) },
-            { name: 'east.osm.pbf', data: writeOsmPbf({ nodes: eastNodes, ways: crossing(eastNodes), bounds: { ...town, west: 10.02 } }) }
+        host.chosen.store = [
+            await onDisk('west.osm.pbf', writeOsmPbf({ nodes: westNodes, ways: crossing(westNodes), bounds: { ...town, east: 10.03 }, dataDate: new Date(Date.now() - 2 * 86400000).toISOString() })),
+            await onDisk('east.osm.pbf', writeOsmPbf({ nodes: eastNodes, ways: crossing(eastNodes), bounds: { ...town, west: 10.02 }, dataDate: new Date(Date.now() - 60 * 86400000).toISOString() }))
         ];
-        // While they are read, a bar says how far it has got and how long it has taken: held open here to look at it.
-        let release;
-        host.holdImport = new Promise((resolve) => { release = resolve; });
-        await page.click('#extractButton');
-        await page.waitForSelector('#readingBar');
-        await page.evaluate(() => window.logisticsProgress({ stage: 'import', importerId: 'region', done: 500, total: 1000, message: 'Reading the roads of west.osm.pbf (1 of 2)' }));
-        assert.equal(await page.evaluate(() => document.querySelector('#readingBar').value), 500);
-        assert.match(await page.textContent('#readingText'), /^Reading the roads of west\.osm\.pbf \(1 of 2\): 50%, \d+ s/);
-        host.holdImport = null;
-        release();
-        await page.waitForSelector('#fetchProgress li.done, #regionStatus .notice.error');
-        assert.equal(await page.locator('#regionStatus .notice.error').count(), 0, await page.textContent('#regionStatus'));
-        assert.equal(await page.locator('#readingBar').count(), 0, 'the bar goes when the reading is done');
-        assert.ok(host.progress.some((item) => /^Reading the roads of (west|east)\.osm\.pbf \(\d of 2\)$/.test(item.message)), 'the importer said how far it had got');
+        await page.click('#manageMapsButton');
+        await page.click('#addMapButton');
+        await page.waitForFunction(() => /from west\.osm\.pbf and east\.osm\.pbf$/.test(document.querySelector('#fetchProgress li.done')?.textContent ?? ''), null, { timeout: 30000 }).catch(fail);
         assert.match(await page.textContent('#fetchProgress li.done'), /^Roads and city streets\d+ roads and 1 place names, from west\.osm\.pbf and east\.osm\.pbf$/);
-        assert.equal(await page.textContent('#dataAgeText'), 'Roads read from west.osm.pbf and east.osm.pbf, files of yours: as fresh as they are.');
-        assert.deepEqual(await stateOf(() => window.logisticsToolboxState.extractFile?.names), ['west.osm.pbf', 'east.osm.pbf'], 'both stay in hand');
-        assert.ok(!(await host.call('restoreSession', {})).inputs.some((input) => input.role === 'extract'), 'neither is kept with the session');
-        await page.click('#sampleButton');
-        await page.waitForFunction(() => !document.querySelector('#fetchButton').disabled);
-        // The town's own file, eight kilometres across: a city's, so its streets are read too.
-        host.chosen.extract = { name: 'gridtown.osm.pbf', data: writeOsmPbf({ nodes, ways, bounds: town }) };
-        await page.click('#extractButton');
-        await page.waitForSelector('#fetchProgress li.done');
-        assert.equal(await page.textContent('#fetchProgress li.done'), 'Roads and city streets12 roads and 1 place names, from gridtown.osm.pbf');
-        assert.equal(await page.locator('#regionStatus .notice.error').count(), 0, await page.textContent('#regionStatus'));
-        assert.equal(await stateOf(() => window.logisticsToolboxState.roadLevel), 'city');
-        // Said where the roads came from, with nothing to fetch fresh; drawn, and routed over.
-        assert.equal(await page.textContent('#dataAgeText'), 'Roads read from gridtown.osm.pbf, a file of yours: as fresh as the file.');
+        assert.match(await page.textContent('#dataAgeText'), /^Roads read from west\.osm\.pbf and east\.osm\.pbf \(yours\): OpenStreetMap as of \d+ \w+ \d{4}\.$/);
+        assert.ok(!(await host.call('restoreSession', {})).inputs.some((input) => input.role === 'extract'), 'the files are not kept with the session, only what was read from them');
+        // The step says what is kept, and that one may be out of date.
+        assert.match(await page.textContent('#mapLibrarySummary'), /^3 kept, \d+ KB · 1 may be out of date$/);
+        await page.click('#manageMapsButton');
+        const rows = () => page.$$eval('#mapList li[data-map]', (items) => items.map((item) => [item.className, item.querySelector('.what').textContent, item.querySelector('.about').textContent.replace(/\s+/g, ' ').trim()]));
+        const east = (await rows()).find((row) => row[1] === 'east.osm.pbf');
+        assert.equal(east[0], 'old');
+        assert.match(east[2], /^roads as of \d+ \w+ \d{4} · may be out of date: its data is 60 days old · \d+ KB · yours, added \d+ \w+ \d{4}$/);
+        // A link from another server: kept with where it came from, its checksum checked.
+        host.downloads['https://download.openstreetmap.fr/extracts/europe/gridtown.osm.pbf'] = writeOsmPbf({ nodes, ways, bounds: town, dataDate: new Date(Date.now() - 86400000).toISOString() });
+        await page.fill('#mapLinkInput', 'https://example.com/gridtown.osm.pbf');
+        await page.click('#mapLinkButton');
+        assert.match(await page.textContent('#mapLibraryStatus'), /not from example\.com/);
+        await page.fill('#mapLinkInput', 'https://download.openstreetmap.fr/extracts/europe/gridtown.osm.pbf');
+        await page.click('#mapLinkButton');
+        await page.waitForFunction(() => document.querySelectorAll('#mapList li[data-map]').length === 4);
+        assert.match(await page.textContent('#mapLibraryStatus'), /^gridtown\.osm\.pbf is downloaded from OpenStreetMap France and kept on this computer, its checksum matched\.$/);
+        assert.ok(host.progress.some((item) => item.stage === 'download' && item.done > 0), 'the download said how far it had got');
+        assert.ok((await rows()).some((row) => row[1] === 'gridtown.osm.pbf' && /from OpenStreetMap France/.test(row[2])));
+        // Update: downloaded again from the same address, the copy replaced.
+        const gridtownId = await page.evaluate(() => window.logisticsToolboxState.library.find((file) => file.name === 'gridtown.osm.pbf').id);
+        await page.click(`#mapList [data-update-map="${gridtownId}"]`);
+        await page.waitForFunction((id) => /is updated/.test(document.querySelector('#mapLibraryStatus').textContent) && !document.querySelector(`#mapList [data-map="${id}"]`), gridtownId);
+        assert.equal((await rows()).filter((row) => row[1] === 'gridtown.osm.pbf').length, 1, 'one copy, the new one');
+        // Removed on a second press, not the first.
+        const removeEast = `#mapList [data-remove-map="${await page.evaluate(() => window.logisticsToolboxState.library.find((file) => file.name === 'east.osm.pbf').id)}"]`;
+        await page.click(removeEast);
+        assert.equal(await page.textContent(removeEast), 'Remove for good?');
+        assert.equal((await rows()).length, 4);
+        await page.click(removeEast);
+        await page.waitForFunction(() => document.querySelectorAll('#mapList li[data-map]').length === 3);
+        // Ticked maps are read from the sheet: the town's own file, a city's, so its streets.
+        await page.check(`#mapList [data-tick-map="${await page.evaluate(() => window.logisticsToolboxState.library.find((file) => file.name === 'gridtown.osm.pbf').id)}"]`);
+        assert.equal(await page.textContent('#useMapsButton'), 'Read roads from the map ticked');
+        await page.click('#useMapsButton');
+        await page.waitForFunction(() => document.querySelector('#fetchProgress li.done')?.textContent === 'Roads and city streets12 roads and 1 place names, from gridtown.osm.pbf');
+        assert.equal(await page.isVisible('#manageMaps'), false);
+        assert.match(await page.textContent('#dataAgeText'), /^Roads read from gridtown\.osm\.pbf \(from OpenStreetMap France\): OpenStreetMap as of \d+ \w+ \d{4}\.$/);
         assert.equal(await page.isVisible('#dataAgeFresh'), false);
-        assert.deepEqual(await stateOf(() => [window.logisticsToolboxState.extract, window.logisticsToolboxState.roads.graph.vertices.length > 30, window.logisticsToolboxState.roads.map.places.map((place) => place.name)]), ['gridtown.osm.pbf', true, ['Gridtown']]);
         assert.ok(await page.locator('#map path.road').count() >= 12);
-        // No map server was asked, and the file itself is not kept: what was read from it is, saying where it came from.
         assert.deepEqual(host.requests.slice(requestsBefore).filter((url) => /overpass/.test(url)), []);
-        const kept = [...host.files.values()];
-        assert.ok(!(await host.call('restoreSession', {})).inputs.some((input) => input.role === 'extract'), 'the extract is not kept with the session');
-        assert.deepEqual(kept.filter((file) => file.source).map((file) => [file.role, file.name, file.source]), [['roads', 'roads-extract-1.json', 'gridtown.osm.pbf'], ['places', 'places-extract.json', 'gridtown.osm.pbf']]);
         // Two sites placed on it are linked by its streets.
         await page.click('[data-add="warehouse"]');
         await clickAt({ lat: 40.0, lon: 10.0 });
@@ -1450,6 +1486,73 @@ try {
         await page.keyboard.press('Escape');
         const leg = await stateOf(() => { const [link] = window.logisticsToolboxState.links; return link ? [link.basis, Math.round(link.kilometres ?? link.leg?.kilometres ?? 0)] : null; });
         assert.ok(leg, 'the store is linked to the warehouse over the roads read');
+        noErrors();
+
+        // 9. Where a searched place's roads come from, proposed (Port Alder): a small area from the public server, with its
+        // map offered under Change; a busy server offering the map instead, downloaded and read; then the kept map.
+        const alderBox = { south: -30.6, west: -20.6, north: -29.2, east: -18.9 };
+        const alderSide = 8;
+        const alderAt = (row, column) => ({ id: 5000 + row * alderSide + column, lat: alderBox.south + 0.1 + row * 0.15, lon: alderBox.west + 0.1 + column * 0.2 });
+        const alderNodes = Array.from({ length: alderSide * alderSide }, (_unused, index) => alderAt(Math.floor(index / alderSide), index % alderSide));
+        const alderWays = [];
+        for (let line = 0; line < alderSide; line += 1) {
+            alderWays.push({ id: 6000 + line, nodes: Array.from({ length: alderSide }, (_unused, column) => alderAt(line, column).id), tags: { highway: 'primary' } });
+            alderWays.push({ id: 7000 + line, nodes: Array.from({ length: alderSide }, (_unused, row) => alderAt(row, line).id), tags: { highway: 'primary' } });
+        }
+        const alderUrl = 'https://download.geofabrik.de/africa/alderland-latest.osm.pbf';
+        host.downloads[alderUrl] = writeOsmPbf({ nodes: alderNodes, ways: alderWays, bounds: alderBox, dataDate: new Date(Date.now() - 86400000).toISOString() });
+        host.mapIndex = { type: 'FeatureCollection', features: [
+            { type: 'Feature', properties: { id: 'africa', name: 'Africa', urls: { pbf: 'https://download.geofabrik.de/africa-latest.osm.pbf' } }, geometry: null },
+            { type: 'Feature', properties: { id: 'alderland', parent: 'africa', name: 'Alderland', urls: { pbf: alderUrl } }, geometry: { type: 'Polygon', coordinates: [[[alderBox.west, alderBox.south], [alderBox.east, alderBox.south], [alderBox.east, alderBox.north], [alderBox.west, alderBox.north], [alderBox.west, alderBox.south]]] } }
+        ] };
+        await page.fill('#searchInput', 'Port Alder');
+        await page.click('#searchButton');
+        await page.click('#searchResults button[data-index="0"]');
+        await page.selectOption('#roadLevelSelect', 'major');
+        await page.fill('#marginInput', '25');
+        await page.dispatchEvent('#marginInput', 'change');
+        await page.waitForFunction(() => document.querySelector('#sourceText').textContent === 'From OpenStreetMap\'s server');
+        assert.match(await page.textContent('#sourceWhy'), /^A small area/);
+        assert.deepEqual(await page.evaluate(() => ['#fetchButton', '#extractHereButton', '#downloadLoadButton'].map((id) => !document.querySelector(id).hidden)), [true, false, false]);
+        await page.click('#changeSourceButton');
+        assert.match(await page.textContent('#sourceChoices'), /Download from Geofabrik: Alderland, Africa\d+ KB, kept on this computer\.A file of yours…/);
+        await page.click('#changeSourceButton');
+        // Large (some 175 km across), the map is proposed: its size said, downloaded once and kept.
+        await page.fill('#marginInput', '80');
+        await page.dispatchEvent('#marginInput', 'change');
+        await page.waitForFunction(() => /^From Geofabrik: Alderland, Africa/.test(document.querySelector('#sourceText').textContent));
+        assert.match(await page.textContent('#sourceText'), /^From Geofabrik: Alderland, Africa\d+ KB, downloaded once and kept$/);
+        assert.match(await page.textContent('#sourceWhy'), /^A large area: slow to load from the public server\./);
+        assert.deepEqual(await page.evaluate(() => ['#fetchButton', '#extractHereButton', '#downloadLoadButton'].map((id) => !document.querySelector(id).hidden)), [false, false, true]);
+        // Back to a small area, from the server: the server busy, the map offered instead, and taken.
+        await page.fill('#marginInput', '25');
+        await page.dispatchEvent('#marginInput', 'change');
+        await page.waitForFunction(() => document.querySelector('#sourceText').textContent === 'From OpenStreetMap\'s server');
+        host.busy = 1;
+        await page.click('#fetchButton');
+        await page.waitForSelector('#downloadInstead', { timeout: 30000 }).catch(fail);
+        assert.match(await page.textContent('#regionStatus'), /^The public map server is busy\. Download Alderland, Africa \(\d+ KB\) instead, keep it, and read the roads from it\.$/);
+        await page.click('#downloadInstead');
+        await page.waitForFunction(() => /from alderland-latest\.osm\.pbf$/.test(document.querySelector('#fetchProgress li.done')?.textContent ?? ''), null, { timeout: 30000 }).catch(fail);
+        assert.match(await page.textContent('#dataAgeText'), /^Roads read from alderland-latest\.osm\.pbf \(from Geofabrik\): OpenStreetMap as of \d+ \w+ \d{4}\.$/);
+        // Searched again, the map kept is proposed: read in seconds, with no server, whatever the area's size.
+        await page.click('#searchButton');
+        await page.click('#searchResults button[data-index="0"]');
+        await page.fill('#marginInput', '120');
+        await page.dispatchEvent('#marginInput', 'change');
+        await page.waitForFunction(() => /^From your map: Alderland, Africa \(OpenStreetMap as of \d+ \w+ \d{4}\)$/.test(document.querySelector('#sourceText').textContent));
+        assert.match(await page.textContent('#sourceWhy'), /^Your maps cover this area/);
+        assert.deepEqual(await page.evaluate(() => ['#fetchButton', '#extractHereButton', '#downloadLoadButton'].map((id) => !document.querySelector(id).hidden)), [false, true, false]);
+        const requestsNow = host.requests.length;
+        await page.click('#extractHereButton');
+        await page.waitForFunction(() => /from alderland-latest\.osm\.pbf$/.test(document.querySelector('#fetchProgress li.done')?.textContent ?? ''));
+        assert.deepEqual(host.requests.slice(requestsNow).filter((url) => /overpass|alderland/.test(url)), [], 'neither the server nor a download');
+        noErrors();
+        // A project reopened puts the kept map it was read from back in hand: no dialog, and no download.
+        for (let waited = 0; waited < 50 && !host.session?.extractStored?.length; waited += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+        await openWindow(page, host);
+        await page.waitForFunction(() => window.logisticsToolboxState.extractFile?.stored?.length === 1, null, { timeout: 30000 }).catch(fail);
+        assert.equal(await stateOf(() => window.logisticsToolboxState.extractFile.name), 'alderland-latest.osm.pbf');
         noErrors();
     }
 

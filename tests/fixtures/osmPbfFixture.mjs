@@ -32,11 +32,15 @@ class Strings {
 
 // `nodes`: [{ id, lat, lon, tags }]; `ways`: [{ id, nodes: [id], tags }]; `bounds`: { south, west, north, east } or
 // null to leave the header without one. `perBlock`: how many of each go in a block.
-export function writeOsmPbf({ nodes, ways, bounds = null, perBlock = 4, compress = true }) {
+// `dataDate` (ISO) and `program`: what Geofabrik's extracts say of themselves.
+export function writeOsmPbf({ nodes, ways, bounds = null, perBlock = 4, compress = true, dataDate = null, program = null }) {
     const nano = (degrees) => zigzag(Math.round(degrees * 1e9));
     const header = [
         ...(bounds ? delimited(1, [...field(1, 0, nano(bounds.west)), ...field(2, 0, nano(bounds.east)), ...field(3, 0, nano(bounds.north)), ...field(4, 0, nano(bounds.south))]) : []),
-        ...delimited(4, text('OsmSchema-V0.6')), ...delimited(4, text('DenseNodes'))
+        ...delimited(4, text('OsmSchema-V0.6')), ...delimited(4, text('DenseNodes')),
+        ...(program ? delimited(16, text(program)) : []),
+        ...(dataDate ? field(32, 0, varint(Math.round(Date.parse(dataDate) / 1000))) : []),
+        ...(dataDate ? delimited(34, text('https://download.geofabrik.de/europe/switzerland-updates')) : [])
     ];
     const out = [...blob('OSMHeader', header, { compress })];
     for (let start = 0; start < nodes.length; start += perBlock) {

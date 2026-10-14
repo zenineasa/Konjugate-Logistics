@@ -6,6 +6,7 @@
 // region. No engine, unless KONJUGATE_ENGINE=export: then a scenario runs as Konjugate's code export writes the model
 // (the Electron interaction test runs them in the real app).
 
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -42,8 +43,10 @@ export const limits = { options: 2 * 1024 * 1024, importerData: 8 * 1024 * 1024,
 
 // Konjugate's own cache of what an add-on fetched, in a scratch folder: the window test exercises the real one.
 const { createAddonCache } = await import(pathToFileURL(konjugateModule('src/addonCache.mjs')));
+// And its store of large files kept for the user (map extracts), on a scratch folder, its downloads from `host.downloads`.
+const { createFileStore } = await import(pathToFileURL(konjugateModule('src/addonFileStore.mjs')));
 // And its check on an address a window may open: https, a host the manifest lists.
-const { addressAllowed } = await import(pathToFileURL(konjugateModule('src/launcherHost.mjs')));
+const { addressAllowed, storedFileKinds } = await import(pathToFileURL(konjugateModule('src/launcherHost.mjs')));
 const manifest = JSON.parse(await readFile(join(logisticsRoot, 'packages', 'toolbox', 'addon.json'), 'utf8'));
 
 export const placeAnswer = [{ display_name: 'Port Alder, Synthetic Coast', type: 'harbour', lat: '-29.99', lon: '-19.9', boundingbox: ['-29.9', '-29.8', '-19.75', '-19.6'] }];
@@ -63,12 +66,58 @@ export async function createHost() {
         : query.includes('"highway"') ? 'roads' : query.includes('"railway"="rail"') ? 'rail' : query.includes('"place"') ? 'places' : null);
     const answerFor = (url) => {
         const address = new URL(url);
+        // Geofabrik's index of extracts, as a test sets it (host.mapIndex).
+        if (address.href === 'https://download.geofabrik.de/index-v1.json' && host.mapIndex) return JSON.stringify(host.mapIndex);
         if (address.hostname === 'overpass-api.de' && address.pathname === '/api/interpreter') return JSON.stringify(region[kindOf(address.searchParams.get('data'))]);
         if (address.hostname === 'services9.arcgis.com' && address.pathname.includes('/PortWatch_ports_database/')) return JSON.stringify(portwatch.portwatchPorts);
         if (address.hostname === 'services9.arcgis.com' && address.pathname.includes('/Daily_Ports_Data/') && address.searchParams.get('where') === "portid='port9001'") return JSON.stringify(portwatch.portwatchActivity);
         return null;
     };
+    const store = createFileStore({ directory: join(scratch, 'addonFiles') });
+    // What a download asks for: a file of `host.downloads` (address -> bytes), its MD5 sum beside it, or an index.
+    const fetchDownload = async (url) => {
+        const address = new URL(url);
+        if (url.endsWith('.md5')) {
+            const bytes = host.downloads[url.slice(0, -4)];
+            return bytes ? new Response(`${createHash('md5').update(bytes).digest('hex')}  file\n`) : new Response('', { status: 404 });
+        }
+        const bytes = host.downloads[address.href];
+        if (!bytes) return new Response('', { status: 404 });
+        const chunks = [];
+        for (let at = 0; at < bytes.length; at += 4096) chunks.push(bytes.subarray(at, at + 4096));
+        return new Response(new ReadableStream({ pull(controller) { const next = chunks.shift(); if (next) controller.enqueue(next); else controller.close(); } }), { headers: { 'content-length': String(bytes.length) } });
+    };
     const handlers = {
+        // As Konjugate's host does (addonFileStore.mjs): kept files listed, brought in, downloaded, described, removed, used.
+        async storedFiles() { return { files: await store.list(), bytes: await store.usage() }; },
+        async storeFiles({ details, accept, title }) {
+            // The dialog's filter and title are noted; the check of what is chosen is Konjugate's own.
+            const kinds = storedFileKinds(accept);
+            host.storeDialog = { title, filters: kinds.filters };
+            const paths = host.chosen.store ?? [];
+            delete host.chosen.store;
+            for (const path of paths) kinds.check(path);
+            const kept = [];
+            for (const path of paths) kept.push(await store.putCopy({ path, details }));
+            return { files: kept };
+        },
+        async downloadFile({ url, server, checksumUrl, details, downloadId }) {
+            if (!manifest.permissions.includes('files.store')) throw new Error('This launcher was not granted files.store.');
+            const file = await store.download({ url, server, checksumUrl, details, hosts: manifest.network.hosts, fetchImpl: fetchDownload,
+                onProgress: ({ done, total }) => host.progress.push({ stage: 'download', downloadId, done, total }) });
+            return { file };
+        },
+        async cancelDownload() { return {}; },
+        async fileSize({ url }) { return { bytes: await store.size({ url, hosts: manifest.network.hosts, fetchImpl: fetchDownload }) }; },
+        async describeStoredFile({ id, details }) { return { file: await store.describe(id, details) }; },
+        async removeStoredFile({ id }) { await store.remove(id); return {}; },
+        async useStoredFiles({ role, ids }) {
+            const entries = [];
+            for (const id of ids) entries.push(await store.get(id));
+            for (const [key, file] of files) if (file.role === role) files.delete(key);
+            for (const entry of entries) files.set(`${role}/${entry.id}`, { role, name: entry.name, data: new Uint8Array(await readFile(entry.path)), binary: true, stored: entry.id });
+            return { files: entries.map(({ path, ...entry }) => entry) };
+        },
         async useSample() {
             files.clear();
             for (const [role, answer] of Object.entries(region)) files.set(`${role}/sample`, { role, name: `${role}.json`, text: JSON.stringify(answer) });
@@ -87,6 +136,8 @@ export async function createHost() {
         },
         // As Konjugate's host does: from the cache when asked to use it and it holds the address, else fetched (and kept).
         async fetchFile({ role, url, name, cache: mode = 'off', maximumAgeDays }) {
+            // A busy public server, as a test sets it (host.busy: how many answers to refuse).
+            if (host.busy > 0 && new URL(url).hostname === 'overpass-api.de') { host.busy -= 1; throw new Error('overpass-api.de answered 429.'); }
             const hit = mode === 'use' ? await cache.get(url, { maximumAgeDays: maximumAgeDays ?? undefined }) : null;
             let text;
             let retrievedAt;
@@ -202,7 +253,7 @@ export async function createHost() {
         }
     };
     const host = {
-        files, requests, opened, chosen, cache, kept: 0, imported: null, scenarioRuns: 0, dropChanges: false, progress: [],
+        files, requests, opened, chosen, cache, kept: 0, imported: null, scenarioRuns: 0, dropChanges: false, progress: [], downloads: {}, busy: 0,
         get session() { return session; },
         set session(value) { session = value; },
         async call(name, args) {
@@ -248,7 +299,15 @@ export async function openWindow(page, host, { inspect = true } = {}) {
                 openInCanvas: (scenarioId, options = {}) => window.logisticsHost('openInCanvas', { scenarioId, ...options }),
                 restoreSession: call('restoreSession'),
                 // As Konjugate's host passes them on: what an importer says of its progress, to the window.
-                onProgress: (callback) => { window.logisticsProgress = callback; }
+                onProgress: (callback) => { window.logisticsProgress = callback; },
+                storedFiles: call('storedFiles'),
+                storeFiles: (details, options = {}) => window.logisticsHost('storeFiles', { details, accept: options.accept ?? null, title: options.title ?? null }),
+                downloadFile: (url, options = {}) => window.logisticsHost('downloadFile', { url, ...options }),
+                cancelDownload: (downloadId) => window.logisticsHost('cancelDownload', { downloadId }),
+                fileSize: (url) => window.logisticsHost('fileSize', { url }),
+                describeStoredFile: (id, details) => window.logisticsHost('describeStoredFile', { id, details }),
+                removeStoredFile: (id) => window.logisticsHost('removeStoredFile', { id }),
+                useStoredFiles: (importerId, role, ids) => window.logisticsHost('useStoredFiles', { importerId, role, ids })
             });
         });
         page.hostBound = true;

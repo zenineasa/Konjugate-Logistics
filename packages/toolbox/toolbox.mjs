@@ -14,13 +14,15 @@ import { portwatchActivityUrl, portwatchPortsUrl, breakPeriods } from './lib/por
 import { closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan, mostLateDays, siteDownPlan, supplierPlan } from './lib/scenarios.mjs';
 import { createNetworkRouter } from './lib/routing.mjs';
 import { compareSites } from './lib/siteComparison.mjs';
+import { checkedMapLink, checksumUrlOf, mapAge, mapServers } from './lib/mapServers.mjs';
+import { bytesText, keptAs, proposeSource } from './lib/mapSource.mjs';
 import { cleanCurrency, differs, money, moneyIn, outNoise, sameSeries, shortDays, storesParts, unchangedText } from './lib/summary.mjs';
 import { createHoliday, describeHoliday, holidayProblem } from './lib/holidays.mjs';
 import { completeFields, createPin, isCandidate, kindOf, openNetwork, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, setCandidate, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
 import { calibration, calibrationAdvised, calibrationMinimum, formatDuration, googleMapsUrl, howLabels, modelHours, openStreetMapUrl, parseTravelTimes, suspectTime, timeFrom, whenLabels, writeTravelTimes } from './lib/travelTimes.mjs';
 import { affectedAcross, closureAcross, diversionAcross, mergeSeries, siteView } from './lib/builtView.mjs';
 import { calendarKinds, calendarOf, dayNames, describeCalendar, kindsFor, setHours, wholeCalendar } from './lib/calendars.mjs';
-import { categoryFields, clearMix, completeCategories, createCategory, defaultCategoryCatalogue, hasMix, listed, lostSalesOf, mixOf, mostCategories, setCategoryField, setLeadDays, setMix } from './lib/categories.mjs';
+import { categoryFields, clearMix, completeCategories, createCategory, defaultCategoryCatalogue, eitherOf, hasMix, listed, lostSalesOf, mixOf, mostCategories, setCategoryField, setLeadDays, setMix } from './lib/categories.mjs';
 import { anyVehicle, carriersFor, carriesVehicles, completeCatalogue, createVehicle, defaultCatalogue, linkKind, setVehicleField, setVehicleHours, typesPerLink, vehicleFields, vehiclesOf } from './lib/vehicles.mjs';
 import { writeSites } from './lib/sites.mjs';
 import { addsToSelection, commandHeld, platformKeys } from './lib/platform.mjs';
@@ -316,11 +318,12 @@ function showArea() {
             ? `${size}: read from ${escape(files)}.`
             : !forServer
             ? `${size}: too large to fetch from the public map server (${serverLimit} km across${city ? ' for city streets' : ''}): read it from a file instead.`
-            : `${size}${across > (city ? 2 * cityTileKilometres : 120) && !state.extractFile ? '. A large area: loading from the map server may take a minute.' : ''}`;
+            : `${size}${across > (city ? 2 * cityTileKilometres : 120) && !state.extractFile && !api?.storedFiles ? '. A large area: loading from the map server may take a minute.' : ''}`;
     $('#extractHereButton').disabled = !forFile || state.busy;
+    $('#downloadLoadButton').disabled = !forFile || state.busy;
     $('#fetchButton').disabled = !forServer || state.busy;
-    $('#freshButton').disabled = !forServer || state.busy;
     updateStepSummaries();
+    updateSource();
 }
 
 $('#searchForm').addEventListener('submit', async (event) => {
@@ -341,6 +344,8 @@ $('#searchForm').addEventListener('submit', async (event) => {
             : '<li><button type="button" disabled>No place found by that name.</button></li>';
         list.querySelectorAll('button[data-index]').forEach((button) => button.addEventListener('click', () => {
             state.place = places[Number(button.dataset.index)];
+            state.sourceChoice = null;
+            state.extractFile = null;
             list.hidden = true;
             $('#chosenRegion').hidden = false;
             $('#chosenName').textContent = state.place.display_name;
@@ -368,11 +373,23 @@ async function serverWait() {
     }
 }
 const countdown = async (row, seconds, why) => {
+    offerDownloadInstead('The public map server is busy');
     for (let left = seconds; left > 0; left -= 1) {
+        if (state.abandonServer) throw new Error(switchedToDownload);
         row.querySelector('.state').textContent = `${why}, trying again in ${left} s`;
         await wait(1);
     }
 };
+// A server load taking long (half a minute, or the server busy) offers the area's maps to download instead, where they
+// are known: pressed, the server is left at its next step and the maps are downloaded and read.
+const switchedToDownload = 'Switched to downloading the maps.';
+const slowServerSeconds = 30;
+function offerDownloadInstead(why) {
+    const proposal = state.proposal;
+    if (!state.loadingFromServer || !proposal?.download?.length || $('#downloadInstead')) return;
+    $('#regionStatus').innerHTML = `<div class="notice">${escape(why)}. <button class="link" type="button" id="downloadInstead">Download ${escape(sourceNames(proposal.download))}${proposal.bytes ? ` (${bytesText(proposal.bytes)})` : ''} instead</button>, keep ${proposal.download.length === 1 ? 'it' : 'them'}, and read the roads from ${proposal.download.length === 1 ? 'it' : 'them'}.</div>`;
+    $('#downloadInstead').addEventListener('click', () => { state.abandonServer = true; });
+}
 
 const labels = { ports: 'Ports and anchorages', logistics: 'Warehouses and industrial land', roads: 'Roads', rail: 'Rail', places: 'Place names' };
 
@@ -380,7 +397,7 @@ const labels = { ports: 'Ports and anchorages', logistics: 'Warehouses and indus
 // once loads again at once and offline. Data older than this is fetched again; Load fresh fetches it all again now.
 const cacheDays = 30;
 const fetchMode = (fresh) => ({ cache: fresh ? 'refresh' : 'use', maximumAgeDays: cacheDays });
-const dateOf = (iso) => new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+const dateOf = (iso) => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 // When the data in hand was fetched, by kind: the oldest part of each, and whether it came from the cache.
 const fetched = (kind, answer) => {
     const known = state.fetchedAt[kind];
@@ -403,6 +420,7 @@ async function fetchKinds(kinds, progress, { fresh = false } = {}) {
         const row = progress.querySelector(`[data-kind="${request.kind}"]`);
         const label = request.parts > 1 || request.depth ? `part ${request.part} of ${request.parts}` : 'fetching';
         for (let attempt = 0; ; attempt += 1) {
+            if (state.abandonServer) throw new Error(switchedToDownload);
             if (live || attempt > 0) {
                 const before = await serverWait();
                 if (before > 0) await countdown(row, before + 1, 'waiting for a free slot');
@@ -447,7 +465,16 @@ function renderDataAge() {
     const roads = state.fetchedAt.roads;
     $('#dataAge').hidden = !roads && !state.extract;
     $('#dataAgeFresh').hidden = Boolean(state.extract);
-    if (state.extract) { $('#dataAgeText').textContent = `Roads read from ${state.extract}, ${state.extractSeveral ? 'files of yours: as fresh as they are' : 'a file of yours: as fresh as the file'}.`; return; }
+    if (state.extract) {
+        // The date of the maps' data, where they say it (kept maps do): the oldest of them, for being honest about it.
+        const kept = (state.extractFile?.stored ?? []).map((id) => state.library.find((file) => file.id === id)).filter(Boolean);
+        const dates = kept.map((file) => file.details?.dataDate).filter(Boolean).sort();
+        // Where they came from: downloaded (from which server) or the user's own; files chosen in a dialog are the user's.
+        const origins = kept.length ? listed([...new Set(kept.map((file) => (file.origin?.kind === 'download' ? `from ${file.origin.server ?? new URL(file.origin.url).hostname}` : 'yours')))]) : null;
+        const whose = origins ? ` (${origins})` : `, ${state.extractSeveral ? 'files of yours' : 'a file of yours'}`;
+        $('#dataAgeText').textContent = `Roads read from ${state.extract}${whose}${dates.length ? `: OpenStreetMap as of ${dayOfDate(dates[0])}` : `: as fresh as ${state.extractSeveral ? 'they are' : 'the file'}`}.`;
+        return;
+    }
     if (!roads) return;
     $('#dataAgeText').textContent = `Roads fetched on ${dateOf(roads.at)}${roads.cached ? ', from the cache' : ''}.`;
 }
@@ -459,8 +486,8 @@ async function renderCacheSummary() {
         const info = await call(api.cacheInfo());
         $('#cacheRow').hidden = false;
         $('#cacheSummary').textContent = info.entries
-            ? `Maps kept on this computer: ${number(info.bytes / 1048576, 1)} MB, fetched from ${dateOf(info.oldest)}${info.newest && dateOf(info.newest) !== dateOf(info.oldest) ? ` to ${dateOf(info.newest)}` : ''}.`
-            : 'No maps kept on this computer yet: an area loaded is kept, to load again at once and offline.';
+            ? `Roads fetched from map servers, kept on this computer: ${bytesText(info.bytes) ?? '0 KB'}, fetched from ${dateOf(info.oldest)}${info.newest && dateOf(info.newest) !== dateOf(info.oldest) ? ` to ${dateOf(info.newest)}` : ''}.`
+            : 'No roads fetched from map servers kept on this computer yet: an area loaded is kept, to load again at once and offline.';
         $('#clearCacheButton').hidden = !info.entries;
     } catch {
         $('#cacheRow').hidden = true;
@@ -478,7 +505,6 @@ $('#clearCacheButton').addEventListener('click', async () => {
 });
 
 $('#fetchButton').addEventListener('click', () => loadArea({ fresh: false }));
-$('#freshButton').addEventListener('click', () => loadArea({ fresh: true }));
 $('#dataAgeFresh').addEventListener('click', () => loadArea({ fresh: true }));
 
 // Loads the roads and place names of the area chosen: from the cache where it holds them, or (fresh) all from the map
@@ -499,10 +525,26 @@ async function loadArea({ fresh }) {
         state.suggestions = {};
         state.sample = false;
         state.extract = null;
-        await fetchKinds(['roads', 'places'], progress, { fresh });
+        state.loadingFromServer = true;
+        state.abandonServer = false;
+        const slow = setTimeout(() => offerDownloadInstead(`Still loading after ${slowServerSeconds} seconds`), slowServerSeconds * 1000);
+        try {
+            await fetchKinds(['roads', 'places'], progress, { fresh });
+        } finally {
+            clearTimeout(slow);
+            state.loadingFromServer = false;
+        }
+        $('#regionStatus').innerHTML = '';
         await loadRoads({ keepNetwork: true });
         renderDataAge();
     } catch (error) {
+        if (error.message === switchedToDownload) {
+            progress.hidden = true;
+            $('#regionStatus').innerHTML = '';
+            setBusy(false);
+            await downloadAndLoad();
+            return;
+        }
         $('#regionStatus').innerHTML = notice('error', error.message);
     } finally {
         setBusy(false);
@@ -550,6 +592,8 @@ function renderCoverage() {
     const roads = state.roads?.coverage?.roads;
     const box = $('#coverageSummary');
     box.hidden = !roads;
+    // Under Details, folded: what was loaded, its notes and what is kept from the server. Its summary says what is there.
+    $('#roadDetails').hidden = !roads;
     if (!roads) return;
     const level = (value) => (value ? `<span class="level ${value}">${value}</span>` : '');
     const byClass = Object.entries(roads.byClass ?? {}).filter(([, value]) => value > 0).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([name, value]) => `${name} ${number(value)}`).join(', ');
@@ -558,7 +602,11 @@ function renderCoverage() {
         ['Place names', `${number(state.roads.coverage.places)} cities, towns and suburbs`, null],
         ['Routing', `${number(state.roads.graph.vertices.length)} junctions${state.routerMilliseconds !== undefined ? `, ready in ${number(state.routerMilliseconds)} ms` : ''}`, null]
     ].map(([title, text, value]) => `<div class="item"><b>${title}${level(value)}</b><span>${escape(text)}</span></div>`).join('');
-    $('#notices').innerHTML = (state.roads.notices ?? []).map((item) => notice(item.level, item.text)).join('');
+    const notes = state.roads.notices ?? [];
+    $('#notices').innerHTML = notes.map((item) => notice(item.level, item.text)).join('');
+    $('#roadDetailsSummary').textContent = `${number(roads.kilometres)} km of roads, ${number(state.roads.graph.vertices.length)} junctions${notes.length ? `, ${notes.length} note${notes.length === 1 ? '' : 's'}` : ''}`;
+    // A warning is not to be missed: the details open for it.
+    if (notes.some((item) => item.level === 'warning' || item.level === 'error')) $('#roadDetails').open = true;
 }
 
 $('#sampleButton').addEventListener('click', async () => {
@@ -692,12 +740,9 @@ function heardReading(progress) {
     showReading();
 }
 // The file in hand is named on the button that reads from it, and that button leads while there is one.
+// The place card's source says the files in hand: worked out again whenever they change.
 function showFileButton() {
-    const button = $('#extractHereButton');
-    button.textContent = state.extractFile ? `Read from ${state.extractFile.names?.length > 1 ? `the ${state.extractFile.names.length} files` : state.extractFile.name}` : 'Read from a file';
-    button.title = state.extractFile ? `Read this area's roads from ${state.extractFile.name}, with no map server` : 'Read this area\'s roads from OpenStreetMap extracts on this computer (.osm.pbf files), with no map server';
-    button.classList.toggle('primary', Boolean(state.extractFile));
-    $('#fetchButton').classList.toggle('primary', !state.extractFile);
+    if (state.proposal) renderSource(state.proposal);
 }
 // The cities and towns of a file, to choose the place to read from it: a box to find one by name, the largest first.
 function showFilePlaces(places, file, why) {
@@ -726,20 +771,325 @@ function showFilePlaces(places, file, why) {
     }));
     filter.focus();
 }
-// Where such a file comes from: Geofabrik's download page, opened in the user's browser.
-const extractSourceUrl = 'https://download.geofabrik.de/';
-$('#extractSourceButton').addEventListener('click', async () => {
+// ---- map files kept on this computer ---------------------------------------------------------------------------
+// OpenStreetMap extracts kept in Konjugate's own data folder (its file store): downloaded from a server, or brought in
+// by the user, each with where it came from and how old its data is. The place card proposes where an area's roads come
+// from (lib/mapSource.mjs): kept maps covering it, else its maps downloaded when it is large, else the public server.
+// Keeping them (dates, updating, removing, adding) is under Manage maps, a sheet over the steps.
+state.library = [];
+state.libraryTicked = new Set();
+state.sizes = {};
+const dayOfDate = (iso) => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+const sizeText = (bytes) => bytesText(bytes) ?? '1 KB';
+const mapTitle = (file) => (file.details?.region ? `${file.details.region}${file.details.parent ? `, ${file.details.parent}` : ''}` : file.name);
+function mapOrigin(file) {
+    if (file.origin?.kind === 'download') return `from ${file.origin.server ?? new URL(file.origin.url).hostname}, ${dayOfDate(file.storedAt)}`;
+    return `yours, added ${dayOfDate(file.storedAt)}${file.origin?.name && file.origin.name !== file.name ? ` as ${file.origin.name}` : ''}`;
+}
+// What the dialog for files of the user's offers and takes: OpenStreetMap extracts, nothing else.
+const mapFileKinds = { accept: ['osm.pbf'], title: 'OpenStreetMap extracts (.osm.pbf) to keep' };
+async function refreshLibrary() {
+    if (!api?.storedFiles) { $('#manageMapsButton').hidden = true; return; }
     try {
-        if (!api?.openLink) throw new Error('unavailable');
-        await call(api.openLink(extractSourceUrl));
-        toast('Geofabrik\'s downloads are open in your browser: find your region and take the file ending in .osm.pbf, then read the roads from it here.');
-    } catch {
-        try { await navigator.clipboard.writeText(extractSourceUrl); toast('This Konjugate cannot open a browser: the address of Geofabrik\'s downloads is copied, to paste in yours.'); } catch { toast(`Open this in your browser: ${extractSourceUrl}`); }
+        const { files, bytes } = await call(api.storedFiles());
+        state.library = files;
+        state.libraryBytes = bytes;
+        for (const id of [...state.libraryTicked]) if (!files.some((file) => file.id === id)) state.libraryTicked.delete(id);
+        const old = files.filter((file) => mapAge(file).old).length;
+        $('#mapLibrarySummary').innerHTML = files.length ? `${files.length} kept, ${sizeText(bytes)}${old ? ` · <span class="danger">${old} may be out of date</span>` : ''}` : '';
+        renderLibrary();
+        updateSource();
+    } catch (error) {
+        $('#mapLibraryStatus').innerHTML = notice('error', error.message);
+    }
+}
+function renderLibrary() {
+    $('#manageMapsUsage').textContent = state.library.length ? `${state.library.length} map file${state.library.length === 1 ? '' : 's'} kept in Konjugate's own data folder, ${sizeText(state.libraryBytes)} in all. The place card proposes one when it covers the area; or tick maps and read them here.` : 'No map files kept yet. A large area\'s maps are downloaded when you load its roads; or add files of yours below.';
+    const list = $('#mapList');
+    list.innerHTML = state.library.map((file) => {
+        const age = mapAge(file);
+        const ageText = age.basis === 'data' ? `roads as of ${dayOfDate(age.from)}` : 'date of its data not known';
+        const warning = age.old ? ` · may be out of date: ${age.basis === 'data' ? 'its data is' : 'it was kept'} ${number(age.days)} days old` : '';
+        return `<li class="${age.old ? 'old' : ''}" data-map="${file.id}"><input type="checkbox" data-tick-map="${file.id}" ${state.libraryTicked.has(file.id) ? 'checked' : ''} aria-label="Read from ${escape(file.name)}">
+            <span class="what" title="${escape(file.origin?.url ?? file.origin?.name ?? '')}">${escape(mapTitle(file))}</span>
+            <span class="actions">${file.origin?.kind === 'download' ? `<button class="link small" type="button" data-update-map="${file.id}" title="Download it again from the same address, replacing this copy">Update</button> ` : ''}<button class="link small" type="button" data-remove-map="${file.id}" title="Remove it from this computer">Remove</button></span>
+            <span class="about"><span class="age">${ageText}${warning}</span> · ${sizeText(file.bytes)} · ${escape(mapOrigin(file))}</span></li>`;
+    }).join('');
+    list.querySelectorAll('[data-tick-map]').forEach((box) => box.addEventListener('change', () => {
+        if (box.checked) state.libraryTicked.add(box.dataset.tickMap); else state.libraryTicked.delete(box.dataset.tickMap);
+        renderLibrary();
+    }));
+    // Removing asks twice: the second press removes it, a file of a gigabyte that may have taken a while to come.
+    list.querySelectorAll('[data-remove-map]').forEach((button) => button.addEventListener('click', async () => {
+        if (button.dataset.armed !== 'yes') { button.dataset.armed = 'yes'; button.textContent = 'Remove for good?'; return; }
+        try { await call(api.removeStoredFile(button.dataset.removeMap)); } catch (error) { $('#mapLibraryStatus').innerHTML = notice('error', error.message); }
+        state.libraryTicked.delete(button.dataset.removeMap);
+        if (state.extractFile?.stored?.includes(button.dataset.removeMap)) state.extractFile = null;
+        await refreshLibrary();
+    }));
+    // Updating downloads it again from the same address; the copy replaced goes once the new one is whole.
+    list.querySelectorAll('[data-update-map]').forEach((button) => button.addEventListener('click', async () => {
+        const file = state.library.find((item) => item.id === button.dataset.updateMap);
+        if (!file) return;
+        const fresh = await downloadMap({ url: file.origin.url, server: file.origin.server ?? new URL(file.origin.url).hostname, checksumUrl: checksumUrlOf(file.origin.url), details: Object.fromEntries(Object.entries(file.details ?? {}).filter(([key]) => !['dataDate', 'bounds', 'program'].includes(key))), into: '#sheetDownloadProgress' });
+        if (!fresh) return;
+        await call(api.removeStoredFile(file.id));
+        if (state.extractFile?.stored?.includes(file.id)) state.extractFile = null;
+        $('#mapLibraryStatus').innerHTML = notice('ok', `${mapTitle(file)} is updated${fresh.details?.dataDate ? `: roads as of ${dayOfDate(fresh.details.dataDate)}` : ''}.`);
+        await refreshLibrary();
+    }));
+    $('#useMapsButton').hidden = !state.libraryTicked.size;
+    $('#useMapsButton').disabled = state.busy;
+    $('#useMapsButton').textContent = state.libraryTicked.size > 1 ? `Read roads from the ${state.libraryTicked.size} maps ticked` : 'Read roads from the map ticked';
+}
+// Stored files in hand for the importer: given to the extract role, and named on the file button.
+async function holdStored(ids) {
+    const { files } = await call(api.useStoredFiles(importerId, 'extract', ids));
+    state.extractFile = { name: listed(files.map((file) => file.name)), names: files.map((file) => file.name), bytes: files.reduce((sum, file) => sum + file.bytes, 0), stored: ids };
+    return files;
+}
+// What newly kept files say of themselves (the area they cover, the date of their data), kept with them. Describing
+// one is not choosing it: the files in hand before are put back.
+async function describeKept(files) {
+    if (!files.length) return;
+    const before = state.extractFile;
+    await holdStored(files.map((file) => file.id));
+    const answer = await call(api.runImport(importerId, { step: 'describeExtracts', useBinaryFiles: true }));
+    for (const [index, header] of (answer.data?.files ?? []).entries()) {
+        const file = files[index];
+        if (!file || header.error) continue;
+        await call(api.describeStoredFile(file.id, { ...(header.dataDate ? { dataDate: header.dataDate } : {}), ...(header.bounds ? { bounds: header.bounds } : {}), ...(header.program ? { program: header.program } : {}) }));
+    }
+    if (before?.stored?.length) await holdStored(before.stored);
+    else state.extractFile = null;
+}
+$('#useMapsButton').addEventListener('click', async () => {
+    try { await holdStored([...state.libraryTicked]); } catch (error) { $('#mapLibraryStatus').innerHTML = notice('error', error.message); return; }
+    showManageMaps(false);
+    await readFromFile({ choose: false });
+});
+// Files of the user's, copied in. With no place chosen, the roads are read from them straight away (the whole of a
+// region's file, or the places of a country's to choose from).
+$('#addMapButton').addEventListener('click', async () => {
+    try {
+        const { files } = await call(api.storeFiles({}, mapFileKinds));
+        if (!files.length) return;
+        $('#mapLibraryStatus').innerHTML = notice('', `Reading what ${listed(files.map((file) => file.name))} ${files.length === 1 ? 'says' : 'say'} of ${files.length === 1 ? 'itself' : 'themselves'}…`);
+        await describeKept(files);
+        $('#mapLibraryStatus').innerHTML = notice('ok', `${listed(files.map((file) => file.name))} ${files.length === 1 ? 'is' : 'are'} kept on this computer, marked as yours.`);
+        await refreshLibrary();
+        if (!state.place) {
+            await holdStored(files.map((file) => file.id));
+            showManageMaps(false);
+            await readFromFile({ choose: false });
+        }
+    } catch (error) {
+        $('#mapLibraryStatus').innerHTML = notice('error', error.message);
+        await refreshLibrary();
     }
 });
-$('#extractButton').addEventListener('click', () => readFromFile({ choose: true }));
-$('#extractHereButton').addEventListener('click', () => readFromFile({ choose: !state.extractFile }));
+// A link from any of the servers listed, Geofabrik's too: which one is read from the link. Each server's downloads open
+// in the browser, to find a file and copy its link; what each offers is said on hovering it.
+$('#mapServerLinks').innerHTML = eitherOf(mapServers.map((server) => `<button class="link" type="button" data-server="${server.id}" title="${escape(`${server.detail} Opens ${server.site} in your browser.`)}">${escape(server.name)} ↗</button>`));
+$('#mapServerLinks').addEventListener('click', (event) => {
+    const server = mapServers.find((item) => item.id === event.target.closest('[data-server]')?.dataset.server);
+    if (server) openExternal(server.site, `${server.name}'s downloads`);
+});
+$('#mapLinkButton').addEventListener('click', async () => {
+    let link;
+    try { link = checkedMapLink($('#mapLinkInput').value); } catch (error) { $('#mapLibraryStatus').innerHTML = notice('error', error.message); return; }
+    const server = mapServers.find((item) => item.name === link.server);
+    const file = await downloadMap({ url: link.url, server: link.server, checksumUrl: checksumUrlOf(link.url), details: { serverId: server?.id }, into: '#sheetDownloadProgress' });
+    if (file) { $('#mapLinkInput').value = ''; await refreshLibrary(); }
+});
+// A download into the file store, with a bar, a way to cancel, and what the file says of itself kept with it.
+async function downloadMap({ url, server, checksumUrl, details, into = '#downloadProgress', status = '#mapLibraryStatus' }) {
+    const progress = $(into);
+    const downloadId = `download-${Date.now()}`;
+    const name = decodeURIComponent(url.split('/').pop());
+    state.download = { id: downloadId, started: performance.now(), name };
+    progress.hidden = false;
+    progress.innerHTML = `<li class="reading"><progress class="downloadBar" max="1000" value="0"></progress><span class="downloadText muted small">Downloading ${escape(name)} from ${escape(server)}…</span> <button class="link small" type="button" data-cancel-download>Cancel</button></li>`;
+    progress.querySelector('[data-cancel-download]').addEventListener('click', () => call(api.cancelDownload(downloadId)).catch(() => {}));
+    state.downloadInto = into;
+    try {
+        const { file } = await call(api.downloadFile(url, { server, checksumUrl, details, downloadId }));
+        progress.innerHTML = `<li class="reading"><span class="muted small">Reading what ${escape(file.name)} says of itself…</span></li>`;
+        await describeKept([file]);
+        $(status).innerHTML = notice('ok', `${file.name} is downloaded from ${server} and kept on this computer${checksumUrl ? ', its checksum matched' : ''}.`);
+        return { ...file, details: { ...file.details } };
+    } catch (error) {
+        $(status).innerHTML = notice(/cancelled/.test(error.message) ? 'warning' : 'error', error.message);
+        return null;
+    } finally {
+        state.download = null;
+        progress.hidden = true;
+        progress.innerHTML = '';
+    }
+}
+function heardDownload(progress) {
+    if (progress?.stage !== 'download' || progress.downloadId !== state.download?.id) return;
+    const box = $(state.downloadInto ?? '#downloadProgress');
+    const bar = box?.querySelector('.downloadBar');
+    const text = box?.querySelector('.downloadText');
+    if (!bar || !text) return;
+    const seconds = Math.round((performance.now() - state.download.started) / 1000);
+    const share = progress.total ? progress.done / progress.total : null;
+    if (share !== null) bar.value = Math.round(share * 1000); else bar.removeAttribute('value');
+    const left = share > 0.02 && seconds > 2 ? Math.round(seconds * (1 - share) / share) : null;
+    text.textContent = `Downloading ${state.download.name}: ${number(progress.done / 1048576)}${progress.total ? ` of ${number(progress.total / 1048576)}` : ''} MB, ${seconds} s${left !== null ? `, about ${left} s to go` : ''}`;
+}
+async function openExternal(url, name) {
+    try {
+        if (!api?.openLink) throw new Error('unavailable');
+        await call(api.openLink(url));
+        toast(`${name} are open in your browser.`);
+    } catch {
+        try { await navigator.clipboard.writeText(url); toast(`This Konjugate cannot open a browser: the address of ${name} is copied, to paste in yours.`); } catch { toast(`Open this in your browser: ${url}`); }
+    }
+}
+// The sheet over the steps: opened from the step's Manage maps, closed with Done or Escape.
+function showManageMaps(open) {
+    $('#manageMaps').hidden = !open;
+    $('#panel').classList.toggle('sheetOpen', open);
+    if (open) { $('#panel').scrollTop = 0; refreshLibrary(); renderCacheSummary(); $('#manageMapsDone').focus(); }
+}
+$('#manageMapsButton').addEventListener('click', () => showManageMaps(true));
+$('#manageMapsDone').addEventListener('click', () => showManageMaps(false));
 
+// ---- where the area's roads come from: proposed ------------------------------------------------------------------
+// Worked out again as the area changes (the place, how far around it, the road level), the maps kept, or the files in
+// hand: which of Geofabrik's extracts cover it (its index, kept a week), how large those not kept are (asked of the
+// server), and from that the proposal. Change lists the others.
+const geofabrik = mapServers.find((server) => server.indexUrl);
+const bboxKey = (bbox) => ['south', 'west', 'north', 'east'].map((side) => bbox[side].toFixed(3)).join(',');
+async function coveringOf(bbox) {
+    const key = bboxKey(bbox);
+    if (state.covering?.key === key) return state.covering.answer;
+    let answer = null;
+    try {
+        await call(api.fetchFile(importerId, 'mapIndex', geofabrik.indexUrl, 'geofabrik-index.json', { cache: 'use', maximumAgeDays: 7 }));
+        const found = await call(api.runImport(importerId, { step: 'mapsCovering', bbox }));
+        await call(api.clearFile(importerId, 'mapIndex'));
+        if (!found.report?.errors?.length) answer = found.data;
+    } catch { answer = null; }
+    state.covering = { key, answer };
+    return answer;
+}
+async function sizesOf(maps) {
+    for (const map of maps) {
+        if (state.sizes[map.url] !== undefined) continue;
+        try { state.sizes[map.url] = (await call(api.fileSize(map.url))).bytes; } catch { state.sizes[map.url] = null; }
+    }
+}
+let sourceTimer = null;
+function updateSource() {
+    clearTimeout(sourceTimer);
+    sourceTimer = setTimeout(workOutSource, 350);
+}
+async function workOutSource() {
+    if (!state.place || !state.bbox) return;
+    const ticket = (state.sourceTicket ?? 0) + 1;
+    state.sourceTicket = ticket;
+    const { width, height } = spanOf(state.bbox);
+    const across = Math.max(width, height);
+    const level = $('#roadLevelSelect').value === 'city' ? 'city' : 'major';
+    const serverLimit = level === 'city' ? maximumCityKilometres : maximumSpanKilometres;
+    const store = Boolean(api?.storedFiles);
+    let covering = null;
+    if (store) {
+        renderSource({ kind: 'working' });
+        covering = await coveringOf(state.bbox);
+        if (covering?.maps?.length) await sizesOf(covering.maps.filter((map) => !keptAs(state.library, map)));
+    }
+    if (ticket !== state.sourceTicket) return;
+    state.proposal = proposeSource({ bbox: state.bbox, across, level, serverLimit, kept: store ? state.library : [], covering, sizes: state.sizes });
+    renderSource(state.proposal);
+}
+const sourceNames = (list) => listed(list.map((item) => (item.details ? mapTitle(item) : `${item.name}${item.parent ? `, ${item.parent}` : ''}`)));
+function renderSource(proposal) {
+    const choice = state.sourceChoice && proposal.alternatives?.includes(state.sourceChoice) ? state.sourceChoice : proposal.kind;
+    const shown = { server: $('#fetchButton'), kept: $('#extractHereButton'), hand: $('#extractHereButton'), download: $('#downloadLoadButton') };
+    // Files in hand (read before, or chosen under Manage maps) are what Load roads reads, whatever is proposed.
+    const kind = state.extractFile && choice !== 'server' && choice !== 'download' ? 'hand' : choice;
+    for (const button of ['#fetchButton', '#extractHereButton', '#downloadLoadButton']) $(button).hidden = shown[kind] !== $(button);
+    const dates = (files) => files.map((file) => file.details?.dataDate).filter(Boolean).sort();
+    let text = '';
+    if (kind === 'working') text = '<span class="muted">Looking for the maps that cover it…</span>';
+    else if (kind === 'hand') text = `From ${escape(state.extractFile.name)}`;
+    else if (kind === 'kept') text = `From your map${proposal.use.length === 1 ? '' : 's'}: ${escape(sourceNames(proposal.use))}${dates(proposal.use).length ? ` (OpenStreetMap as of ${dayOfDate(dates(proposal.use)[0])})` : ''}`;
+    else if (kind === 'download') text = `From Geofabrik: ${escape(sourceNames(proposal.download))}${proposal.use.length ? `, with your ${escape(sourceNames(proposal.use))}` : ''}<br><span class="muted small">${proposal.bytes ? `${bytesText(proposal.bytes)}, ` : ''}downloaded once and kept</span>`;
+    else if (kind === 'server') text = 'From OpenStreetMap\'s server';
+    else text = '<span class="danger">No way to these roads yet</span>';
+    $('#sourceText').innerHTML = text;
+    $('#sourceWhy').textContent = kind === proposal.kind ? proposal.why ?? '' : kind === 'hand' ? 'The map files in hand, read before or chosen under Manage maps.' : 'Chosen instead of what was proposed.';
+    $('#changeSourceButton').hidden = kind === 'working' || !proposal.alternatives?.length;
+    $('#extractHereButton').textContent = 'Load roads';
+    renderSourceChoices(proposal, kind);
+}
+const choiceText = {
+    server: () => ['From OpenStreetMap\'s server', 'Asked for this area now; slow for a large one.'],
+    kept: (proposal) => [`From your map${proposal.overlapping.length === 1 ? '' : 's'}: ${sourceNames(proposal.overlapping)}`, 'They may not hold all of this area.'],
+    download: (proposal) => [`Download from Geofabrik: ${sourceNames(proposal.download)}`, `${proposal.bytes ? `${bytesText(proposal.bytes)}, ` : ''}kept on this computer.`],
+    file: () => ['A file of yours…', 'A .osm.pbf file from your disk, copied in and kept.']
+};
+function renderSourceChoices(proposal, kind) {
+    const list = $('#sourceChoices');
+    const others = [...new Set([proposal.kind, ...(proposal.alternatives ?? [])])].filter((item) => item !== kind && item !== 'none' && choiceText[item]);
+    list.innerHTML = others.map((item) => { const [title, detail] = choiceText[item](proposal); return `<li><button class="link" type="button" data-source="${item}">${escape(title)}</button><span class="muted small">${escape(detail)}</span></li>`; }).join('');
+    list.querySelectorAll('[data-source]').forEach((button) => button.addEventListener('click', async () => {
+        list.hidden = true;
+        $('#changeSourceButton').setAttribute('aria-expanded', 'false');
+        if (button.dataset.source === 'file') { await addFileForArea(); return; }
+        if (button.dataset.source === 'kept') state.extractFile = null;
+        state.sourceChoice = button.dataset.source;
+        renderSource(state.proposal);
+    }));
+}
+$('#changeSourceButton').addEventListener('click', () => {
+    const list = $('#sourceChoices');
+    list.hidden = !list.hidden;
+    $('#changeSourceButton').setAttribute('aria-expanded', String(!list.hidden));
+});
+async function addFileForArea() {
+    try {
+        const { files } = await call(api.storeFiles({}, mapFileKinds));
+        if (!files.length) return;
+        await describeKept(files);
+        await refreshLibrary();
+        await holdStored(files.map((file) => file.id));
+        renderSource(state.proposal);
+    } catch (error) {
+        $('#regionStatus').innerHTML = notice('error', error.message);
+    }
+}
+// Load roads from the maps in hand or the kept maps proposed.
+$('#extractHereButton').addEventListener('click', async () => {
+    const choice = state.sourceChoice ?? state.proposal?.kind;
+    if (!state.extractFile) {
+        const files = choice === 'kept' && state.sourceChoice === 'kept' ? state.proposal.overlapping : state.proposal?.use ?? [];
+        if (!files.length) { showManageMaps(true); return; }
+        try { await holdStored(files.map((file) => file.id)); } catch (error) { $('#regionStatus').innerHTML = notice('error', error.message); return; }
+    }
+    await readFromFile({ choose: false });
+});
+// Download and load: the maps not kept downloaded one by one, with the kept ones read with them.
+async function downloadAndLoad() {
+    const proposal = state.proposal;
+    if (!proposal?.download?.length) return;
+    const fresh = [];
+    for (const map of proposal.download) {
+        const file = await downloadMap({ url: map.url, server: geofabrik.name, checksumUrl: map.checksumUrl, details: { region: map.name, ...(map.parent ? { parent: map.parent } : {}), serverId: geofabrik.id, indexId: map.id }, status: '#regionStatus' });
+        if (!file) return;
+        fresh.push(file);
+    }
+    await refreshLibrary();
+    await holdStored([...proposal.use.map((file) => file.id), ...fresh.map((file) => file.id)]);
+    state.sourceChoice = null;
+    await readFromFile({ choose: false });
+}
+$('#downloadLoadButton').addEventListener('click', downloadAndLoad);
+refreshLibrary();
 // ---- the network: pins and links ----------------------------------------------------------------------
 
 function resetNetwork() {
@@ -1743,7 +2093,8 @@ document.addEventListener('keydown', (event) => {
     // belongs to the system).
     const mod = commandHeld(event, keys);
     if (event.key === 'Escape') {
-        if (!$('#contextMenu').hidden) closeMenu();
+        if (!$('#manageMaps').hidden) showManageMaps(false);
+        else if (!$('#contextMenu').hidden) closeMenu();
         else if (!$('#shortcuts').hidden) toggleShortcuts(false);
         else if (state.linkFrom) stopLinking();
         else if (map.addKind) setAddRole(null);
@@ -2650,7 +3001,7 @@ function sessionState() {
         version: 2, place: state.place ? { display_name: state.place.display_name, boundingbox: state.place.boundingbox } : null,
         margin: String(marginKilometres()), bbox: state.bbox, roadLevel: state.roadLevel, sample: Boolean(state.sample), portVolume: state.portVolume,
         // Links without their legs, which are routed again when the session is restored (from the same roads, the same legs).
-        holidays: state.holidays, currency: state.currency, extract: state.extract, pins: state.pins, links: state.links.map(({ id, from, to, basis, vehicles, time, backup, share }) => ({ id, from, to, basis, ...(vehicles ? { vehicles } : {}), ...(time ? { time } : {}), ...(backup ? { backup: true } : {}), ...(Number(share) > 0 ? { share: Number(share) } : {}) })), vehicles: state.vehicles, categories: state.categories,
+        holidays: state.holidays, currency: state.currency, extract: state.extract, extractStored: state.extractFile?.stored ?? null, pins: state.pins, links: state.links.map(({ id, from, to, basis, vehicles, time, backup, share }) => ({ id, from, to, basis, ...(vehicles ? { vehicles } : {}), ...(time ? { time } : {}), ...(backup ? { backup: true } : {}), ...(Number(share) > 0 ? { share: Number(share) } : {}) })), vehicles: state.vehicles, categories: state.categories,
         useCalibration: Boolean(state.useCalibration),
         dismissed: [...state.dismissed], suggestions: Object.keys(state.suggestions), available: [...state.available], listRole: state.listRole,
         built: state.built, keepInStep: $('#keepInStep').checked,
@@ -2786,6 +3137,13 @@ async function restoreSession() {
         state.extract = (answer.inputs ?? []).find((input) => input.role === 'roads' && input.derivedFrom)?.derivedFrom ?? (typeof saved.extract === 'string' ? saved.extract : null);
         // The files themselves are not kept with a session: none is in hand after a restore.
         state.extractFile = null;
+        // Maps from the file store the session was read from are put in hand again, if still kept: no dialog to reopen it.
+        if (Array.isArray(saved.extractStored) && saved.extractStored.length && api?.useStoredFiles) {
+            refreshLibrary().then(() => {
+                const ids = saved.extractStored.filter((id) => state.library.some((file) => file.id === id));
+                if (ids.length) holdStored(ids).catch(() => {});
+            });
+        }
         for (const input of (answer.inputs ?? []).filter((item) => item.retrievedAt)) {
             const known = state.fetchedAt[input.role];
             if (!known || input.retrievedAt < known.at) state.fetchedAt[input.role] = { at: input.retrievedAt, cached: false };
@@ -2809,7 +3167,7 @@ function setBusy(busy) {
         if ((state.edits ?? 0) !== state.builtEdits) setTimeout(() => build({ focus: false }), 0);
     }
     // Run waits too: a scenario asked for while the model is being built would otherwise be silently ignored.
-    for (const selector of ['#fetchButton', '#sampleButton', '#extractButton', '#extractHereButton', '#sitesButton', '#searchButton', '#runScenarioButton', ...Object.keys(sources).map((source) => `[data-fetch-source="${source}"]`)]) $(selector).disabled = busy;
+    for (const selector of ['#fetchButton', '#sampleButton', '#extractHereButton', '#downloadLoadButton', '#sitesButton', '#searchButton', '#runScenarioButton', ...Object.keys(sources).map((source) => `[data-fetch-source="${source}"]`)]) $(selector).disabled = busy;
     if (!busy) showArea();
     const errors = networkProblems(state.pins, state.links, state.vehicles, state.categories, state.holidays).filter((problem) => problem.level === 'error');
     $('#buildButton').disabled = busy || errors.length > 0 || !state.pins.length;
@@ -3716,7 +4074,8 @@ $('#showScenarioButton').addEventListener('click', async () => {
 
 api?.onProgress?.((progress) => {
     heardReading(progress);
-    if (progress?.stage === 'import') return;
+    heardDownload(progress);
+    if (progress?.stage === 'import' || progress?.stage === 'download') return;
     if (state.busy && progress?.message && !$('#stepScenario').hidden && $('#scenarioStatus').textContent) $('#scenarioStatus').innerHTML = notice('', progress.message);
 });
 

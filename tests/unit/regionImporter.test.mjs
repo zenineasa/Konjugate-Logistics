@@ -32,10 +32,12 @@ const sizeOf = (value) => Buffer.byteLength(JSON.stringify(value));
 
 test('the manifest declares a file role for every kind the importer reads, and every template it builds from', () => {
     const importer = addon.contributes.importers.find((entry) => entry.importerId === 'region');
-    assert.deepEqual(importer.files.map((file) => file.role), [...osmRoles, ...portwatchRoles, 'extract', 'sites', 'times', 'operator']);
+    assert.deepEqual(importer.files.map((file) => file.role), [...osmRoles, ...portwatchRoles, 'extract', 'mapIndex', 'sites', 'times', 'operator']);
     const components = plugin.contributes.filter((entry) => entry.kind === 'component').map((entry) => entry.componentId);
     for (const id of templateIds) assert.ok(components.includes(id), `${id} is a component`);
-    assert.deepEqual(addon.network.hosts.sort(), ['nominatim.openstreetmap.org', 'overpass-api.de', 'services9.arcgis.com']);
+    assert.deepEqual(addon.network.hosts.sort(), ['download.bbbike.org', 'download.geofabrik.de', 'download.openstreetmap.fr', 'nominatim.openstreetmap.org', 'overpass-api.de', 'services9.arcgis.com']);
+    // Maps kept for the user in Konjugate's own data folder: downloaded from those servers, or brought in from disk.
+    assert.ok(addon.permissions.includes('files.store') && addon.requires.includes('storedFiles'));
     // Pages it may open in the browser, for the user to read a travel time off: only the two maps.
     assert.ok(addon.permissions.includes('links.open') && addon.requires.includes('openLink'));
     // A Konjugate whose engine drops a scenario's changes on some models is refused, not run.
@@ -44,7 +46,7 @@ test('the manifest declares a file role for every kind the importer reads, and e
     assert.ok(addon.requires.includes('binaryInputs') && addon.contributes.importers[0].files.find((file) => file.role === 'extract').binary === true);
     // Several, for a place on a border: a Konjugate that takes one only would refuse them, so it is required.
     assert.ok(addon.requires.includes('multipleBinaryInputs') && addon.contributes.importers[0].files.find((file) => file.role === 'extract').multiple === true);
-    assert.deepEqual(addon.links.hosts.sort(), ['download.geofabrik.de', 'www.google.com', 'www.openstreetmap.org']);
+    assert.deepEqual(addon.links.hosts.sort(), ['download.bbbike.org', 'download.geofabrik.de', 'download.openstreetmap.fr', 'www.google.com', 'www.openstreetmap.org']);
     // The scenarios: each follows paths the window supplies, per parameter, forked when the window says.
     assert.ok(addon.permissions.includes('scenario.run'));
     for (const feature of ['scenarioForkTime', 'parameterSchedules', 'suppliedPerParameter']) assert.ok(addon.requires.includes(feature), feature);

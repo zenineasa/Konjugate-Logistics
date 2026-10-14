@@ -8,6 +8,7 @@
     "copyright": "Copyright © 2026 Zenin Easa Panthakkalakath",
     "permissions": [
         "data.import",
+        "files.store",
         "links.open",
         "model.open",
         "network.fetch",
@@ -24,7 +25,8 @@
         "openLink",
         "scenarioEveryBackend",
         "binaryInputs",
-        "multipleBinaryInputs"
+        "multipleBinaryInputs",
+        "storedFiles"
     ],
     "contributes": {
         "toolstrip": [
@@ -51,6 +53,7 @@
                     { "role": "portwatchPorts", "label": "IMF PortWatch ports", "accept": ["json"], "description": "The IMF PortWatch ports around the region, as its ArcGIS service returns them." },
                     { "role": "portwatchActivity", "multiple": true, "label": "IMF PortWatch port activity", "accept": ["json"], "description": "A port's daily calls and trade estimates from IMF PortWatch, one file per port." },
                     { "role": "extract", "binary": true, "multiple": true, "label": "OpenStreetMap extracts", "accept": ["pbf"], "description": "A region's OpenStreetMap data as .osm.pbf files (download.geofabrik.de publishes them), one or several (a city on a border, its map in one extract for each country): the roads and place names of the area chosen are read from them on this computer, with no map server, and kept in their place." },
+                    { "role": "mapIndex", "label": "Index of map extracts", "accept": ["json"], "description": "Geofabrik's index of its OpenStreetMap extracts, with their outlines, to find the ones covering a place." },
                     { "role": "sites", "label": "Your own sites", "accept": ["csv", "txt"], "description": "One row per site: name, kind (supplier, port, warehouse, store, dark store or customer area), latitude, longitude, and optionally teuPerDay, floorArea, population and from (the sites it is supplied from, separated by |)." },
                     { "role": "times", "label": "Your travel times", "accept": ["csv", "txt"], "description": "One row per link: from and to (site names), time door to door (1:25, 85 min or 1 h 25 min), and optionally kilometres, when (any, peak, midday or night) and a note." },
                     { "role": "operator", "label": "Your fleet operator", "accept": ["json"], "description": "A haulier's trucks: one or two truck sizes with their costs, depots with their trucks, and the lanes it carries by origin and destination." }
@@ -163,6 +166,9 @@
     },
     "network": {
         "hosts": [
+            "download.bbbike.org",
+            "download.geofabrik.de",
+            "download.openstreetmap.fr",
             "nominatim.openstreetmap.org",
             "overpass-api.de",
             "services9.arcgis.com"
@@ -170,7 +176,9 @@
     },
     "links": {
         "hosts": [
+            "download.bbbike.org",
             "download.geofabrik.de",
+            "download.openstreetmap.fr",
             "www.google.com",
             "www.openstreetmap.org"
         ]

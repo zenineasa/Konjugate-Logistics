@@ -37,24 +37,36 @@
                             </select>
                         </label>
                         <div class="muted small" id="areaSize"></div>
-                        <div class="row">
-                            <button class="button primary" type="button" id="fetchButton" title="Load the roads and place names from OpenStreetMap's server (or from the maps kept on this computer, when they hold this area)">Load roads</button>
-                            <button class="button" type="button" id="extractHereButton" title="Read this area's roads from an OpenStreetMap extract on this computer (a .osm.pbf file), with no map server">Read from a file</button>
-                            <button class="link" type="button" id="freshButton" title="Fetch the roads and place names again from the map servers, not from the maps kept on this computer">Load fresh</button>
+                        <!-- Where the roads come from, proposed: kept maps covering the area, else (a large area) its maps
+                             downloaded once and kept, else OpenStreetMap's server; Change for the others. -->
+                        <div class="source" id="sourceBox">
+                            <div class="sourceText" id="sourceText"></div>
+                            <div class="muted small" id="sourceWhy"></div>
+                            <div class="row sourceButtons">
+                                <button class="button primary" type="button" id="fetchButton" title="Load the roads and place names from OpenStreetMap's server (or from what was fetched before and kept, when it holds this area)">Load roads</button>
+                                <button class="button primary" type="button" id="extractHereButton" hidden title="Read this area's roads from the map files named above, with no map server">Load roads</button>
+                                <button class="button primary" type="button" id="downloadLoadButton" hidden title="Download the maps named above once, keep them on this computer, and read this area's roads from them">Download and load</button>
+                                <button class="link" type="button" id="changeSourceButton" aria-expanded="false">Change</button>
+                            </div>
+                            <ul class="sourceChoices" id="sourceChoices" hidden></ul>
                         </div>
                     </div>
                     <ul class="progress" id="fetchProgress" hidden></ul>
-                    <div class="row small">
-                        <button class="link" type="button" id="sampleButton">Use the sample region</button>
-                        <span class="muted">·</span>
-                        <button class="link" type="button" id="extractButton" title="Read the roads from OpenStreetMap extracts on this computer (.osm.pbf files of your region, as download.geofabrik.de publishes them), with no map server to wait for: for the place searched, or else for the whole of a small file. Choose several for a place on a border, an extract for each country: they are read as one map.">Read roads from a file (.osm.pbf)</button>
-                        <button class="link" type="button" id="extractSourceButton" title="Geofabrik publishes OpenStreetMap extracts by continent, country and region, free and refreshed daily: open its download page in your browser, find your region and take the file ending in .osm.pbf (up to 1 GB; for a large country, a region of it)">where to get one ↗</button>
-                    </div>
+                    <ul class="progress" id="downloadProgress" hidden></ul>
                     <div id="regionStatus"></div>
+                    <!-- Once loaded: one line on where the roads came from; the rest under Details. -->
                     <div class="row small" id="dataAge" hidden><span id="dataAgeText"></span><button class="link" type="button" id="dataAgeFresh">Load fresh</button></div>
-                    <div id="coverageSummary" class="coverage" hidden></div>
-                    <div id="notices"></div>
-                    <div class="row small muted" id="cacheRow" hidden><span id="cacheSummary"></span><button class="link" type="button" id="clearCacheButton" title="Remove the maps kept on this computer; areas are then fetched again from the map servers">Clear</button></div>
+                    <details id="roadDetails" hidden>
+                        <summary>Details <span class="muted small" id="roadDetailsSummary"></span></summary>
+                        <div id="coverageSummary" class="coverage" hidden></div>
+                        <div id="notices"></div>
+                    </details>
+                    <div class="row small stepFooter">
+                        <button class="link" type="button" id="manageMapsButton" title="The map files kept on this computer: their dates, where they came from, updating and removing them, adding files of yours">Manage maps</button>
+                        <span class="muted small" id="mapLibrarySummary"></span>
+                        <span class="spacer"></span>
+                        <button class="link" type="button" id="sampleButton">Use the sample region</button>
+                    </div>
                 </div>
             </section>
 
@@ -322,6 +334,21 @@
                     <div id="scenarioResult"></div>
                 </div>
             </section>
+            <!-- Map housekeeping, over the steps: the files kept, their age and origin, updating, removing and adding. -->
+            <div class="sheet" id="manageMaps" hidden role="dialog" aria-labelledby="manageMapsTitle">
+                <div class="row sheetHeader"><h2 id="manageMapsTitle">Manage maps</h2><span class="spacer"></span><button class="button small" type="button" id="manageMapsDone">Done</button></div>
+                <p class="muted small" id="manageMapsUsage"></p>
+                <ul class="mapList" id="mapList"></ul>
+                <button class="button small" type="button" id="useMapsButton" hidden>Read roads from the map ticked</button>
+                <div id="mapLibraryStatus"></div>
+                <ul class="progress" id="sheetDownloadProgress" hidden></ul>
+                <h3>Add</h3>
+                <div class="row small"><button class="button small" type="button" id="addMapButton" title="Bring in .osm.pbf files from your disk: they are copied here, marked as yours">Add files of yours</button></div>
+                <p class="small">Or download one: find a .osm.pbf file at <span id="mapServerLinks"></span>, copy its link and paste it here. The place card finds Geofabrik's maps covering a place by itself.</p>
+                <div class="row small" id="mapLinkRow"><input type="url" id="mapLinkInput" placeholder="https://… .osm.pbf" aria-label="The link to a .osm.pbf file"><button class="button small" type="button" id="mapLinkButton">Download</button></div>
+                <h3>Kept from the map servers</h3>
+                <div class="row small muted" id="cacheRow" hidden><span id="cacheSummary"></span><button class="link" type="button" id="clearCacheButton" title="Remove the roads kept from the map servers; areas are then fetched again">Clear</button></div>
+            </div>
         </aside>
 
         <div class="splitter" id="splitter" title="Drag to resize panel (double-click to reset)"></div>

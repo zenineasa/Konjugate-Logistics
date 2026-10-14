@@ -27,7 +27,8 @@ import { buildRegionModel, regionModelDefaults } from '../lib/regionModel.mjs';
 import { generateOperator, parseOperator } from '../lib/operator.mjs';
 import { parseTravelTimes } from '../lib/travelTimes.mjs';
 import { maximumCityKilometres, readOverpass } from '../lib/overpass.mjs';
-import { extractAnswers, extractBounds, extractPlaces, mergeReads, orderPlaces, readExtract } from '../lib/osmPbf.mjs';
+import { extractAnswers, extractBounds, extractHeader, extractPlaces, mergeReads, orderPlaces, readExtract } from '../lib/osmPbf.mjs';
+import { mapsCovering, readMapIndex } from '../lib/mapServers.mjs';
 import { listed } from '../lib/categories.mjs';
 import { createRouter } from '../lib/roadGraph.mjs';
 import { compactRoadGraph, createNetworkRouter } from '../lib/routing.mjs';
@@ -238,6 +239,10 @@ export default async function importRegion({ files, helpers, options = {} }) {
     const extracts = files.filter((file) => file.role === 'extract' && file.data);
     if (options.step === 'extract') return extractStep(extracts, options, helpers);
     if (options.step === 'extractPlaces') return extractPlacesStep(extracts, helpers);
+    // What the files kept say of themselves (their area and the date of their data), to show them by.
+    if (options.step === 'describeExtracts') return describeExtractsStep(extracts);
+    // Which of a server's extracts cover the area, from its index (fetched into the mapIndex role).
+    if (options.step === 'mapsCovering') return mapsCoveringStep(files.find((file) => file.role === 'mapIndex'), options);
     if (options.step === 'roads') return roadsStep(answers, options, helpers);
     if (options.step === 'discover' && Array.isArray(options.sources)) return suggestionsStep(answers, options, helpers);
     if (options.step === 'buildNetwork') return buildNetworkStep(answers, options, helpers, operatorText);
@@ -444,6 +449,27 @@ async function extractPlacesStep(files, helpers) {
     const places = orderPlaces(lists).slice(0, 4000);
     if (!places.length) return failure(`${named} ${files.length === 1 ? 'names' : 'name'} no city or town: search a place first, and the roads around it are read from ${files.length === 1 ? 'the file' : 'the files'}.`);
     return { ok: true, data: { step: 'extractPlaces', file: named, places }, report: { errors: [], warnings: [] } };
+}
+
+async function describeExtractsStep(files) {
+    const { inflateSync } = await import('node:zlib');
+    return {
+        ok: true,
+        data: { step: 'describeExtracts', files: files.map((file) => {
+            try { return { name: file.name, ...extractHeader(file.data, inflateSync) }; } catch (error) { return { name: file.name, error: error.message }; }
+        }) },
+        report: { errors: [], warnings: [] }
+    };
+}
+
+function mapsCoveringStep(file, options) {
+    if (!file?.text) return failure('The index of map extracts has not been fetched.');
+    const bbox = options.bbox && ['south', 'west', 'north', 'east'].every((key) => Number.isFinite(options.bbox[key])) ? options.bbox : null;
+    if (!bbox) return failure('Search a place first: the maps covering it are then found.');
+    let index;
+    try { index = readMapIndex(file.text); } catch (error) { return failure(error.message); }
+    const { maps, uncovered } = mapsCovering(index, bbox);
+    return { ok: true, data: { step: 'mapsCovering', maps: maps.map(({ id, name, parent, url, checksumUrl, area }) => ({ id, name, parent, url, checksumUrl, area: Math.round(area) })), uncovered }, report: { errors: [], warnings: [] } };
 }
 
 async function roadsStep(answers, options, helpers) {
