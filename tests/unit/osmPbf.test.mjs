@@ -12,6 +12,8 @@ import { buildRoadGraph } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { compactRoadGraph, createNetworkRouter } from '../../packages/toolbox/lib/routing.mjs';
 import { writeOsmPbf } from '../fixtures/osmPbfFixture.mjs';
 
+const close = (actual, expected, tolerance) => assert.ok(Math.abs(actual - expected) <= tolerance, `${actual} is not within ${tolerance} of ${expected}`);
+
 // A town: a primary road west to east through five nodes, a tertiary street north from its middle, a footpath, a
 // primary road far to the east, and a road running out of the file (its last node is not in it). Ids pass 2^32, as
 // OpenStreetMap's do.
@@ -101,9 +103,14 @@ test('the importer reads an extract for the area asked, or for the file\'s own, 
     const { default: importRegion } = await import('../../packages/toolbox/importers/region.mjs');
     const step = (data, options = {}, name = 'town.osm.pbf') => importRegion({ files: data ? [{ role: 'extract', name, data }] : [], helpers: {}, options: { step: 'extract', ...options } });
     // No place searched: the file's own area, and for a town its streets too.
+    // With no place chosen, a file is read whole only when it is a region's: a country's asks for a place first, where
+    // its places are offered, so a gigabyte is not read for more roads than the window can take.
     const whole = await step(file.slice(), { roadLevel: 'auto' });
-    assert.equal(whole.ok, false, 'the fixture covers six degrees: too wide to load whole');
-    assert.match(whole.report.errors[0], /^town\.osm\.pbf covers an area that is [\d,]+ km across: roads are loaded for areas up to 250 km across\. Search a place first/);
+    assert.equal(whole.ok, false, 'the fixture covers some 680 km: more than is read whole');
+    assert.match(whole.report.errors[0], /^town\.osm\.pbf covers an area that is [\d,]+ km across: more than is read whole \(250 km\)\. Search a place first, and the roads around it are read from the file\.$/);
+    // With a place chosen, as far as a thousand kilometres across.
+    const around = await step(file.slice(), { bbox: bounds, roadLevel: 'major' });
+    assert.equal(around.ok, true, JSON.stringify(around.report));
     const small = await step(writeOsmPbf({ nodes: nodes.slice(0, 8), ways: ways.slice(0, 2), bounds: town }), { roadLevel: 'auto' });
     assert.deepEqual(small.data, { step: 'extract', bbox: small.data.bbox, roadLevel: 'city', file: 'town.osm.pbf', files: ['town.osm.pbf'], coverage: { roads: 2, places: 1 }, counts: { blocks: 3, ways: 2, nodes: 8 } });
     assert.ok(Math.abs(small.data.bbox.south - town.south) < 1e-9);
@@ -116,7 +123,7 @@ test('the importer reads an extract for the area asked, or for the file\'s own, 
     assert.match((await step(null)).report.errors[0], /^Choose an OpenStreetMap extract/);
     assert.match((await step(file.slice(), { bbox: { south: 50, west: 50, north: 50.1, east: 50.1 } })).report.errors[0], /^town\.osm\.pbf does not cover this area: it runs from 9\.90, 19\.90 to 10\.60, 26\.10\.$/);
     assert.match((await step(file.slice(), { bbox: { south: 10.3, west: 22, north: 10.4, east: 22.1 } })).report.errors[0], /^town\.osm\.pbf has no major roads in this area\.$/);
-    assert.match((await step(file.slice(), { bbox: { south: 9.9, west: 19.9, north: 10.6, east: 20.9 }, roadLevel: 'city' })).report.errors[0], /^This area is [\d,]+ km across: city streets are loaded for areas up to 40 km across\. Choose a smaller area\.$/);
+    assert.match((await step(file.slice(), { bbox: { south: 9.9, west: 19.9, north: 10.6, east: 20.9 }, roadLevel: 'city' })).report.errors[0], /^This area is [\d,]+ km across: city streets are loaded for areas up to 100 km across\. Choose a smaller area\.$/);
     assert.match((await step(writeOsmPbf({ nodes, ways }), { roadLevel: 'auto' })).report.errors[0], /does not say what area it covers: search a place first/);
     assert.match((await step(new TextEncoder().encode('not an extract at all, just some text that is long enough'), { bbox: town })).report.errors[0], /^town\.osm\.pbf could not be read: This is not an OpenStreetMap extract/);
 });
@@ -164,6 +171,11 @@ test('several extracts are read as one map: a road across the border once, whole
     // An area only one of them reaches is read from that one; one neither reaches is said, with what each covers.
     const farWest = await step([['west.osm.pbf', west], ['east.osm.pbf', east]], { bbox: { south: 9.99, west: 19.95, north: 10.02, east: 20.005 }, roadLevel: 'city' });
     assert.equal(farWest.ok, true);
+    // The one not read is said, with what it covers, and the roads are said to come from the one that was.
+    assert.deepEqual(farWest.report.warnings, ['east.osm.pbf does not reach this area (it runs from 9.90, 20.01 to 10.10, 20.20), so it was not read.']);
+    assert.equal(farWest.data.file, 'west.osm.pbf');
+    assert.ok(farWest.derived.every((item) => item.source === 'west.osm.pbf'));
+    assert.deepEqual(both.report.warnings, [], 'both read, nothing to say');
     const nowhere = await step([['west.osm.pbf', west], ['east.osm.pbf', east]], { bbox: { south: 50, west: 50, north: 50.1, east: 50.1 } });
     assert.match(nowhere.report.errors[0], /^None of west\.osm\.pbf and east\.osm\.pbf covers this area: they run from 9\.90, 19\.90 to 10\.10, 20\.03; and from 9\.90, 20\.01 to 10\.10, 20\.20\.$/);
     // With no place chosen, the area they cover together.
@@ -172,4 +184,21 @@ test('several extracts are read as one map: a road across the border once, whole
     // And the places of both, to choose from.
     const places = await importRegion({ files: [{ role: 'extract', name: 'west.osm.pbf', data: west }, { role: 'extract', name: 'east.osm.pbf', data: east }], helpers: {}, options: { step: 'extractPlaces' } });
     assert.deepEqual(places.data.places.map((place) => place.name), ['Ostdorf', 'Westdorf']);
+});
+
+test('a reading says how far it has got, file by file, each its share by its size, the first reading the first half', async () => {
+    const shares = [];
+    readExtract(file, { bbox: town, inflate: inflateSync, onProgress: (share) => shares.push(share) });
+    assert.ok(shares.length >= 4 && shares.every((share, index) => share >= 0 && share <= 1 && (index === 0 || share >= shares[index - 1])), `rising from 0 to 1 (${shares})`);
+    assert.ok(shares.some((share) => share <= 0.5) && shares.at(-1) === 1, 'both readings');
+    const { default: importRegion } = await import('../../packages/toolbox/importers/region.mjs');
+    const heard = [];
+    const other = writeOsmPbf({ nodes, ways, bounds, perBlock: 1 });
+    await importRegion({ files: [{ role: 'extract', name: 'a.osm.pbf', data: file }, { role: 'extract', name: 'b.osm.pbf', data: other }], helpers: { progress: (progress) => heard.push(progress) }, options: { step: 'extract', bbox: town, roadLevel: 'city' } });
+    assert.ok(heard.every((item) => item.total === 1000 && item.done >= 0 && item.done <= 1000));
+    assert.deepEqual([...new Set(heard.map((item) => item.message))], ['Reading the roads of a.osm.pbf (1 of 2)', 'Reading the roads of b.osm.pbf (2 of 2)']);
+    // The first file is its share of the whole by its size: done when the second begins.
+    const firstDone = heard.filter((item) => item.message.includes('a.osm.pbf')).at(-1).done;
+    close(firstDone, Math.round(file.length / (file.length + other.length) * 1000), 1);
+    assert.equal(heard.at(-1).done, 1000);
 });

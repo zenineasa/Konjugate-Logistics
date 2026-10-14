@@ -11,7 +11,7 @@ Scenes 1 to 6 were run end to end in the real app on 8 October 2026, and the fig
 ## Before recording
 
 1. Open Konjugate with the toolbox installed and press **Logistics**.
-2. Search *Bangalore*, keep **25 km around it** and **Major roads (a region)**, and press **Load roads**. This took three and a half minutes in the trial and is kept on the computer afterwards, so do it before recording: in the recording the same button answers at once.
+2. Search *Bangalore*, keep **25** km around it and **Major roads (a region)**, and press **Load roads**. This took three and a half minutes in the trial and is kept on the computer afterwards, so do it before recording: in the recording the same button answers at once.
 3. Close the window and open it again, so the recording starts from an empty map.
 
 ## The recording

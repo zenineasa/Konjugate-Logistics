@@ -1201,10 +1201,12 @@ try {
     await page.click('#searchButton');
     await page.click('#searchResults button[data-index="0"]');
     await page.selectOption('#roadLevelSelect', 'city');
-    // 25 km around the place is too large an area for city streets; 10 km is not.
-    assert.match(await page.textContent('#areaSize'), /too large for city streets/);
+    // 25 km around the place is too large an area to fetch city streets for from the public server (a file would do);
+    // 10 km is not.
+    assert.match(await page.textContent('#areaSize'), /too large to fetch from the public map server \(40 km across for city streets\): read it from a file instead/);
     assert.equal(await page.isDisabled('#fetchButton'), true);
-    await page.selectOption('#marginSelect', '10');
+    await page.fill('#marginInput', '10');
+    await page.dispatchEvent("#marginInput", "change");
     assert.match(await page.textContent('#areaSize'), /^\d+ × \d+ km(\. A large area: loading from the map server may take a minute\.)?$/);
     await page.click('#fetchButton');
     await page.waitForSelector('#stepNetwork:not([hidden])', { timeout: 60000 }).catch(fail);
@@ -1343,7 +1345,7 @@ try {
         host.chosen.extract = { name: 'continent.osm.pbf', data: writeOsmPbf({ nodes: [...nodes, { id: 901, lat: 45, lon: 15, tags: { place: 'city', name: 'Fernstadt', 'name:en': 'Far City', population: '2400000' } }, { id: 902, lat: 44, lon: 14, tags: { place: 'suburb', name: 'A suburb' } }], ways, bounds: { south: 30, west: 0, north: 50, east: 20 } }) };
         await page.click('#extractButton');
         await page.waitForSelector('#filePlaceFilter');
-        assert.match(await page.textContent('#regionStatus'), /^continent\.osm\.pbf covers an area that is [\d,]+ km across: roads are loaded for areas up to 250 km across\. Choose the place to read from it, below: its 2 cities and towns, the largest first\. No map server is asked\.$/);
+        assert.match(await page.textContent('#regionStatus'), /^continent\.osm\.pbf covers an area that is [\d,]+ km across: more than is read whole \(250 km\)\. Choose the place to read from it, below: its 2 cities and towns, the largest first\. No map server is asked\.$/);
         const offered = () => page.$$eval('#searchResults li[data-name]:not([hidden]) button', (buttons) => buttons.map((button) => button.textContent.replace(/\s+/g, ' ').trim()));
         assert.deepEqual(await offered(), ['Far City Fernstadt city · 2.4 million people', 'Gridtown town']);
         await page.fill('#filePlaceFilter', 'fern');
@@ -1353,14 +1355,43 @@ try {
         await page.click('#searchResults li[data-name]:not([hidden]) button');
         assert.equal(await page.textContent('#chosenName'), 'Gridtown, from continent.osm.pbf');
         assert.deepEqual([await page.textContent('#extractHereButton'), await page.evaluate(() => [document.querySelector('#extractHereButton').classList.contains('primary'), document.querySelector('#fetchButton').classList.contains('primary')])], ['Read from continent.osm.pbf', [true, false]]);
+        // How far around it: a slider and a figure in step, from 1 km (a point has no extent of its own) to 500. Beyond
+        // what the public server is asked for, the file still reads it; beyond what a file is read for, neither does.
+        const area = async (kilometres, level) => {
+            await page.selectOption('#roadLevelSelect', level);
+            await page.fill('#marginInput', String(kilometres));
+            await page.dispatchEvent('#marginInput', 'change');
+            return page.evaluate(() => [document.querySelector('#marginRange').value, document.querySelector('#areaSize').textContent, document.querySelector('#fetchButton').disabled, document.querySelector('#extractHereButton').disabled]);
+        };
+        const [range, size, noServer, noFile] = await area(300, 'major');
+        assert.deepEqual([range, noServer, noFile], ['300', true, false]);
+        // The file is in hand: the area is read from it, whatever the public server would take.
+        assert.match(size, /^\d+ × \d+ km: read from continent\.osm\.pbf, in hand\.$/);
+        assert.deepEqual((await area(900, 'major')).slice(0, 1), ['500'], 'at most 500 km around it');
+        const [, citySize, , cityNoFile] = await area(60, 'city');
+        assert.match(citySize, /too large for city streets, which are read for areas up to 100 km across/);
+        assert.equal(cityNoFile, true);
+        assert.deepEqual((await area(0, 'major')).slice(0, 1), ['10'], 'a place of a file is given some area around it');
+        await page.evaluate(() => { const slider = document.querySelector('#marginRange'); slider.value = '40'; slider.dispatchEvent(new Event('input')); });
+        assert.equal(await page.inputValue('#marginInput'), '40', 'the slider sets the figure');
         // The area is what is included around the place; the file in hand is read for it, with no dialog and no server.
-        await page.selectOption('#marginSelect', '10');
+        await page.fill('#marginInput', '10');
+        await page.dispatchEvent("#marginInput", "change");
         await page.selectOption('#roadLevelSelect', 'city');
         assert.equal(host.chosen.extract, undefined, 'the file was chosen once');
         await page.click('#extractHereButton');
         await page.waitForSelector('#fetchProgress li.done');
         assert.equal(await page.textContent('#fetchProgress li.done'), 'Roads and city streets12 roads and 1 place names, from continent.osm.pbf');
-        assert.deepEqual([await page.textContent('#extractHereButton'), await stateOf(() => window.logisticsToolboxState.extractFile)], ['Read from a file', null]);
+        // The file stays in hand: a larger area is read from it again, with no dialog, whatever the public server would take.
+        assert.deepEqual([await page.textContent('#extractHereButton'), await stateOf(() => window.logisticsToolboxState.extractFile?.name)], ['Read from continent.osm.pbf', 'continent.osm.pbf']);
+        await page.selectOption('#roadLevelSelect', 'major');
+        await page.fill('#marginInput', '300');
+        await page.dispatchEvent('#marginInput', 'change');
+        assert.match(await page.textContent('#areaSize'), /^\d+ × \d+ km: read from continent\.osm\.pbf, in hand\.$/);
+        assert.deepEqual([await page.isDisabled('#fetchButton'), await page.isDisabled('#extractHereButton')], [true, false]);
+        assert.equal(await page.textContent('#stepRegionSummary'), 'Gridtown · 300 km', 'the step says the area chosen, as it is chosen');
+        await page.click('#extractHereButton');
+        await page.waitForFunction(() => /^Roads4 roads and 1 place names, from continent\.osm\.pbf$/.test(document.querySelector('#fetchProgress li.done')?.textContent ?? ''));
         assert.deepEqual(host.requests.slice(requestsBefore).filter((url) => /overpass|nominatim/.test(url)), []);
         await page.click('#sampleButton');
         await page.waitForFunction(() => !document.querySelector('#fetchButton').disabled);
@@ -1373,13 +1404,24 @@ try {
             { name: 'west.osm.pbf', data: writeOsmPbf({ nodes: westNodes, ways: crossing(westNodes), bounds: { ...town, east: 10.03 } }) },
             { name: 'east.osm.pbf', data: writeOsmPbf({ nodes: eastNodes, ways: crossing(eastNodes), bounds: { ...town, west: 10.02 } }) }
         ];
+        // While they are read, a bar says how far it has got and how long it has taken: held open here to look at it.
+        let release;
+        host.holdImport = new Promise((resolve) => { release = resolve; });
         await page.click('#extractButton');
+        await page.waitForSelector('#readingBar');
+        await page.evaluate(() => window.logisticsProgress({ stage: 'import', importerId: 'region', done: 500, total: 1000, message: 'Reading the roads of west.osm.pbf (1 of 2)' }));
+        assert.equal(await page.evaluate(() => document.querySelector('#readingBar').value), 500);
+        assert.match(await page.textContent('#readingText'), /^Reading the roads of west\.osm\.pbf \(1 of 2\): 50%, \d+ s/);
+        host.holdImport = null;
+        release();
         await page.waitForSelector('#fetchProgress li.done, #regionStatus .notice.error');
         assert.equal(await page.locator('#regionStatus .notice.error').count(), 0, await page.textContent('#regionStatus'));
+        assert.equal(await page.locator('#readingBar').count(), 0, 'the bar goes when the reading is done');
+        assert.ok(host.progress.some((item) => /^Reading the roads of (west|east)\.osm\.pbf \(\d of 2\)$/.test(item.message)), 'the importer said how far it had got');
         assert.match(await page.textContent('#fetchProgress li.done'), /^Roads and city streets\d+ roads and 1 place names, from west\.osm\.pbf and east\.osm\.pbf$/);
         assert.equal(await page.textContent('#dataAgeText'), 'Roads read from west.osm.pbf and east.osm.pbf, files of yours: as fresh as they are.');
-        assert.equal(await stateOf(() => window.logisticsToolboxState.extractFile), null);
-        assert.ok(![...host.files.values()].some((file) => file.binary), 'neither extract is kept');
+        assert.deepEqual(await stateOf(() => window.logisticsToolboxState.extractFile?.names), ['west.osm.pbf', 'east.osm.pbf'], 'both stay in hand');
+        assert.ok(!(await host.call('restoreSession', {})).inputs.some((input) => input.role === 'extract'), 'neither is kept with the session');
         await page.click('#sampleButton');
         await page.waitForFunction(() => !document.querySelector('#fetchButton').disabled);
         // The town's own file, eight kilometres across: a city's, so its streets are read too.
@@ -1397,7 +1439,7 @@ try {
         // No map server was asked, and the file itself is not kept: what was read from it is, saying where it came from.
         assert.deepEqual(host.requests.slice(requestsBefore).filter((url) => /overpass/.test(url)), []);
         const kept = [...host.files.values()];
-        assert.ok(!kept.some((file) => file.binary), 'the extract is not among the inputs');
+        assert.ok(!(await host.call('restoreSession', {})).inputs.some((input) => input.role === 'extract'), 'the extract is not kept with the session');
         assert.deepEqual(kept.filter((file) => file.source).map((file) => [file.role, file.name, file.source]), [['roads', 'roads-extract-1.json', 'gridtown.osm.pbf'], ['places', 'places-extract.json', 'gridtown.osm.pbf']]);
         // Two sites placed on it are linked by its streets.
         await page.click('[data-add="warehouse"]');

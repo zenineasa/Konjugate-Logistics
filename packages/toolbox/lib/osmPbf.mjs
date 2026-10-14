@@ -95,6 +95,8 @@ function* blobs(bytes, inflate) {
         at += size;
         yield {
             type,
+            // How far through the file this block ends, as a share of it: for saying how far a reading has got.
+            through: at / bytes.length,
             data() {
                 const blob = new Reader(bytes, start, start + size);
                 while (blob.more) {
@@ -224,7 +226,8 @@ export function extractBounds(bytes, inflate) {
 // A road whose nodes the file lacks (cut off at the extract's own edge) keeps the stretch the file has.
 // `roadLevel: 'none'` reads no roads, and `places` names the kinds of place wanted (cities, towns, suburbs and
 // quarters unless said).
-export function readExtract(bytes, { bbox, roadLevel = 'major', inflate, places: wantedPlaces = placeKinds }) {
+// `onProgress(share)` hears how far it has got, 0 to 1 (the first reading is the first half).
+export function readExtract(bytes, { bbox, roadLevel = 'major', inflate, places: wantedPlaces = placeKinds, onProgress = null }) {
     if (typeof inflate !== 'function') throw new Error('readExtract needs a function that undoes zlib.');
     const wantedRoads = new Set(roadLevel === 'none' ? [] : roadLevel === 'city' ? cityRoads : majorRoads);
     // Each road: its id, its tags, and where its nodes start in `refs` (they end where the next road's start).
@@ -237,6 +240,7 @@ export function readExtract(bytes, { bbox, roadLevel = 'major', inflate, places:
     let index = -1;
     // First reading: the roads, and which nodes they run through.
     for (const blob of blobs(bytes, inflate)) {
+        onProgress?.(blob.through / 2);
         index += 1;
         if (blob.type === 'OSMHeader') { sawHeader = true; continue; }
         if (blob.type !== 'OSMData') continue;
@@ -296,6 +300,7 @@ export function readExtract(bytes, { bbox, roadLevel = 'major', inflate, places:
     let nodes = 0;
     index = -1;
     for (const blob of blobs(bytes, inflate)) {
+        onProgress?.(0.5 + blob.through / 2);
         index += 1;
         if (blob.type === 'OSMHeader') { bounds = extractBounds(bytes, inflate); continue; }
         if (!nodeBlocks.has(index)) continue;
@@ -452,9 +457,9 @@ export function extractAnswers({ roads, places }, { source = 'an OpenStreetMap e
 // The cities and towns a file holds, for choosing one of them as the place to load when the file covers far more than
 // can be loaded whole: [{ name, place, lat, lon, population }], cities first, then the more populous, then by name. A
 // place with a name in English is listed by it (as the map writes it), and found by its own name too (`also`).
-export function extractPlaces(bytes, { inflate, most = 4000 }) {
+export function extractPlaces(bytes, { inflate, most = 4000, onProgress = null }) {
     const world = { south: -90, west: -180, north: 90, east: 180 };
-    const found = readExtract(bytes, { bbox: world, roadLevel: 'none', places: ['city', 'town'], inflate }).places
+    const found = readExtract(bytes, { bbox: world, roadLevel: 'none', places: ['city', 'town'], inflate, onProgress }).places
         .filter((place) => place.tags.name || place.tags['name:en'])
         .map((place) => {
             const name = place.tags['name:en'] ?? place.tags.name;

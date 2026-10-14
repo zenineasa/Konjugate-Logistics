@@ -29,6 +29,18 @@ const api = window.konjugateLauncher;
 const $ = (selector) => document.querySelector(selector);
 const importerId = 'region';
 const maximumSpanKilometres = 250;
+// What a file may be read for: far more than the public server is asked for (it is the user's own computer that reads
+// it), as far as the window can then take its roads. City streets a hundred kilometres across, major roads a thousand
+// (500 km around a place). Kept in step with the importer's own (importers/region.mjs, maximumExtractKilometres).
+const maximumFileKilometres = { major: 1000, city: 100 };
+const maximumMarginKilometres = 500;
+// How far around the place, in kilometres: the slider and the figure kept in step, within 0 and the most there is.
+const marginKilometres = () => Math.min(maximumMarginKilometres, Math.max(0, Math.round(Number($('#marginInput').value) || 0)));
+function setMargin(kilometres) {
+    const value = String(Math.min(maximumMarginKilometres, Math.max(0, Math.round(Number(kilometres) || 0))));
+    $('#marginInput').value = value;
+    $('#marginRange').value = value;
+}
 // What a build may send the host (it accepts 2 MB of options), with room for the settings.
 const maximumNetworkBytes = 1.8 * 1024 * 1024;
 // What each suggestion source fetches from OpenStreetMap (beside the roads and place names), and the candidates it shows.
@@ -204,7 +216,7 @@ document.querySelectorAll('.stepHeader').forEach((header) => {
 function updateStepSummaries() {
     const regSummary = $('#stepRegionSummary');
     if (regSummary) {
-        if (state.place) regSummary.textContent = `${state.place.display_name.split(',')[0]} · ${$('#marginSelect').value} km`;
+        if (state.place) regSummary.textContent = `${state.place.display_name.split(',')[0]} · ${marginKilometres()} km`;
         else if (state.roads) regSummary.textContent = 'Sample region';
         else regSummary.textContent = '';
     }
@@ -282,19 +294,33 @@ function showArea() {
     if (!state.place) return;
     // A place chosen from a file is a point, with no extent of its own: its area is what is included around it.
     const point = Boolean(state.place.fromFile);
-    $('#marginSelect option[value="0"]').disabled = point;
-    if (point && $('#marginSelect').value === '0') $('#marginSelect').value = '10';
-    state.bbox = boundsAround(state.place, Number($('#marginSelect').value));
+    $('#marginRange').min = point ? '1' : '0';
+    $('#marginInput').min = point ? '1' : '0';
+    if (point && marginKilometres() === 0) setMargin(10);
+    state.bbox = boundsAround(state.place, marginKilometres());
     const { width, height } = spanOf(state.bbox);
+    const across = Math.max(width, height);
     const city = $('#roadLevelSelect').value === 'city';
-    const limit = city ? maximumCityKilometres : maximumSpanKilometres;
-    const tooLarge = Math.max(width, height) > limit;
-    $('#areaSize').innerHTML = tooLarge
-        ? `<span style="color:var(--danger)">${number(width)} × ${number(height)} km: too large${city ? ` for city streets, which are loaded for areas up to ${limit} km across; choose major roads, or a smaller place or area` : `. Public map servers answer areas up to ${limit} km across; choose a smaller place or area`}.</span>`
-        : `${number(width)} × ${number(height)} km${Math.max(width, height) > (city ? 2 * cityTileKilometres : 120) && !state.extractFile ? '. A large area: loading from the map server may take a minute.' : ''}`;
-    $('#extractHereButton').disabled = tooLarge || state.busy;
-    $('#fetchButton').disabled = tooLarge || state.busy;
-    $('#freshButton').disabled = tooLarge || state.busy;
+    // Two limits: what the public map server is asked for (a shared, free server: fetched in tiles, one region at a
+    // time), and what a file of the user's may be read for (as far as the window can take the roads).
+    const serverLimit = city ? maximumCityKilometres : maximumSpanKilometres;
+    const fileLimit = maximumFileKilometres[city ? 'city' : 'major'];
+    const forServer = across <= serverLimit;
+    const forFile = across <= fileLimit;
+    const size = `${number(width)} × ${number(height)} km`;
+    // With files in hand, the area is read from them: the server's limit is no reason to stop.
+    const files = state.extractFile ? (state.extractFile.names?.length > 1 ? `the ${state.extractFile.names.length} files in hand` : `${state.extractFile.name}, in hand`) : null;
+    $('#areaSize').innerHTML = !forFile
+        ? `<span style="color:var(--danger)">${size}: too large${city ? ` for city streets, which are read for areas up to ${fileLimit} km across; choose major roads, or less around the place` : `: roads are read for areas up to ${fileLimit} km across; choose less around the place`}.</span>`
+        : files
+            ? `${size}: read from ${escape(files)}.`
+            : !forServer
+            ? `${size}: too large to fetch from the public map server (${serverLimit} km across${city ? ' for city streets' : ''}): read it from a file instead.`
+            : `${size}${across > (city ? 2 * cityTileKilometres : 120) && !state.extractFile ? '. A large area: loading from the map server may take a minute.' : ''}`;
+    $('#extractHereButton').disabled = !forFile || state.busy;
+    $('#fetchButton').disabled = !forServer || state.busy;
+    $('#freshButton').disabled = !forServer || state.busy;
+    updateStepSummaries();
 }
 
 $('#searchForm').addEventListener('submit', async (event) => {
@@ -326,7 +352,8 @@ $('#searchForm').addEventListener('submit', async (event) => {
         $('#searchButton').disabled = false;
     }
 });
-$('#marginSelect').addEventListener('change', showArea);
+$('#marginRange').addEventListener('input', () => { setMargin($('#marginRange').value); showArea(); });
+$('#marginInput').addEventListener('change', () => { setMargin($('#marginInput').value); showArea(); });
 $('#roadLevelSelect').addEventListener('change', showArea);
 
 const wait = (seconds) => new Promise((resolve) => setTimeout(resolve, seconds * 1000));
@@ -579,16 +606,18 @@ async function readFromFile({ choose = true } = {}) {
         // With a place chosen, the road level chosen for it; with none, by the size of what the file covers.
         const roadLevel = state.bbox ? $('#roadLevelSelect').value : 'auto';
         progress.hidden = false;
-        progress.innerHTML = `<li data-kind="roads"><span>${roadLevel === 'city' ? 'Roads and city streets' : labels.roads}</span><span class="state">reading ${escape(file.name)} (${number(file.bytes / 1048576, 1)} MB)…</span></li>`;
+        progress.innerHTML = `<li data-kind="roads"><span>${roadLevel === 'city' ? 'Roads and city streets' : labels.roads}</span><span class="state">reading ${escape(file.name)} (${number(file.bytes / 1048576, 1)} MB)…</span></li>${readingBar()}`;
+        startReading();
         $('#regionStatus').innerHTML = '';
         const row = progress.querySelector('[data-kind="roads"]');
-        const answer = await call(api.runImport(importerId, { step: 'extract', roadLevel, ...(state.bbox ? { bbox: state.bbox } : {}) }));
+        const answer = await call(api.runImport(importerId, { step: 'extract', roadLevel, useBinaryFiles: true, ...(state.bbox ? { bbox: state.bbox } : {}) }));
         if (answer.report?.errors?.length) {
             const reason = answer.report.errors.join(' ');
             // Too much to load whole, and no place chosen: which of the file's places, then?
-            if (!state.bbox && /covers an area that is/.test(reason)) {
+            if (!state.bbox && /covers? an area that (together )?is/.test(reason)) {
                 row.querySelector('.state').textContent = `looking for the places in ${file.name}…`;
-                const found = await call(api.runImport(importerId, { step: 'extractPlaces' }));
+                startReading();
+                const found = await call(api.runImport(importerId, { step: 'extractPlaces', useBinaryFiles: true }));
                 if (found.report?.errors?.length) throw new Error(found.report.errors.join(' '));
                 progress.hidden = true;
                 showFilePlaces(found.data.places, file, reason.replace(/ Search a place first.*$/, ''));
@@ -608,20 +637,59 @@ async function readFromFile({ choose = true } = {}) {
         state.fetchedAt = {};
         state.extract = answer.data.file;
         state.extractSeveral = (answer.data.files?.length ?? 1) > 1;
-        state.extractFile = null;
+        // The files stay in hand: a larger area, or another place, is read from them again with no dialog.
         state.bbox ??= answer.data.bbox;
         row.classList.add('done');
         row.querySelector('span').textContent = state.roadLevel === 'city' ? 'Roads and city streets' : labels.roads;
         row.querySelector('.state').textContent = `${number(answer.data.coverage.roads)} roads and ${number(answer.data.coverage.places)} place names, from ${answer.data.file}`;
         await loadRoads({ keepNetwork: true });
         renderDataAge();
+        // A file that does not reach the area was not read: said, where it was once passed over in silence.
+        if (answer.report?.warnings?.length) $('#regionStatus').insertAdjacentHTML('beforeend', answer.report.warnings.map((text) => notice('warning', text)).join(''));
+        showArea();
     } catch (error) {
         progress.querySelector('[data-kind="roads"]')?.classList.add('failed');
         $('#regionStatus').innerHTML = notice('error', error.message);
     } finally {
+        stopReading();
         setBusy(false);
         showFileButton();
     }
+}
+// A reading of a file shows how far it has got (the importer says, through the host) and how long it has taken: a
+// gigabyte of map takes the best part of a minute, and a line saying "reading…" all that while looked like nothing.
+const readingBar = () => '<li class="reading" id="reading"><progress id="readingBar" max="1000" value="0"></progress><span id="readingText" class="muted small">starting…</span></li>';
+function startReading() {
+    stopReading();
+    state.readingStarted = performance.now();
+    state.readingShare = 0;
+    state.readingWhat = '';
+    if (!$('#reading')) $('#fetchProgress').insertAdjacentHTML('beforeend', readingBar());
+    $('#readingBar').value = 0;
+    state.readingTimer = setInterval(showReading, 1000);
+    showReading();
+}
+function showReading() {
+    const text = $('#readingText');
+    if (!text) return;
+    const seconds = Math.round((performance.now() - state.readingStarted) / 1000);
+    const share = state.readingShare;
+    // How long is left, once enough of it is done to say: by the pace so far.
+    const left = share > 0.05 && seconds > 2 ? Math.round(seconds * (1 - share) / share) : null;
+    text.textContent = `${state.readingWhat ? `${state.readingWhat}: ` : ''}${number(share * 100)}%, ${seconds} s${left !== null ? `, about ${left} s to go` : ''}`;
+}
+function stopReading() {
+    clearInterval(state.readingTimer);
+    state.readingTimer = null;
+    $('#reading')?.remove();
+}
+function heardReading(progress) {
+    if (progress?.stage !== 'import' || !state.readingTimer) return;
+    state.readingShare = Math.min(1, Math.max(0, progress.done / progress.total));
+    state.readingWhat = progress.message ?? '';
+    const bar = $('#readingBar');
+    if (bar) bar.value = Math.round(state.readingShare * 1000);
+    showReading();
 }
 // The file in hand is named on the button that reads from it, and that button leads while there is one.
 function showFileButton() {
@@ -652,7 +720,7 @@ function showFilePlaces(places, file, why) {
         $('#regionStatus').innerHTML = '';
         $('#chosenRegion').hidden = false;
         $('#chosenName').textContent = state.place.display_name;
-        if ($('#marginSelect').value === '0') $('#marginSelect').value = '25';
+        if (marginKilometres() === 0) setMargin(25);
         showArea();
         showFileButton();
     }));
@@ -2580,7 +2648,7 @@ function keepSessionSoon() {
 function sessionState() {
     return {
         version: 2, place: state.place ? { display_name: state.place.display_name, boundingbox: state.place.boundingbox } : null,
-        margin: $('#marginSelect').value, bbox: state.bbox, roadLevel: state.roadLevel, sample: Boolean(state.sample), portVolume: state.portVolume,
+        margin: String(marginKilometres()), bbox: state.bbox, roadLevel: state.roadLevel, sample: Boolean(state.sample), portVolume: state.portVolume,
         // Links without their legs, which are routed again when the session is restored (from the same roads, the same legs).
         holidays: state.holidays, currency: state.currency, extract: state.extract, pins: state.pins, links: state.links.map(({ id, from, to, basis, vehicles, time, backup, share }) => ({ id, from, to, basis, ...(vehicles ? { vehicles } : {}), ...(time ? { time } : {}), ...(backup ? { backup: true } : {}), ...(Number(share) > 0 ? { share: Number(share) } : {}) })), vehicles: state.vehicles, categories: state.categories,
         useCalibration: Boolean(state.useCalibration),
@@ -2635,7 +2703,7 @@ async function restoreSession() {
         state.bbox = saved.bbox;
         state.roadLevel = saved.roadLevel ?? 'major';
         state.sample = Boolean(saved.sample);
-        if (saved.margin) $('#marginSelect').value = saved.margin;
+        if (saved.margin) setMargin(saved.margin);
         $('#roadLevelSelect').value = state.roadLevel;
         if (state.place) {
             $('#chosenRegion').hidden = false;
@@ -2716,6 +2784,8 @@ async function restoreSession() {
         // When the map data the session holds was fetched, by kind, or the file it was read from.
         state.fetchedAt = {};
         state.extract = (answer.inputs ?? []).find((input) => input.role === 'roads' && input.derivedFrom)?.derivedFrom ?? (typeof saved.extract === 'string' ? saved.extract : null);
+        // The files themselves are not kept with a session: none is in hand after a restore.
+        state.extractFile = null;
         for (const input of (answer.inputs ?? []).filter((item) => item.retrievedAt)) {
             const known = state.fetchedAt[input.role];
             if (!known || input.retrievedAt < known.at) state.fetchedAt[input.role] = { at: input.retrievedAt, cached: false };
@@ -3645,6 +3715,8 @@ $('#showScenarioButton').addEventListener('click', async () => {
 });
 
 api?.onProgress?.((progress) => {
+    heardReading(progress);
+    if (progress?.stage === 'import') return;
     if (state.busy && progress?.message && !$('#stepScenario').hidden && $('#scenarioStatus').textContent) $('#scenarioStatus').innerHTML = notice('', progress.message);
 });
 

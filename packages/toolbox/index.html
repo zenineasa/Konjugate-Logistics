@@ -23,14 +23,13 @@
                     <ul class="results" id="searchResults" hidden></ul>
                     <div class="chosen" id="chosenRegion" hidden>
                         <div class="chosenName" id="chosenName"></div>
-                        <label class="row small">Include
-                            <select id="marginSelect">
-                                <option value="0">the place itself</option>
-                                <option value="10">10 km around it</option>
-                                <option value="25" selected>25 km around it</option>
-                                <option value="50">50 km around it</option>
-                            </select>
-                        </label>
+                        <!-- How far around the place, from the place itself to 500 km: a slider, and the figure to type. -->
+                        <div class="row small marginRow">
+                            <label for="marginRange">Include</label>
+                            <input type="range" id="marginRange" min="0" max="500" step="1" value="25" aria-label="Kilometres around the place, by slider">
+                            <input type="number" id="marginInput" min="0" max="500" step="1" value="25" aria-label="Kilometres around the place">
+                            <span>km around it</span>
+                        </div>
                         <label class="row small" title="Major roads suit a region: motorways, trunk and primary roads. City streets add secondary and tertiary roads, where stores and dark stores are, for an area up to 40 km across.">Roads
                             <select id="roadLevelSelect">
                                 <option value="major" selected>Major roads (a region)</option>

@@ -131,7 +131,8 @@ try {
         await toolbox.fill('#searchInput', 'Port Alder');
         await toolbox.click('#searchButton');
         await toolbox.click('#searchResults button[data-index="0"]');
-        await toolbox.selectOption('#marginSelect', '25');
+        await toolbox.fill('#marginInput', '25');
+        await toolbox.dispatchEvent('#marginInput', 'change');
         assert.match(await toolbox.textContent('#areaSize'), /^\d+ × \d+ km/);
         await toolbox.click('#fetchButton');
         await toolbox.waitForFunction(() => document.querySelectorAll('#fetchProgress li.done').length === 2, null, { timeout: 60000 }).catch(fail);

@@ -137,7 +137,14 @@ export async function createHost() {
         },
         async runImport({ options = {} }) {
             if (JSON.stringify(options).length > limits.options) throw new Error('The options are larger than the host accepts.');
-            const result = await importRegion({ files: [...files.values()].map(({ role, name, text, data }) => (data ? { role, name, data } : { role, name, text, encoding: 'utf-8' })), helpers, options });
+            // As Konjugate's host does: binary files only for a run that asks for them, and they stay chosen after it.
+            const given = [...files.values()].filter((file) => !file.binary || options.useBinaryFiles === true);
+            // A test may hold a run open, to look at the window while it waits.
+            if (host.holdImport) await host.holdImport;
+            const heard = [];
+            const reporting = { ...helpers, progress: (progress) => heard.push({ stage: 'import', importerId: 'region', ...progress }) };
+            const result = await importRegion({ files: given.map(({ role, name, text, data }) => (data ? { role, name, data } : { role, name, text, encoding: 'utf-8' })), helpers: reporting, options });
+            host.progress.push(...heard);
             if (result.data && JSON.stringify(result.data).length > limits.importerData) throw new Error('The importer returned more data than the host accepts.');
             // As Konjugate's host does: what the importer derived takes the place of the files of those roles and of the
             // binary file it read, each a text file of a declared role that is not binary and within the size a file may be.
@@ -147,7 +154,7 @@ export async function createHost() {
                     if (!declared || declared.binary || typeof item.text !== 'string') throw new Error('An importer may derive files only of its own roles that are not binary.');
                     if (Buffer.byteLength(item.text) > limits.input) throw new Error('A derived file is larger than the 10 MB limit.');
                 }
-                for (const [key, file] of files) if (file.binary || result.derived.some((item) => item.role === file.role)) files.delete(key);
+                for (const [key, file] of files) if (!file.binary && result.derived.some((item) => item.role === file.role)) files.delete(key);
                 for (const item of result.derived) files.set(`${item.role}/${item.name}`, { role: item.role, name: item.name, text: item.text, source: item.source });
                 host.imported = null;
             }
@@ -195,7 +202,7 @@ export async function createHost() {
         }
     };
     const host = {
-        files, requests, opened, chosen, cache, kept: 0, imported: null, scenarioRuns: 0, dropChanges: false,
+        files, requests, opened, chosen, cache, kept: 0, imported: null, scenarioRuns: 0, dropChanges: false, progress: [],
         get session() { return session; },
         set session(value) { session = value; },
         async call(name, args) {
@@ -240,7 +247,8 @@ export async function openWindow(page, host, { inspect = true } = {}) {
                 runScenario: (scenarioId, options) => window.logisticsHost('runScenario', { scenarioId, ...options }),
                 openInCanvas: (scenarioId, options = {}) => window.logisticsHost('openInCanvas', { scenarioId, ...options }),
                 restoreSession: call('restoreSession'),
-                onProgress: () => {}
+                // As Konjugate's host passes them on: what an importer says of its progress, to the window.
+                onProgress: (callback) => { window.logisticsProgress = callback; }
             });
         });
         page.hostBound = true;

@@ -109,6 +109,15 @@ td.number { text-align: right; font-variant-numeric: tabular-nums; }
 .panel td.number { white-space: nowrap; }
 .panel td.action { width: 1%; white-space: nowrap; text-align: right; }
 .scenarioChoice label { font-weight: 600; }
+/* How far around the place: a slider across the row, and the figure beside it to type. */
+.marginRow { align-items: center; flex-wrap: nowrap; }
+.marginRow input[type="range"] { flex: 1 1 auto; min-width: 0; }
+.marginRow input[type="number"] { width: 64px; flex: 0 0 64px; }
+.marginRow span { white-space: nowrap; }
+/* A long reading's bar, and how far and how long under it. */
+.progress li.reading { display: block; }
+.progress li.reading progress { width: 100%; height: 6px; accent-color: var(--accent); }
+.progress li.reading span { display: block; margin-top: 2px; }
 /* A long explanation shows its first two lines, and the rest when asked for: whole, they pushed what they explain out
    of sight. */
 .panel p.clamped { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; margin-bottom: 0; }
