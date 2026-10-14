@@ -105,7 +105,7 @@ test('the importer reads an extract for the area asked, or for the file\'s own, 
     assert.equal(whole.ok, false, 'the fixture covers six degrees: too wide to load whole');
     assert.match(whole.report.errors[0], /^town\.osm\.pbf covers an area that is [\d,]+ km across: roads are loaded for areas up to 250 km across\. Search a place first/);
     const small = await step(writeOsmPbf({ nodes: nodes.slice(0, 8), ways: ways.slice(0, 2), bounds: town }), { roadLevel: 'auto' });
-    assert.deepEqual(small.data, { step: 'extract', bbox: small.data.bbox, roadLevel: 'city', file: 'town.osm.pbf', coverage: { roads: 2, places: 1 }, counts: { blocks: 3, ways: 2, nodes: 8 } });
+    assert.deepEqual(small.data, { step: 'extract', bbox: small.data.bbox, roadLevel: 'city', file: 'town.osm.pbf', files: ['town.osm.pbf'], coverage: { roads: 2, places: 1 }, counts: { blocks: 3, ways: 2, nodes: 8 } });
     assert.ok(Math.abs(small.data.bbox.south - town.south) < 1e-9);
     assert.deepEqual(small.derived.map((item) => [item.role, item.name, item.source]), [['roads', 'roads-extract-1.json', 'town.osm.pbf'], ['places', 'places-extract.json', 'town.osm.pbf']]);
     assert.deepEqual(JSON.parse(small.derived[0].text).elements.map((element) => element.id), [100, 101]);
@@ -142,4 +142,34 @@ test('a file\'s own cities and towns are listed to choose a place from: cities f
     assert.deepEqual([listed.ok, listed.data.file, listed.data.places.length, listed.derived], [true, 'zone.osm.pbf', 5, undefined]);
     assert.match((await step(writeOsmPbf({ nodes: nodes.slice(0, 7), ways: ways.slice(0, 2), bounds }))).report.errors[0], /^zone\.osm\.pbf names no city or town/);
     assert.match((await step(null)).report.errors[0], /^Choose an OpenStreetMap extract/);
+});
+
+test('several extracts are read as one map: a road across the border once, whole, the places of both, what none covers said', async () => {
+    const { default: importRegion } = await import('../../packages/toolbox/importers/region.mjs');
+    // Two countries meeting at longitude 20.02: each extract has its own roads, and the road across the border with all
+    // its nodes (as Geofabrik's extracts do), and a town of its own.
+    const west = writeOsmPbf({ nodes: [...nodes.slice(0, 5), { id: 30, lat: 10.01, lon: 20.0, tags: { place: 'town', name: 'Westdorf' } }], ways: [ways[0]], bounds: { south: 9.9, west: 19.9, north: 10.1, east: 20.03 } });
+    const east = writeOsmPbf({ nodes: [...nodes.slice(2, 7), { id: 31, lat: 10.01, lon: 20.04, tags: { place: 'town', name: 'Ostdorf' } }], ways: [ways[0], ways[1]], bounds: { south: 9.9, west: 20.01, north: 10.1, east: 20.2 } });
+    const step = (files, options) => importRegion({ files: files.map(([name, data]) => ({ role: 'extract', name, data })), helpers: {}, options: { step: 'extract', ...options } });
+    const both = await step([['west.osm.pbf', west], ['east.osm.pbf', east]], { bbox: town, roadLevel: 'city' });
+    assert.equal(both.ok, true, JSON.stringify(both.report));
+    assert.deepEqual([both.data.file, both.data.files, both.data.coverage], ['west.osm.pbf and east.osm.pbf', ['west.osm.pbf', 'east.osm.pbf'], { roads: 2, places: 2 }]);
+    const roads = JSON.parse(both.derived[0].text).elements;
+    assert.deepEqual(roads.map((road) => [road.id, road.nodes.length]), [[100, 5], [101, 3]], 'the main road once, whole, though in both');
+    assert.deepEqual(JSON.parse(both.derived.at(-1).text).elements.map((place) => place.tags.name).sort(), ['Ostdorf', 'Westdorf']);
+    assert.ok(both.derived.every((item) => item.source === 'west.osm.pbf and east.osm.pbf'));
+    // The east alone has only its stretch of the main road (nodes 3 to 5): the two read together have all of it.
+    const eastOnly = await step([['east.osm.pbf', east]], { bbox: town, roadLevel: 'city' });
+    assert.deepEqual(JSON.parse(eastOnly.derived[0].text).elements.map((road) => [road.id, road.nodes.length]), [[100, 3], [101, 3]]);
+    // An area only one of them reaches is read from that one; one neither reaches is said, with what each covers.
+    const farWest = await step([['west.osm.pbf', west], ['east.osm.pbf', east]], { bbox: { south: 9.99, west: 19.95, north: 10.02, east: 20.005 }, roadLevel: 'city' });
+    assert.equal(farWest.ok, true);
+    const nowhere = await step([['west.osm.pbf', west], ['east.osm.pbf', east]], { bbox: { south: 50, west: 50, north: 50.1, east: 50.1 } });
+    assert.match(nowhere.report.errors[0], /^None of west\.osm\.pbf and east\.osm\.pbf covers this area: they run from 9\.90, 19\.90 to 10\.10, 20\.03; and from 9\.90, 20\.01 to 10\.10, 20\.20\.$/);
+    // With no place chosen, the area they cover together.
+    const whole = await step([['west.osm.pbf', west], ['east.osm.pbf', east]], { roadLevel: 'auto' });
+    assert.deepEqual([whole.ok, whole.data.roadLevel, Number(whole.data.bbox.west.toFixed(6)), Number(whole.data.bbox.east.toFixed(6))], [true, 'city', 19.9, 20.2]);
+    // And the places of both, to choose from.
+    const places = await importRegion({ files: [{ role: 'extract', name: 'west.osm.pbf', data: west }, { role: 'extract', name: 'east.osm.pbf', data: east }], helpers: {}, options: { step: 'extractPlaces' } });
+    assert.deepEqual(places.data.places.map((place) => place.name), ['Ostdorf', 'Westdorf']);
 });

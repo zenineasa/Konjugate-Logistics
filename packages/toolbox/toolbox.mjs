@@ -420,7 +420,7 @@ function renderDataAge() {
     const roads = state.fetchedAt.roads;
     $('#dataAge').hidden = !roads && !state.extract;
     $('#dataAgeFresh').hidden = Boolean(state.extract);
-    if (state.extract) { $('#dataAgeText').textContent = `Roads read from ${state.extract}, a file of yours: as fresh as the file.`; return; }
+    if (state.extract) { $('#dataAgeText').textContent = `Roads read from ${state.extract}, ${state.extractSeveral ? 'files of yours: as fresh as they are' : 'a file of yours: as fresh as the file'}.`; return; }
     if (!roads) return;
     $('#dataAgeText').textContent = `Roads fetched on ${dateOf(roads.at)}${roads.cached ? ', from the cache' : ''}.`;
 }
@@ -571,7 +571,9 @@ async function readFromFile({ choose = true } = {}) {
         if (choose || !state.extractFile) {
             const chosen = await call(api.chooseFile(importerId, 'extract'));
             if (!chosen.chosen) return;
-            state.extractFile = { name: chosen.name, bytes: chosen.bytes };
+            // One file or several (a city on a border: an extract for each country), read as one map.
+            const names = chosen.names ?? [chosen.name];
+            state.extractFile = { name: listed(names), names, bytes: chosen.bytes };
         }
         const file = state.extractFile;
         // With a place chosen, the road level chosen for it; with none, by the size of what the file covers.
@@ -605,6 +607,7 @@ async function readFromFile({ choose = true } = {}) {
         state.sample = false;
         state.fetchedAt = {};
         state.extract = answer.data.file;
+        state.extractSeveral = (answer.data.files?.length ?? 1) > 1;
         state.extractFile = null;
         state.bbox ??= answer.data.bbox;
         row.classList.add('done');
@@ -623,7 +626,8 @@ async function readFromFile({ choose = true } = {}) {
 // The file in hand is named on the button that reads from it, and that button leads while there is one.
 function showFileButton() {
     const button = $('#extractHereButton');
-    button.textContent = state.extractFile ? `Read from ${state.extractFile.name}` : 'Read from a file';
+    button.textContent = state.extractFile ? `Read from ${state.extractFile.names?.length > 1 ? `the ${state.extractFile.names.length} files` : state.extractFile.name}` : 'Read from a file';
+    button.title = state.extractFile ? `Read this area's roads from ${state.extractFile.name}, with no map server` : 'Read this area\'s roads from OpenStreetMap extracts on this computer (.osm.pbf files), with no map server';
     button.classList.toggle('primary', Boolean(state.extractFile));
     $('#fetchButton').classList.toggle('primary', !state.extractFile);
 }

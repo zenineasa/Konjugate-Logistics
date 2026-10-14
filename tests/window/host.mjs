@@ -122,9 +122,12 @@ export async function createHost() {
         async chooseFile({ role }) {
             if (chosen[role] === undefined) return { chosen: false };
             // A binary role's file is bytes ({ name, data }), noted and handed to the importer when it runs.
-            if (chosen[role]?.data) {
-                files.set(`${role}/chosen`, { role, name: chosen[role].name, data: chosen[role].data, binary: true });
-                const answer = { chosen: true, name: chosen[role].name, names: [chosen[role].name], bytes: chosen[role].data.length };
+            // Several at once ([{ name, data }]) for a role that takes several: they replace the role's earlier ones.
+            const binaries = Array.isArray(chosen[role]) ? chosen[role] : chosen[role]?.data ? [chosen[role]] : null;
+            if (binaries) {
+                for (const [key, file] of files) if (file.role === role) files.delete(key);
+                for (const item of binaries) files.set(`${role}/${item.name}`, { role, name: item.name, data: item.data, binary: true });
+                const answer = { chosen: true, name: binaries[0].name, names: binaries.map((item) => item.name), bytes: binaries.reduce((sum, item) => sum + item.data.length, 0) };
                 delete chosen[role];
                 return answer;
             }

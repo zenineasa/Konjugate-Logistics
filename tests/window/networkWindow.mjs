@@ -1364,6 +1364,24 @@ try {
         assert.deepEqual(host.requests.slice(requestsBefore).filter((url) => /overpass|nominatim/.test(url)), []);
         await page.click('#sampleButton');
         await page.waitForFunction(() => !document.querySelector('#fetchButton').disabled);
+        // Two extracts chosen together, a town on a border with one for each country, are read as one map: the town's
+        // streets from both, a street in both once.
+        const westNodes = nodes.filter((node) => node.lon <= 10.025 || node.tags);
+        const eastNodes = nodes.filter((node) => node.lon >= 10.025);
+        const crossing = (list) => ways.filter((way) => way.nodes.every((id) => list.some((node) => node.id === id)));
+        host.chosen.extract = [
+            { name: 'west.osm.pbf', data: writeOsmPbf({ nodes: westNodes, ways: crossing(westNodes), bounds: { ...town, east: 10.03 } }) },
+            { name: 'east.osm.pbf', data: writeOsmPbf({ nodes: eastNodes, ways: crossing(eastNodes), bounds: { ...town, west: 10.02 } }) }
+        ];
+        await page.click('#extractButton');
+        await page.waitForSelector('#fetchProgress li.done, #regionStatus .notice.error');
+        assert.equal(await page.locator('#regionStatus .notice.error').count(), 0, await page.textContent('#regionStatus'));
+        assert.match(await page.textContent('#fetchProgress li.done'), /^Roads and city streets\d+ roads and 1 place names, from west\.osm\.pbf and east\.osm\.pbf$/);
+        assert.equal(await page.textContent('#dataAgeText'), 'Roads read from west.osm.pbf and east.osm.pbf, files of yours: as fresh as they are.');
+        assert.equal(await stateOf(() => window.logisticsToolboxState.extractFile), null);
+        assert.ok(![...host.files.values()].some((file) => file.binary), 'neither extract is kept');
+        await page.click('#sampleButton');
+        await page.waitForFunction(() => !document.querySelector('#fetchButton').disabled);
         // The town's own file, eight kilometres across: a city's, so its streets are read too.
         host.chosen.extract = { name: 'gridtown.osm.pbf', data: writeOsmPbf({ nodes, ways, bounds: town }) };
         await page.click('#extractButton');

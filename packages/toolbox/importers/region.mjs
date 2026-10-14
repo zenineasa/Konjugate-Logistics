@@ -27,7 +27,8 @@ import { buildRegionModel, regionModelDefaults } from '../lib/regionModel.mjs';
 import { generateOperator, parseOperator } from '../lib/operator.mjs';
 import { parseTravelTimes } from '../lib/travelTimes.mjs';
 import { maximumCityKilometres, readOverpass } from '../lib/overpass.mjs';
-import { extractAnswers, extractBounds, extractPlaces, readExtract } from '../lib/osmPbf.mjs';
+import { extractAnswers, extractBounds, extractPlaces, mergeReads, orderPlaces, readExtract } from '../lib/osmPbf.mjs';
+import { listed } from '../lib/categories.mjs';
 import { createRouter } from '../lib/roadGraph.mjs';
 import { compactRoadGraph, createNetworkRouter } from '../lib/routing.mjs';
 import { parseSites } from '../lib/sites.mjs';
@@ -234,8 +235,9 @@ export default async function importRegion({ files, helpers, options = {} }) {
         if (parsed.errors.length) return { ok: false, report: { errors: parsed.errors.map((message) => `Your sites file: ${message}`), warnings: parsed.warnings } };
         return { ok: true, data: { step: 'sites', sites: parsed.sites }, report: { errors: [], warnings: parsed.warnings } };
     }
-    if (options.step === 'extract') return extractStep(files.find((file) => file.role === 'extract'), options);
-    if (options.step === 'extractPlaces') return extractPlacesStep(files.find((file) => file.role === 'extract'));
+    const extracts = files.filter((file) => file.role === 'extract' && file.data);
+    if (options.step === 'extract') return extractStep(extracts, options);
+    if (options.step === 'extractPlaces') return extractPlacesStep(extracts);
     if (options.step === 'roads') return roadsStep(answers, options, helpers);
     if (options.step === 'discover' && Array.isArray(options.sources)) return suggestionsStep(answers, options, helpers);
     if (options.step === 'buildNetwork') return buildNetworkStep(answers, options, helpers, operatorText);
@@ -354,57 +356,66 @@ const spanKilometres = (bbox) => Math.max((bbox.north - bbox.south) * 111.32, (b
 // hands them back as the files a fetch from OpenStreetMap's server would have left: the host keeps those in the
 // extract's place, and the roads step then reads them as it reads fetched ones. The area is the window's (a place
 // searched), or else the whole of what the file says it covers, when that is small enough to load.
-async function extractStep(file, options) {
-    if (!file?.data) return failure('Choose an OpenStreetMap extract (a .osm.pbf file) first.');
+async function extractStep(files, options) {
+    if (!files.length) return failure('Choose an OpenStreetMap extract (a .osm.pbf file) first.');
     const { inflateSync } = await import('node:zlib');
+    // Several extracts read as one map: a city on a border, its map in one extract for each country.
+    const named = listed(files.map((file) => file.name));
+    const one = files.length === 1;
     // 'auto' (no place searched, so no road level chosen either): a file of a city has its streets read, a file of a
     // region its major roads.
     let roadLevel = options.roadLevel === 'city' ? 'city' : 'major';
     let bbox = options.bbox && ['south', 'west', 'north', 'east'].every((key) => Number.isFinite(options.bbox[key])) ? options.bbox : null;
     let read;
     try {
-        const covered = extractBounds(file.data, inflateSync);
+        const covers = files.map((file) => ({ file, covered: extractBounds(file.data, inflateSync) }));
         if (!bbox) {
-            if (!covered) return failure(`${file.name} does not say what area it covers: search a place first, and the roads around it are read from the file.`);
-            bbox = covered;
+            if (covers.some((item) => !item.covered)) return failure(`${covers.find((item) => !item.covered).file.name} does not say what area it covers: search a place first, and the roads around it are read from ${one ? 'the file' : 'the files'}.`);
+            bbox = covers.reduce((area, { covered }) => ({ south: Math.min(area.south, covered.south), west: Math.min(area.west, covered.west), north: Math.max(area.north, covered.north), east: Math.max(area.east, covered.east) }), { south: 90, west: 180, north: -90, east: -180 });
         }
         const span = spanKilometres(bbox);
         if (options.roadLevel === 'auto') roadLevel = span <= maximumExtractKilometres.city ? 'city' : 'major';
         if (span > maximumExtractKilometres[roadLevel]) {
-            return failure(`${options.bbox ? 'This area' : `${file.name} covers an area that`} is ${Math.round(span).toLocaleString('en')} km across: ${roadLevel === 'city' ? `city streets are loaded for areas up to ${maximumExtractKilometres.city} km across` : `roads are loaded for areas up to ${maximumExtractKilometres.major} km across`}. ${options.bbox ? 'Choose a smaller area.' : 'Search a place first, and the roads around it are read from the file.'}`);
+            return failure(`${options.bbox ? 'This area' : `${named} ${one ? 'covers an area that' : 'cover an area that together'}`} is ${Math.round(span).toLocaleString('en')} km across: ${roadLevel === 'city' ? `city streets are loaded for areas up to ${maximumExtractKilometres.city} km across` : `roads are loaded for areas up to ${maximumExtractKilometres.major} km across`}. ${options.bbox ? 'Choose a smaller area.' : `Search a place first, and the roads around it are read from ${one ? 'the file' : 'the files'}.`}`);
         }
-        if (covered && (bbox.north < covered.south || bbox.south > covered.north || bbox.east < covered.west || bbox.west > covered.east)) {
-            return failure(`${file.name} does not cover this area: it runs from ${covered.south.toFixed(2)}, ${covered.west.toFixed(2)} to ${covered.north.toFixed(2)}, ${covered.east.toFixed(2)}.`);
+        // A file that does not reach the area is not read; none reaching it is said, with what each covers.
+        const meets = (covered) => !covered || !(bbox.north < covered.south || bbox.south > covered.north || bbox.east < covered.west || bbox.west > covered.east);
+        const reaching = covers.filter((item) => meets(item.covered));
+        if (!reaching.length) {
+            return failure(`${one ? `${named} does not cover this area: it runs` : `None of ${named} covers this area: they run`} from ${covers.map(({ covered }) => `${covered.south.toFixed(2)}, ${covered.west.toFixed(2)} to ${covered.north.toFixed(2)}, ${covered.east.toFixed(2)}`).join('; and from ')}.`);
         }
-        read = readExtract(file.data, { bbox, roadLevel, inflate: inflateSync });
+        read = mergeReads(reaching.map(({ file }) => {
+            try { return readExtract(file.data, { bbox, roadLevel, inflate: inflateSync }); } catch (error) { throw new Error(`${file.name} could not be read: ${error.message}`); }
+        }));
     } catch (error) {
-        return failure(`${file.name} could not be read: ${error.message}`);
+        return failure(/could not be read/.test(error.message) ? error.message : `${named} could not be read: ${error.message}`);
     }
-    if (!read.roads.length) return failure(`${file.name} has no ${roadLevel === 'city' ? 'roads' : 'major roads'} in this area.`);
-    const answers = extractAnswers(read, { source: file.name });
+    if (!read.roads.length) return failure(`${named} ${one ? 'has' : 'have'} no ${roadLevel === 'city' ? 'roads' : 'major roads'} in this area.`);
+    const answers = extractAnswers(read, { source: named });
     return {
         ok: true,
-        data: { step: 'extract', bbox, roadLevel, file: file.name, coverage: { roads: read.roads.length, places: read.places.length }, counts: read.counts },
+        data: { step: 'extract', bbox, roadLevel, file: named, files: files.map((file) => file.name), coverage: { roads: read.roads.length, places: read.places.length }, counts: read.counts },
         derived: [
-            ...answers.roads.map((text, index) => ({ role: 'roads', name: `roads-extract-${index + 1}.json`, text, source: file.name })),
-            { role: 'places', name: 'places-extract.json', text: answers.places, source: file.name }
+            ...answers.roads.map((text, index) => ({ role: 'roads', name: `roads-extract-${index + 1}.json`, text, source: named })),
+            { role: 'places', name: 'places-extract.json', text: answers.places, source: named }
         ],
         report: { errors: [], warnings: [] }
     };
 }
 
-// The cities and towns of an extract, for choosing the place to load from a file that covers too much to load whole:
-// with no map server to search, the file's own places are the search.
-async function extractPlacesStep(file) {
-    if (!file?.data) return failure('Choose an OpenStreetMap extract (a .osm.pbf file) first.');
+// The cities and towns of the extracts, for choosing the place to load from files that cover too much to load whole:
+// with no map server to search, the files' own places are the search.
+async function extractPlacesStep(files) {
+    if (!files.length) return failure('Choose an OpenStreetMap extract (a .osm.pbf file) first.');
     const { inflateSync } = await import('node:zlib');
-    try {
-        const places = extractPlaces(file.data, { inflate: inflateSync });
-        if (!places.length) return failure(`${file.name} names no city or town: search a place first, and the roads around it are read from the file.`);
-        return { ok: true, data: { step: 'extractPlaces', file: file.name, places }, report: { errors: [], warnings: [] } };
-    } catch (error) {
-        return failure(`${file.name} could not be read: ${error.message}`);
+    const named = listed(files.map((file) => file.name));
+    const lists = [];
+    for (const file of files) {
+        try { lists.push(...extractPlaces(file.data, { inflate: inflateSync })); } catch (error) { return failure(`${file.name} could not be read: ${error.message}`); }
     }
+    const places = orderPlaces(lists).slice(0, 4000);
+    if (!places.length) return failure(`${named} ${files.length === 1 ? 'names' : 'name'} no city or town: search a place first, and the roads around it are read from ${files.length === 1 ? 'the file' : 'the files'}.`);
+    return { ok: true, data: { step: 'extractPlaces', file: named, places }, report: { errors: [], warnings: [] } };
 }
 
 async function roadsStep(answers, options, helpers) {

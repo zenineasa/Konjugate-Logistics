@@ -461,6 +461,30 @@ export function extractPlaces(bytes, { inflate, most = 4000 }) {
             const population = Number.parseInt(String(place.tags.population ?? '').replace(/[^0-9]/g, ''), 10);
             return { name, ...(place.tags.name && place.tags.name !== name ? { also: place.tags.name } : {}), place: place.tags.place, lat: place.lat, lon: place.lon, ...(population > 0 ? { population } : {}) };
         });
+    return orderPlaces(found).slice(0, most);
+}
+// Cities first, the more populous first, then by name; a place listed twice (in two extracts that overlap at a
+// border) once.
+export function orderPlaces(places) {
     const rank = { city: 0, town: 1 };
-    return found.sort((a, b) => (rank[a.place] - rank[b.place]) || ((b.population ?? 0) - (a.population ?? 0)) || a.name.localeCompare(b.name)).slice(0, most);
+    const seen = new Set();
+    return places.filter((place) => {
+        const key = `${place.name}|${place.lat.toFixed(3)}|${place.lon.toFixed(3)}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    }).sort((a, b) => ((rank[a.place] ?? 2) - (rank[b.place] ?? 2)) || ((b.population ?? 0) - (a.population ?? 0)) || a.name.localeCompare(b.name));
+}
+
+// What was read from several extracts, as one: a road or a place in two of them (Geofabrik's extracts overlap at a
+// border, and a road across it is in both) is kept once, a road with the more of its nodes; the counts are added up.
+export function mergeReads(reads) {
+    const roads = new Map();
+    const places = new Map();
+    for (const read of reads) {
+        for (const road of read.roads) if (!roads.has(road.id) || roads.get(road.id).nodes.length < road.nodes.length) roads.set(road.id, road);
+        for (const place of read.places) if (!places.has(place.id)) places.set(place.id, place);
+    }
+    const counts = reads.reduce((sum, read) => ({ blocks: sum.blocks + read.counts.blocks, ways: sum.ways + read.counts.ways, nodes: sum.nodes + read.counts.nodes }), { blocks: 0, ways: 0, nodes: 0 });
+    return { roads: [...roads.values()], places: [...places.values()], counts };
 }
