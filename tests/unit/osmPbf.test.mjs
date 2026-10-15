@@ -112,13 +112,13 @@ test('the importer reads an extract for the area asked, or for the file\'s own, 
     const around = await step(file.slice(), { bbox: bounds, roadLevel: 'major' });
     assert.equal(around.ok, true, JSON.stringify(around.report));
     const small = await step(writeOsmPbf({ nodes: nodes.slice(0, 8), ways: ways.slice(0, 2), bounds: town }), { roadLevel: 'auto' });
-    assert.deepEqual(small.data, { step: 'extract', bbox: small.data.bbox, roadLevel: 'city', file: 'town.osm.pbf', files: ['town.osm.pbf'], coverage: { roads: 2, places: 1 }, counts: { blocks: 3, ways: 2, nodes: 8 } });
+    assert.deepEqual(small.data, { step: 'extract', bbox: small.data.bbox, roadLevel: 'city', file: 'town.osm.pbf', files: ['town.osm.pbf'], coverage: { roads: 2, places: 1, rail: 0, water: 0 }, counts: { blocks: 3, ways: 2, nodes: 8 } });
     assert.ok(Math.abs(small.data.bbox.south - town.south) < 1e-9);
     assert.deepEqual(small.derived.map((item) => [item.role, item.name, item.source]), [['roads', 'roads-extract-1.json', 'town.osm.pbf'], ['places', 'places-extract.json', 'town.osm.pbf']]);
     assert.deepEqual(JSON.parse(small.derived[0].text).elements.map((element) => element.id), [100, 101]);
     // A place searched: its area and the road level chosen for it.
     const major = await step(file.slice(), { bbox: town, roadLevel: 'major' });
-    assert.deepEqual([major.data.roadLevel, major.data.coverage], ['major', { roads: 2, places: 1 }]);
+    assert.deepEqual([major.data.roadLevel, major.data.coverage], ['major', { roads: 2, places: 1, rail: 0, water: 0 }]);
     // Refused with what to do: no file, an area the file does not cover, one with no roads, too wide an area, a file that says no area.
     assert.match((await step(null)).report.errors[0], /^Choose an OpenStreetMap extract/);
     assert.match((await step(file.slice(), { bbox: { south: 50, west: 50, north: 50.1, east: 50.1 } })).report.errors[0], /^town\.osm\.pbf does not cover this area: it runs from 9\.90, 19\.90 to 10\.60, 26\.10\.$/);
@@ -160,7 +160,7 @@ test('several extracts are read as one map: a road across the border once, whole
     const step = (files, options) => importRegion({ files: files.map(([name, data]) => ({ role: 'extract', name, data })), helpers: {}, options: { step: 'extract', ...options } });
     const both = await step([['west.osm.pbf', west], ['east.osm.pbf', east]], { bbox: town, roadLevel: 'city' });
     assert.equal(both.ok, true, JSON.stringify(both.report));
-    assert.deepEqual([both.data.file, both.data.files, both.data.coverage], ['west.osm.pbf and east.osm.pbf', ['west.osm.pbf', 'east.osm.pbf'], { roads: 2, places: 2 }]);
+    assert.deepEqual([both.data.file, both.data.files, both.data.coverage], ['west.osm.pbf and east.osm.pbf', ['west.osm.pbf', 'east.osm.pbf'], { roads: 2, places: 2, rail: 0, water: 0 }]);
     const roads = JSON.parse(both.derived[0].text).elements;
     assert.deepEqual(roads.map((road) => [road.id, road.nodes.length]), [[100, 5], [101, 3]], 'the main road once, whole, though in both');
     assert.deepEqual(JSON.parse(both.derived.at(-1).text).elements.map((place) => place.tags.name).sort(), ['Ostdorf', 'Westdorf']);
@@ -211,4 +211,50 @@ test('a file says when its data was taken from OpenStreetMap, and what wrote it,
     // A file that does not say: its bounds alone, if those.
     assert.deepEqual({ ...extractHeader(file, inflateSync), bounds: null }, { bounds: null, dataDate: null, program: null, source: null, replicationUrl: null });
     assert.deepEqual(extractHeader(writeOsmPbf({ nodes, ways }), inflateSync).bounds, null);
+});
+
+test('railways, waterways and water are read when asked for: a lake of two ways with an island as one relation, a navigable river, not a stream or an unnamed pond', async () => {
+    const { waterOf, buildLineGraph } = await import('../../packages/toolbox/lib/modes.mjs');
+    // A lake east of the town, its shore in two halves (ways 200 and 201) and an island (202), as a relation; a railway
+    // through the town with a siding off it; a river with its CEMT class and a stream; a pond with no name or kind and a
+    // reservoir with a name.
+    const at = (id, lat, lon) => ({ id, lat, lon });
+    const water = [
+        at(50, 10.0, 20.05), at(51, 10.0, 20.07), at(52, 10.02, 20.07), at(53, 10.02, 20.05),
+        at(54, 10.005, 20.055), at(55, 10.005, 20.06), at(56, 10.01, 20.06),
+        at(60, 9.995, 20.0), at(61, 9.995, 20.02), at(62, 9.995, 20.04), at(63, 9.99, 20.02),
+        at(70, 10.025, 20.0), at(71, 10.025, 20.04), at(72, 10.028, 20.0), at(73, 10.028, 20.02),
+        at(80, 10.01, 20.0), at(81, 10.01, 20.002), at(82, 10.012, 20.002),
+        at(83, 10.015, 20.0), at(84, 10.015, 20.002), at(85, 10.017, 20.002)
+    ];
+    const extra = [
+        { id: 200, nodes: [50, 51, 52], tags: {} }, { id: 201, nodes: [52, 53, 50], tags: {} }, { id: 202, nodes: [54, 55, 56, 54], tags: {} },
+        { id: 210, nodes: [60, 61, 62], tags: { railway: 'rail', usage: 'main', maxspeed: '120', electrified: 'contact_line' } },
+        { id: 211, nodes: [61, 63], tags: { railway: 'rail', service: 'siding' } },
+        { id: 220, nodes: [70, 71], tags: { waterway: 'river', name: 'Grand River', CEMT: 'IV', boat: 'yes' } },
+        { id: 221, nodes: [72, 73], tags: { waterway: 'stream', name: 'Brook' } },
+        { id: 230, nodes: [80, 81, 82, 80], tags: { natural: 'water' } },
+        { id: 231, nodes: [83, 84, 85, 83], tags: { natural: 'water', name: 'Mill Pond' } }
+    ];
+    const relations = [{ id: 300, tags: { type: 'multipolygon', natural: 'water', water: 'lake', name: 'Lago', wikidata: 'Q2' }, members: [{ ref: 200, role: 'outer' }, { ref: 201, role: 'outer' }, { ref: 202, role: 'inner' }] }];
+    const wide = { south: 9.98, west: 19.99, north: 10.03, east: 20.08 };
+    const data = writeOsmPbf({ nodes: [...nodes, ...water], ways: [...ways, ...extra], relations, bounds, perBlock: 3 });
+    const both = readExtract(data, { bbox: wide, roadLevel: 'major', inflate: inflateSync, layers: ['rail', 'water'] });
+    assert.deepEqual(both.roads.map((road) => road.id), [100, 104], 'the roads as before');
+    assert.deepEqual(both.rail.map((line) => [line.id, line.tags]), [[210, { railway: 'rail', usage: 'main', maxspeed: '120' }], [211, { railway: 'rail', service: 'siding' }]]);
+    assert.deepEqual(both.water.map((item) => [item.type, item.id]), [['way', 220], ['way', 231], ['relation', 300]], 'the river, the named pond and the lake; not the stream or the unnamed pond');
+    const lake = both.water.at(-1);
+    assert.deepEqual([lake.tags, lake.members.map((member) => [member.ref, member.role, member.geometry.length])], [{ type: 'multipolygon', natural: 'water', water: 'lake', name: 'Lago' }, [[200, 'outer', 3], [201, 'outer', 3], [202, 'inner', 4]]]);
+    // As the server's answers, read as those are: the lake one area, its shore joined from the two ways, its island a hole.
+    const answers = extractAnswers(both);
+    const drawn = waterOf(readOverpass(answers.water));
+    assert.deepEqual(drawn.areas.map((area) => [area.name, area.rings.map((ring) => ring.length)]), [['Mill Pond', [4]], ['Lago', [5, 4]]]);
+    assert.deepEqual([drawn.lines.map((line) => [line.name, line.freight]), drawn.open], [[['Grand River', 'IV']], 0]);
+    // The railway's graph keeps the main line and leaves the siding out; the river is a waterway a barge may take.
+    assert.equal(Math.round(buildLineGraph(readOverpass(answers.rail), 'rail').kilometres), 4);
+    assert.equal(Math.round(buildLineGraph(readOverpass(answers.water), 'water').kilometres), 4);
+    // Not asked for, none is read, and the roads are the same.
+    const plain = readExtract(data, { bbox: wide, roadLevel: 'major', inflate: inflateSync });
+    assert.deepEqual([plain.roads.map((road) => road.id), plain.rail, plain.water], [[100, 104], [], []]);
+    assert.deepEqual([extractAnswers(plain).rail, extractAnswers(plain).water], [[], []]);
 });

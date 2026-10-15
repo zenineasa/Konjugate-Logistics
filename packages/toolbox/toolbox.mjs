@@ -11,7 +11,7 @@ import { cityTileKilometres, maximumCityKilometres, maximumSplitDepth, overpassR
 import { nominatimSearchUrl, rankPlaces } from './lib/places.mjs';
 import { chokepointById, chokepointDependence, chokepointRecentUrl, chokepoints, chokepointYearlyUrl, disruptionPlan, summariseTransits } from './lib/chokepoints.mjs';
 import { portwatchActivityUrl, portwatchPortsUrl, breakPeriods } from './lib/portwatch.mjs';
-import { closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan, mostLateDays, siteDownPlan, supplierPlan } from './lib/scenarios.mjs';
+import { closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan, lowWaterPlan, mostLateDays, siteDownPlan, supplierPlan } from './lib/scenarios.mjs';
 import { createNetworkRouter } from './lib/routing.mjs';
 import { compareSites } from './lib/siteComparison.mjs';
 import { checkedMapLink, checksumUrlOf, mapAge, mapServers } from './lib/mapServers.mjs';
@@ -23,7 +23,8 @@ import { calibration, calibrationAdvised, calibrationMinimum, formatDuration, go
 import { affectedAcross, closureAcross, diversionAcross, mergeSeries, siteView } from './lib/builtView.mjs';
 import { calendarKinds, calendarOf, dayNames, describeCalendar, kindsFor, setHours, wholeCalendar } from './lib/calendars.mjs';
 import { categoryFields, clearMix, completeCategories, createCategory, defaultCategoryCatalogue, eitherOf, hasMix, listed, lostSalesOf, mixOf, mostCategories, setCategoryField, setLeadDays, setMix } from './lib/categories.mjs';
-import { anyVehicle, carriersFor, carriesVehicles, completeCatalogue, createVehicle, defaultCatalogue, linkKind, setVehicleField, setVehicleHours, typesPerLink, vehicleFields, vehiclesOf } from './lib/vehicles.mjs';
+import { anyVehicle, carriersFor, carriesVehicles, completeCatalogue, createVehicle, defaultCatalogue, linkKind, modeVehicles, setVehicleField, setVehicleHours, typeFits, typeMode, typesPerLink, vehicleFields, vehiclesOf, withModeType } from './lib/vehicles.mjs';
+import { linkMode, modeIds, modeLegProblem, modeProblem, modes } from './lib/modes.mjs';
 import { writeSites } from './lib/sites.mjs';
 import { addsToSelection, commandHeld, platformKeys } from './lib/platform.mjs';
 
@@ -52,11 +53,13 @@ const sources = {
     towns: { label: 'Towns', kinds: [], group: 'towns' }
 };
 const noticeKinds = { ports: ['ports', 'portwatch'], warehouses: ['warehouses'], towns: ['towns'] };
-const allRoles = ['roads', 'places', 'ports', 'logistics', 'rail', 'portwatchPorts', 'portwatchActivity'];
+const allRoles = ['roads', 'places', 'water', 'rail', 'ports', 'logistics', 'portwatchPorts', 'portwatchActivity'];
 const basisLabel = { user: 'yours', assumed: 'assumed', sourced: 'sourced' };
 
 const state = {
     place: null, bbox: null, roadLevel: 'major',
+    // Routers along the railways and navigable waterways loaded ({ rail, water }), for links by rail and by water.
+    lines: {},
     // The roads step's answer (map, graph, coverage, notices) and the router over its graph.
     roads: null, router: null,
     // The user's network: pins and links, the suggested links the user deleted and what is selected; and the vehicle
@@ -391,7 +394,7 @@ function offerDownloadInstead(why) {
     $('#downloadInstead').addEventListener('click', () => { state.abandonServer = true; });
 }
 
-const labels = { ports: 'Ports and anchorages', logistics: 'Warehouses and industrial land', roads: 'Roads', rail: 'Rail', places: 'Place names' };
+const labels = { ports: 'Ports and anchorages', logistics: 'Warehouses and industrial land', roads: 'Roads', rail: 'Railways', water: 'Water and waterways', places: 'Place names' };
 
 // Map data is kept in Konjugate's cache of what this add-on fetched (on disk, kept across reinstalls), so an area loaded
 // once loads again at once and offline. Data older than this is fetched again; Load fresh fetches it all again now.
@@ -516,7 +519,7 @@ async function loadArea({ fresh }) {
     state.roadLevel = $('#roadLevelSelect').value;
     const progress = $('#fetchProgress');
     progress.hidden = false;
-    progress.innerHTML = ['roads', 'places'].map((kind) => `<li data-kind="${kind}"><span>${state.roadLevel === 'city' && kind === 'roads' ? 'Roads and city streets' : labels[kind]}</span><span class="state">waiting</span></li>`).join('');
+    progress.innerHTML = ['roads', 'places', 'water', 'rail'].map((kind) => `<li data-kind="${kind}"><span>${state.roadLevel === 'city' && kind === 'roads' ? 'Roads and city streets' : labels[kind]}</span><span class="state">waiting</span></li>`).join('');
     $('#regionStatus').innerHTML = '';
     try {
         // A new region replaces the last one's data, suggestions included (your own sites file stays).
@@ -528,14 +531,24 @@ async function loadArea({ fresh }) {
         state.loadingFromServer = true;
         state.abandonServer = false;
         const slow = setTimeout(() => offerDownloadInstead(`Still loading after ${slowServerSeconds} seconds`), slowServerSeconds * 1000);
+        // Water and railways after the roads: for drawing the lakes and rivers, and for links by rail and by water. A
+        // map without them still has its roads, so their failing is said and the roads load all the same.
+        let linesProblem = null;
         try {
             await fetchKinds(['roads', 'places'], progress, { fresh });
+            try {
+                await fetchKinds(['water', 'rail'], progress, { fresh });
+            } catch (error) {
+                if (error.message === switchedToDownload) throw error;
+                linesProblem = error.message;
+            }
         } finally {
             clearTimeout(slow);
             state.loadingFromServer = false;
         }
         $('#regionStatus').innerHTML = '';
         await loadRoads({ keepNetwork: true });
+        if (linesProblem) $('#regionStatus').insertAdjacentHTML('beforeend', notice('warning', `The roads are loaded, but not all the water and railways: ${linesProblem} Links go by road until they are; load the area again for them.`));
         renderDataAge();
     } catch (error) {
         if (error.message === switchedToDownload) {
@@ -559,6 +572,8 @@ async function loadRoads({ keepNetwork = false } = {}) {
     state.roads = answer.data;
     const started = performance.now();
     state.router = createNetworkRouter(answer.data.graph);
+    // Railways and navigable waterways, where they were loaded: links by rail and by water are routed along them.
+    state.lines = Object.fromEntries(Object.entries(answer.data.graphs ?? {}).map(([mode, graph]) => [mode, createNetworkRouter(graph)]));
     state.routerMilliseconds = performance.now() - started;
     state.portVolume ??= answer.data.defaults.portTeuPerDay;
     $('#portVolume').value = state.portVolume;
@@ -600,7 +615,12 @@ function renderCoverage() {
     box.innerHTML = [
         ['Roads', `${number(roads.kilometres)} km${byClass ? ` (${byClass})` : ''}`, roads.level],
         ['Place names', `${number(state.roads.coverage.places)} cities, towns and suburbs`, null],
-        ['Routing', `${number(state.roads.graph.vertices.length)} junctions${state.routerMilliseconds !== undefined ? `, ready in ${number(state.routerMilliseconds)} ms` : ''}`, null]
+        ['Routing', `${number(state.roads.graph.vertices.length)} junctions${state.routerMilliseconds !== undefined ? `, ready in ${number(state.routerMilliseconds)} ms` : ''}`, null],
+        // Where railways and water were loaded: how much of each a link by rail or by water may run on.
+        ...['rail', 'water'].filter((mode) => state.roads.lineKilometres?.[mode] !== undefined).map((mode) => [
+            mode === 'rail' ? 'Railways' : 'Waterways for barges',
+            state.roads.lineKilometres[mode] > 0 ? `${number(state.roads.lineKilometres[mode])} km${mode === 'water' ? ' (by their class or as marked for ships)' : ''}` : mode === 'rail' ? 'none mapped here' : 'none marked as navigable for freight here', null
+        ])
     ].map(([title, text, value]) => `<div class="item"><b>${title}${level(value)}</b><span>${escape(text)}</span></div>`).join('');
     const notes = state.roads.notices ?? [];
     $('#notices').innerHTML = notes.map((item) => notice(item.level, item.text)).join('');
@@ -1125,7 +1145,7 @@ function networkChanged({ rebuild = true } = {}) {
     if (state.router) {
         state.links = suggestLinks(state.pins, state.links, state.router, state.dismissed);
         const started = performance.now();
-        state.lastRouted = { legs: routeLinks(state.pins, state.links, state.router), milliseconds: performance.now() - started };
+        state.lastRouted = { legs: routeLinks(state.pins, state.links, state.router, state.lines), milliseconds: performance.now() - started };
     }
     renderNetwork();
     updateStepSummaries();
@@ -1144,7 +1164,24 @@ function networkChanged({ rebuild = true } = {}) {
     }
 }
 
-const legHow = (leg) => ({ routed: 'over the roads', local: 'by local streets (the sites are close)', 'straight-line': 'as a straight-line estimate (no road route found)' })[leg.basis] ?? '';
+const legHow = (leg, mode = 'road') => (mode !== 'road' ? `along the ${modes[mode].noun}` : ({ routed: 'over the roads', local: 'by local streets (the sites are close)', 'straight-line': 'as a straight-line estimate (no road route found)' })[leg.basis] ?? '');
+// A link's leg as the model times it: by rail or by water, at least its length at its slowest vehicle's top speed (the
+// lines are timed faster than any train or barge, so the vehicles decide), as the builder takes it (regionModel.mjs,
+// laneTiming). By road, as routed.
+const timedLeg = (link) => {
+    const leg = link.leg;
+    if (!leg || leg.problem || linkMode(link) === 'road') return leg;
+    const speeds = linkVehicles(link).map((item) => Number(typeNamed(item.type)?.fields.speed.value)).filter((speed) => speed > 0);
+    return speeds.length ? { ...leg, hours: Math.max(leg.hours, leg.kilometres / Math.min(...speeds)) } : leg;
+};
+// A link's leg in words: its length and time, or why a link by rail or by water could not be routed.
+const legText = (link) => {
+    const leg = timedLeg(link);
+    if (!leg) return 'Not routed yet.';
+    if (leg.problem) return modeLegProblem(leg, linkMode(link), pinById(link.from)?.name, pinById(link.to)?.name);
+    const mode = linkMode(link);
+    return `${number(leg.kilometres, 1)} km, ${number(leg.hours, 1)} h ${legHow(leg, mode)}${mode === 'road' ? '' : ` at the ${typeNamed(linkVehicles(link)[0]?.type)?.name.toLowerCase() ?? 'vehicle'}'s speed`}.`;
+};
 
 function renderNetwork() {
     const problems = networkProblems(state.pins, state.links, state.vehicles, state.categories, state.holidays);
@@ -1166,15 +1203,17 @@ function renderNetwork() {
     // The legend names only what is on the map.
     $('#legendSuggestedLink').hidden = !state.links.some((link) => link.basis !== 'user');
     $('#legendYourLink').hidden = !state.links.some((link) => link.basis === 'user');
+    $('#legendRail').hidden = !state.links.some((link) => linkMode(link) === 'rail');
+    $('#legendWater').hidden = !state.links.some((link) => linkMode(link) === 'water');
     $('#legendSuggestion').hidden = !suggestions.length;
     map.setLinks(state.links.map((link) => {
         const from = pinById(link.from);
         const to = pinById(link.to);
         const leg = link.leg;
         return {
-            id: link.id, from: link.from, to: link.to, basis: link.basis, points: leg?.path?.points ?? null,
+            id: link.id, from: link.from, to: link.to, basis: link.basis, points: leg?.path?.points ?? null, mode: linkMode(link), problem: Boolean(leg?.problem),
             unused: Boolean(from && to && unused.has(`${from.name}>${to.name}`)),
-            title: leg ? `${number(leg.kilometres, 1)} km, ${number(leg.hours, 1)} h ${legHow(leg)}; ${link.basis === 'user' ? 'your link' : 'suggested'}${vehicleWords(link)}` : ''
+            title: leg?.problem ? legText(link) : leg ? `${number(leg.kilometres, 1)} km, ${number(timedLeg(link).hours, 1)} h ${legHow(leg, linkMode(link))}; ${link.basis === 'user' ? 'your link' : 'suggested'}${vehicleWords(link)}` : ''
         };
     }));
     map.setSelected(state.selection);
@@ -1517,7 +1556,7 @@ const kindOfLink = (link) => linkKind(pinById(link.from)?.role, pinById(link.to)
 const linkVehicles = (link) => vehiclesOf(link, kindOfLink(link), state.vehicles);
 const typeNamed = (id) => state.vehicles.find((type) => type.id === id);
 // May this type carry this link: anything to a warehouse; to a store or dark store only what may deliver to stores.
-const typeAllowed = (type, link) => anyVehicle(kindOfLink(link)) || type.toStores;
+const typeAllowed = (type, link) => typeFits(type, kindOfLink(link), linkMode(link));
 // "; on medium trucks" for a link's title on the map.
 function vehicleWords(link) {
     const carried = linkVehicles(link);
@@ -1569,6 +1608,64 @@ function cycleVehicles() {
     carryBy(links, next.id);
 }
 
+// ---- how a link carries: by road, by rail or by water ------------------------------------------------------------
+// Why a link may not go by `mode` now, or null: to a store it goes by road, and a mode whose lines are not loaded
+// cannot be routed.
+function modeRefusal(link, mode) {
+    const kind = kindOfLink(link);
+    if (!carriesVehicles(kind)) return 'Deliveries to a customer area have no vehicles of their own: they go by a delivery service.';
+    return modeProblem(mode, kind) ?? (mode !== 'road' && !state.lines?.[mode] ? `No ${modes[mode].noun === 'railway' ? 'railways are' : 'navigable waterways are'} loaded for this area: load the area again to fetch them.` : null);
+}
+// The links given carried by `mode`, each made the user's, its vehicles its mode's (a freight train or a barge is added
+// to the catalogue, its figures assumed, when it has none): one step to undo. Links that may not are left as they are,
+// and said so.
+function setLinkMode(links, mode) {
+    const able = links.filter((link) => linkMode(link) !== mode && !modeRefusal(link, mode));
+    if (!able.length) {
+        const why = links.map((link) => modeRefusal(link, mode)).find(Boolean);
+        if (why) refuse(why);
+        // The card's choice back to the mode it has.
+        $('#selectionCard').dataset.for = '';
+        renderCard();
+        return;
+    }
+    checkpoint(`carrying ${able.length === 1 ? `${pinById(able[0].from)?.name} → ${pinById(able[0].to)?.name}` : `${able.length} links`} by ${mode}`);
+    const before = state.vehicles.length;
+    state.vehicles = withModeType(state.vehicles, mode);
+    const added = state.vehicles.length > before ? state.vehicles.at(-1) : null;
+    for (const link of able) {
+        if (mode === 'road') delete link.mode; else link.mode = mode;
+        // Its vehicles were its old mode's: it takes its new mode's usual ones.
+        delete link.vehicles;
+        keepLink(link);
+    }
+    $('#selectionCard').dataset.for = '';
+    networkChanged();
+    if (added) renderVehicles();
+    const left = links.length - able.length;
+    toast(`${able.length === 1 ? 'The link goes' : `${able.length} links go`} by ${mode}${added ? `, on a ${added.name.toLowerCase()} added under Vehicles with assumed figures` : ''}${left ? `; ${left} other${left === 1 ? '' : 's'} left as ${left === 1 ? 'it was' : 'they were'}` : ''}.`, { undoable: true });
+}
+// The next mode the selected links may take, for M: road, rail, water, wrapping round.
+function cycleModes() {
+    const links = selectedLinks().filter((link) => carriesVehicles(kindOfLink(link)));
+    if (!links.length) { refuse('Select a link that runs on vehicles first: M carries it by road, by rail or by water.'); return; }
+    const current = modeIds.indexOf(linkMode(links[0]));
+    for (let step = 1; step < modeIds.length; step += 1) {
+        const mode = modeIds[(current + step) % modeIds.length];
+        if (links.some((link) => !modeRefusal(link, mode))) { setLinkMode(links, mode); return; }
+    }
+    refuse(links.map((link) => modeRefusal(link, modeIds[(current + 1) % modeIds.length])).find(Boolean) ?? 'These links can go by road only.');
+}
+// A link's mode on its card: road, rail or water, each with why it may not be chosen when it may not.
+function renderLinkMode(link) {
+    if (!carriesVehicles(kindOfLink(link))) return '';
+    const current = linkMode(link);
+    return `<div class="field modeChoice" role="radiogroup" aria-label="Carried by"><span>By</span><span class="modes">${modeIds.map((mode) => {
+        const why = mode === current ? null : modeRefusal(link, mode);
+        return `<label title="${escape(why ?? `Carry it by ${mode} (M)`)}"><input type="radio" name="linkMode" data-link-mode value="${mode}" ${mode === current ? 'checked' : ''} ${why ? 'disabled' : ''}>${modes[mode].name}</label>`;
+    }).join('')}</span></div>`;
+}
+
 // ---- the vehicle catalogue ------------------------------------------------------------------------------------------
 // The types every link chooses from: each a card of its figures (each labelled assumed or yours), whether it may deliver
 // to stores, and how many links run on it.
@@ -1587,7 +1684,8 @@ function renderVehicles() {
                 const value = type.fields[field.key];
                 return `<div class="field" title="${escape(field.detail)}"><label for="vehicle-${escape(type.id)}-${field.key}">${escape(field.label)}</label><span><input type="number" min="0" step="any" id="vehicle-${escape(type.id)}-${field.key}" data-vehicle-field="${field.key}" value="${value.value}"> <span class="muted">${escape(field.unit)}</span></span><span class="basis ${value.basis}">${escape(basisLabel[value.basis])}</span></div>`;
             }).join('')}
-            <label class="row small"><input type="checkbox" data-vehicle-stores ${type.toStores ? 'checked' : ''}> May deliver to stores and dark stores</label>
+            <div class="field" title="A link carries only vehicles of its own mode: trucks by road, trains by rail, barges by water"><label for="vehicle-${escape(type.id)}-mode">Runs by</label><select id="vehicle-${escape(type.id)}-mode" data-vehicle-mode>${modeIds.map((mode) => `<option value="${mode}" ${typeMode(type) === mode ? 'selected' : ''}>${modes[mode].name}</option>`).join('')}</select></div>
+            <label class="row small"><input type="checkbox" data-vehicle-stores ${type.toStores ? 'checked' : ''}${typeMode(type) === 'road' ? '' : ' disabled'}> May deliver to stores and dark stores</label>
             <label class="row small" title="Chilled and frozen goods go by refrigerated vehicles only; other goods by any"><input type="checkbox" data-vehicle-cold ${type.refrigerated ? 'checked' : ''}> Refrigerated</label>
             ${vehicleHoursRow(type)}
         </li>`).join('');
@@ -1607,6 +1705,16 @@ function renderVehicles() {
             input.blur();
             vehiclesChanged();
         }));
+        row.querySelector('[data-vehicle-mode]').addEventListener('change', (event) => {
+            const mode = event.target.value;
+            checkpoint(`making the ${type.name.toLowerCase()} run by ${mode}`);
+            if (mode === 'road') delete type.mode; else { type.mode = mode; type.toStores = false; }
+            // The links it ran on take their own mode's usual vehicles.
+            const left = state.links.filter((link) => (link.vehicles ?? []).some((item) => item.type === type.id) && linkMode(link) !== mode);
+            for (const link of left) link.vehicles = link.vehicles.filter((item) => item.type !== type.id);
+            vehiclesChanged();
+            if (left.length) toast(`${left.length === 1 ? 'A link' : `${left.length} links`} it ran on ${left.length === 1 ? 'takes' : 'take'} ${left.length === 1 ? 'its' : 'their'} own mode's vehicles now.`, { undoable: true });
+        });
         row.querySelector('[data-vehicle-stores]').addEventListener('change', (event) => {
             checkpoint(`${event.target.checked ? 'letting' : 'keeping'} the ${type.name.toLowerCase()} ${event.target.checked ? 'deliver to' : 'off'} stores`);
             type.toStores = event.target.checked;
@@ -1847,10 +1955,10 @@ renderCategories();
 function timedLinks() {
     return state.links.map((link) => {
         const kind = kindOfLink(link);
-        if (!carriesVehicles(kind) || !link.leg) return null;
+        if (!carriesVehicles(kind) || !link.leg || link.leg.problem) return null;
         const from = pinById(link.from);
         const to = pinById(link.to);
-        return { link, from, to, kind: anyVehicle(kind) ? 'supply' : 'store', leg: link.leg, time: link.time ?? null };
+        return { link, from, to, kind: anyVehicle(kind) ? 'supply' : 'store', leg: timedLeg(link), time: link.time ?? null };
     }).filter(Boolean).sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'supply' ? -1 : 1) || a.from.name.localeCompare(b.from.name) || a.to.name.localeCompare(b.to.name));
 }
 const currentCalibration = () => calibration(timedLinks());
@@ -1940,8 +2048,8 @@ function renderTravelTimes() {
                     <span class="muted" title="Routed time plus the hours at the gates: what the model takes without a time of yours">route ${number(row.leg.kilometres, 1)} km, ${escape(clock(modelHours(row.leg, row.kind)))}</span></div>
                 <div class="travelEntry"><input type="text" data-time-input="${escape(row.link.id)}" value="${escape(row.time ? clock(row.time.hours) : '')}" placeholder="h:mm" aria-label="Your time from ${escape(row.from.name)} to ${escape(row.to.name)}, door to door" title="${escape(how || 'Door to door: loading, the drive and unloading. 1:25, 85 min or 1 h 25 min. Paste a column of times from a spreadsheet to fill this link and the ones below.')}">${suspect ? `<span class="flag" title="${escape(suspect)}">⚠</span>` : ''}
                     <select data-time-when="${escape(row.link.id)}" aria-label="When it holds">${Object.entries(whenLabels).map(([key, label]) => `<option value="${key}" ${(row.time?.when ?? 'any') === key ? 'selected' : ''}>${escape(label)}</option>`).join('')}</select>
-                    <button class="link" type="button" data-directions="google" data-for="${escape(row.link.id)}" title="Directions in Google Maps, in your browser">Google ↗</button>
-                    <button class="link" type="button" data-directions="osm" data-for="${escape(row.link.id)}" title="Directions on OpenStreetMap, in your browser">OSM ↗</button></div>
+                    ${linkMode(row.link) === 'road' ? `<button class="link" type="button" data-directions="google" data-for="${escape(row.link.id)}" title="Directions in Google Maps, in your browser">Google ↗</button>
+                    <button class="link" type="button" data-directions="osm" data-for="${escape(row.link.id)}" title="Directions on OpenStreetMap, in your browser">OSM ↗</button>` : ''}</div>
             </li>`;
         }).join('')}</ul>`;
     wireTimeInputs(panel);
@@ -2077,6 +2185,7 @@ const shortcuts = [
     ['Enter or F2, or click twice', 'Rename the selected site'],
     ['L', 'Link the selected site to the next one clicked'],
     ['V', 'Carry the selected links by the next vehicle type'],
+    ['M', 'Send the selected links by the next mode they may take: road, rail or water'],
     ['T', 'Type the selected link\'s travel time (with no link selected: the Travel times list)'],
     ['Enter, in the Travel times list', 'Keep the time and go to the next link'],
     ['F', 'Fit the map to the selection, or to the network'], ['0', 'Fit the map to the region'], ['+ and -', 'Zoom'],
@@ -2114,6 +2223,7 @@ document.addEventListener('keydown', (event) => {
     else if ((event.key === 'Enter' || event.key === 'F2') && state.selected?.kind === 'pin') rename(state.selected.id);
     else if (key === 'l' && state.selected?.kind === 'pin') startLinking(state.selected.id);
     else if (key === 'v') cycleVehicles();
+    else if (key === 'm') cycleModes();
     else if (key === 't') focusTravelTime();
     else if (event.key.startsWith('Arrow')) nudge({ ArrowLeft: -1, ArrowRight: 1 }[event.key] ?? 0, { ArrowUp: -1, ArrowDown: 1 }[event.key] ?? 0, event.shiftKey);
     else if (key === 'f') fitNetwork();
@@ -2170,10 +2280,19 @@ function openMenu({ target, point, clientX, clientY }) {
         for (const type of state.vehicles.filter((each) => carrying.length && each.id !== current && carrying.every((each2) => typeAllowed(each, each2)))) {
             item(`Carry ${carrying.length > 1 ? `${carrying.length} links` : 'it'} by ${type.name.toLowerCase()}`, 'V', () => carryBy(carrying, type.id));
         }
+        // How it carries: by road, by rail or by water, for every link selected that may.
+        for (const mode of modeIds) {
+            if (carrying.length && carrying.some((each) => linkMode(each) !== mode) && carrying.every((each) => !modeProblem(mode, kindOfLink(each)))) {
+                item(`Carry ${carrying.length > 1 ? `${carrying.length} links` : 'it'} by ${mode}`, 'M', () => setLinkMode(carrying, mode));
+            }
+        }
         if (links.length === 1 && carriesVehicles(kindOfLink(link))) {
             item('Type its travel time…', 'T', focusTravelTime);
-            item('Check its time in Google Maps', '', () => openDirections(link, 'google'));
-            item('Check its time on OpenStreetMap', '', () => openDirections(link, 'osm'));
+            // Driving directions: for a link by road.
+            if (linkMode(link) === 'road') {
+                item('Check its time in Google Maps', '', () => openDirections(link, 'google'));
+                item('Check its time on OpenStreetMap', '', () => openDirections(link, 'osm'));
+            }
         }
         item(links.length > 1 ? `Delete ${links.length} links` : 'Delete', keys.delete, deleteSelected, { danger: true });
     } else {
@@ -2235,12 +2354,14 @@ function renderCard() {
         card.innerHTML = `
             <h3>${[pins.length ? `${pins.length} site${pins.length === 1 ? '' : 's'}` : '', links.length ? `${links.length} link${links.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ')} selected</h3>
             <div class="detail">${escape(pins.map((item) => item.name).join(', '))}</div>
+            ${carrying.length ? `<div class="field"><label for="modeAll">Send ${carrying.length === links.length ? 'them' : `the ${carrying.length} that run on vehicles`} by</label><select id="modeAll" title="M sends them by the next mode they may take"><option value="">road, rail or water</option>${modeIds.map((mode) => `<option value="${mode}">${modes[mode].name}</option>`).join('')}</select></div>` : ''}
             ${carrying.length ? `<div class="field"><label for="carryAll">Carry ${carrying.length === links.length ? 'them' : `the ${carrying.length} that run on vehicles`} by</label><select id="carryAll" title="V gives them the next type"><option value="">choose a vehicle</option>${offered.map((type) => `<option value="${escape(type.id)}">${escape(type.name)}</option>`).join('')}</select></div>` : ''}
             <div class="row">${pins.length ? `<button class="button small" type="button" id="duplicateSelection" title="${keys.duplicate}">Duplicate</button><button class="button small" type="button" id="fitSelection" title="F">Fit the map to them</button>` : ''}<button class="button small danger" type="button" id="deleteSelection" title="${keys.delete}">Delete</button></div>
             <div class="detail">Drag any of them on the map to move them together; the arrow keys move them too. Shift-click to add or take out one.</div>`;
         $('#duplicateSelection')?.addEventListener('click', duplicateSelected);
         $('#fitSelection')?.addEventListener('click', fitNetwork);
         $('#carryAll')?.addEventListener('change', (event) => { if (event.target.value) carryBy(carrying, event.target.value); });
+        $('#modeAll')?.addEventListener('change', (event) => { if (event.target.value) setLinkMode(carrying, event.target.value); });
         $('#deleteSelection').addEventListener('click', deleteSelected);
         return;
     }
@@ -2330,7 +2451,8 @@ function renderCard() {
         blurInCard();
         card.innerHTML = `
             <h3>${escape(from?.name)} → ${escape(to?.name)}</h3>
-            <div class="detail">${leg ? `${number(leg.kilometres, 1)} km, ${number(leg.hours, 1)} h ${legHow(leg)}.` : 'Not routed yet.'} ${link.basis === 'user' ? 'Your link.' : 'Suggested.'}</div>
+            <div class="detail${leg?.problem ? ' problemText' : ''}">${escape(legText(link))} ${link.basis === 'user' ? 'Your link.' : 'Suggested.'}</div>
+            ${renderLinkMode(link)}
             ${unused ? `<div class="detail">Left out of the model: it ${escape(unused.why)}.</div>` : ''}
             ${renderTransfer(link, to)}
             ${renderLinkVehicles(link)}
@@ -2347,6 +2469,7 @@ function renderCard() {
             card.dataset.for = '';
             networkChanged();
         });
+        card.querySelectorAll('[data-link-mode]').forEach((choice) => choice.addEventListener('change', () => { if (choice.checked) setLinkMode([link], choice.value); }));
         wireLinkVehicles(link);
         wireTimeInputs(card);
     } else {
@@ -2451,13 +2574,13 @@ function renderLinkVehicles(link) {
     const sized = (index) => { const built = lane?.vehicles?.find((item) => item.type === carried[index].type); return built ? `auto (${number(built.fleet)})` : 'auto'; };
     // Goods that need refrigerated vehicles go by the link's refrigerated ones or, when it has none, by the first that may.
     const chilled = state.categories.filter((category) => category.chilled);
-    const cold = chilled.length ? carriersFor(carried, kind, state.vehicles, true) : [];
+    const cold = chilled.length ? carriersFor(carried, kind, state.vehicles, true, linkMode(link)) : [];
     const coldNote = !chilled.length ? ''
         : !cold.length ? `<div class="detail">${escape(listed(chilled.map((category) => category.name)))} ${chilled.length === 1 ? 'needs' : 'need'} a refrigerated vehicle, and no vehicle type that may go here is one.</div>`
             : carried.some((item) => item.type === cold[0].type) ? ''
                 : `<div class="detail">${escape(listed(chilled.map((category) => category.name)))} ${chilled.length === 1 ? 'goes' : 'go'} by ${escape(typeNamed(cold[0].type)?.name.toLowerCase() ?? 'refrigerated vehicle')}, as many as ${chilled.length === 1 ? 'it needs' : 'they need'}: none of the vehicles chosen here is refrigerated.</div>`;
     const row = (item, index) => `<div class="field vehicleChoice">
-            <select data-link-vehicle="${index}" aria-label="${index ? 'Second vehicle type' : 'Vehicle type'}" title="V gives it the next type">${state.vehicles.map((type) => `<option value="${escape(type.id)}" ${type.id === item.type ? 'selected' : ''} ${typeAllowed(type, link) ? '' : 'disabled'}>${escape(type.name)}${typeAllowed(type, link) ? '' : ' (not to stores)'}</option>`).join('')}</select>
+            <select data-link-vehicle="${index}" aria-label="${index ? 'Second vehicle type' : 'Vehicle type'}" title="V gives it the next type">${state.vehicles.filter((type) => typeMode(type) === linkMode(link)).map((type) => `<option value="${escape(type.id)}" ${type.id === item.type ? 'selected' : ''} ${typeAllowed(type, link) ? '' : 'disabled'}>${escape(type.name)}${typeAllowed(type, link) ? '' : ' (not to stores)'}</option>`).join('')}</select>
             <span><input type="number" min="0" step="1" data-link-fleet="${index}" value="${item.fleet ?? ''}" placeholder="${escape(sized(index))}" aria-label="How many"> <span class="muted">vehicles</span></span>
             <span class="basis ${item.fleet === null ? 'assumed' : 'user'}">${item.fleet === null ? 'sized' : 'yours'}</span>
             ${index ? `<button class="link remove" type="button" data-link-vehicle-remove title="Take this type off the link" aria-label="Take ${escape(typeNamed(item.type)?.name ?? '')} off the link">✕</button>` : ''}
@@ -2470,15 +2593,15 @@ function renderLinkVehicles(link) {
 // from, and a flag when it looks wrong.
 function renderLinkTime(link) {
     const kind = kindOfLink(link);
-    if (!carriesVehicles(kind) || !link.leg) return '';
-    const estimate = modelHours(link.leg, anyVehicle(kind) ? 'supply' : 'store');
-    const suspect = suspectTime(link.time, link.leg, anyVehicle(kind) ? 'supply' : 'store');
+    if (!carriesVehicles(kind) || !link.leg || link.leg.problem) return '';
+    const estimate = modelHours(timedLeg(link), anyVehicle(kind) ? 'supply' : 'store');
+    const suspect = suspectTime(link.time, timedLeg(link), anyVehicle(kind) ? 'supply' : 'store');
     const how = link.time ? `${howLabels[link.time.how] ?? 'your figure'}${link.time.checkedOn ? `, ${link.time.checkedOn}` : ''}` : '';
     return `<div class="links travelTime"><b>Travel time, door to door</b>
         <div class="field"><label for="linkTime">Your time</label><span><input type="text" id="linkTime" data-time-input="${escape(link.id)}" value="${escape(link.time ? clock(link.time.hours) : '')}" placeholder="${escape(clock(estimate))}" title="${escape(how || 'Loading, the drive and unloading: 1:25, 85 min or 1 h 25 min (T)')}"></span><span class="basis ${link.time ? 'user' : 'assumed'}">${link.time ? 'yours' : 'routed'}</span></div>
         <div class="field"><label for="linkTimeWhen">When</label><select id="linkTimeWhen" data-time-when="${escape(link.id)}">${Object.entries(whenLabels).map(([key, label]) => `<option value="${key}" ${(link.time?.when ?? 'any') === key ? 'selected' : ''}>${escape(label)}</option>`).join('')}</select></div>
         ${suspect ? `<div class="detail flag">⚠ ${escape(suspect)}</div>` : ''}
-        <div class="detail">${link.time ? `${escape(how.charAt(0).toUpperCase() + how.slice(1))}. ` : `Empty: the route's ${escape(formatDuration(estimate))}, gates included. `}Read it off <button class="link" type="button" data-directions="google" data-for="${escape(link.id)}">Google Maps ↗</button> or <button class="link" type="button" data-directions="osm" data-for="${escape(link.id)}">OpenStreetMap ↗</button>.</div></div>`;
+        <div class="detail">${link.time ? `${escape(how.charAt(0).toUpperCase() + how.slice(1))}. ` : `Empty: the route's ${escape(formatDuration(estimate))}, gates included. `}${linkMode(link) !== 'road' ? '' : `Read it off <button class="link" type="button" data-directions="google" data-for="${escape(link.id)}">Google Maps ↗</button> or <button class="link" type="button" data-directions="osm" data-for="${escape(link.id)}">OpenStreetMap ↗</button>.`}</div></div>`;
 }
 
 function wireLinkVehicles(link) {
@@ -2789,7 +2912,7 @@ async function build({ focus = false } = {}) {
     setBusy(true);
     $('#buildStatus').innerHTML = notice('', 'Building the model…');
     try {
-        if (state.router) routeLinks(state.pins, state.links, state.router);
+        if (state.router) routeLinks(state.pins, state.links, state.router, state.lines);
         // The host accepts 2 MB of options: a large network's roads are left out, and its lanes drawn straight.
         let network = networkSelection(state.pins, state.links, { catalogue: state.vehicles, categories: state.categories, holidays: state.holidays });
         const straight = JSON.stringify(network).length > maximumNetworkBytes;
@@ -3001,7 +3124,7 @@ function sessionState() {
         version: 2, place: state.place ? { display_name: state.place.display_name, boundingbox: state.place.boundingbox } : null,
         margin: String(marginKilometres()), bbox: state.bbox, roadLevel: state.roadLevel, sample: Boolean(state.sample), portVolume: state.portVolume,
         // Links without their legs, which are routed again when the session is restored (from the same roads, the same legs).
-        holidays: state.holidays, currency: state.currency, extract: state.extract, extractStored: state.extractFile?.stored ?? null, pins: state.pins, links: state.links.map(({ id, from, to, basis, vehicles, time, backup, share }) => ({ id, from, to, basis, ...(vehicles ? { vehicles } : {}), ...(time ? { time } : {}), ...(backup ? { backup: true } : {}), ...(Number(share) > 0 ? { share: Number(share) } : {}) })), vehicles: state.vehicles, categories: state.categories,
+        holidays: state.holidays, currency: state.currency, extract: state.extract, extractStored: state.extractFile?.stored ?? null, pins: state.pins, links: state.links.map(({ id, from, to, basis, mode, vehicles, time, backup, share }) => ({ id, from, to, basis, ...(mode && mode !== 'road' ? { mode } : {}), ...(vehicles ? { vehicles } : {}), ...(time ? { time } : {}), ...(backup ? { backup: true } : {}), ...(Number(share) > 0 ? { share: Number(share) } : {}) })), vehicles: state.vehicles, categories: state.categories,
         useCalibration: Boolean(state.useCalibration),
         dismissed: [...state.dismissed], suggestions: Object.keys(state.suggestions), available: [...state.available], listRole: state.listRole,
         built: state.built, keepInStep: $('#keepInStep').checked,
@@ -3263,6 +3386,9 @@ function renderScenario({ fetchTransits = false } = {}) {
     offerScenario('newSite', downSites().length);
     if (!downSites().length && state.scenarioTab === 'newSite') state.scenarioTab = 'roadClosure';
     if (!downSites().length && state.scenarioTab === 'siteDown') state.scenarioTab = 'roadClosure';
+    // Low water where links go by water (or by rail: a train may be loaded short too).
+    offerScenario('lowWater', lowWaterLanes('all').length);
+    if (!lowWaterLanes('all').length && state.scenarioTab === 'lowWater') state.scenarioTab = 'roadClosure';
     renderDependence();
     // After a fresh build, fetch the chokepoint's transits; when restoring a session (perhaps offline), show only what was kept.
     if (hasPorts) renderTransits({ fetch: fetchTransits });
@@ -3366,7 +3492,7 @@ $('#chokepointSelect').addEventListener('change', () => { renderDependence(); re
 // ---- the scenarios: choosing one ----------------------------------------------------------------------------------
 // Six scenarios share the days they run for and the summary of what they changed: a chokepoint disruption (above), a
 // road closed, the fleet changed, demand stepped up, a supplier short or late and a site down.
-const scenarioIds = ['asPlanned', 'chokepointDisruption', 'roadClosure', 'fleetChange', 'demandSurge', 'supplierTrouble', 'siteDown', 'weakestLink', 'newSite'];
+const scenarioIds = ['asPlanned', 'chokepointDisruption', 'roadClosure', 'lowWater', 'fleetChange', 'demandSurge', 'supplierTrouble', 'siteDown', 'weakestLink', 'newSite'];
 
 // Whether a scenario is offered in the picker: one that does not apply to the network built is left out of it.
 function offerScenario(id, offered) {
@@ -3404,7 +3530,7 @@ function renderSiteHint() {
 }
 // The model of the network with these candidates open, built in the host (not shown in the canvas).
 async function importVariant(open) {
-    if (state.router) routeLinks(state.pins, state.links, state.router);
+    if (state.router) routeLinks(state.pins, state.links, state.router, state.lines);
     const choose = (paths) => networkSelection(state.pins, state.links, { paths, catalogue: state.vehicles, categories: state.categories, open, holidays: state.holidays });
     let network = choose(true);
     if (JSON.stringify(network).length > maximumNetworkBytes) network = choose(false);
@@ -3647,11 +3773,21 @@ function renderScenarioChoices() {
         supplier: $('#supplierSelect').value || saved?.supplier?.supplier, goods: $('#supplierGoodsSelect').value || saved?.supplier?.goods,
         lane: $('#closureLaneSelect').value || saved?.closure?.lane,
         fleet: saved?.fleet?.lanes ?? (operatorAppeared ? 'operator' : $('#fleetLanesSelect').value),
-        towns: $('#demandTownsSelect').value || saved?.demand?.towns
+        towns: $('#demandTownsSelect').value || saved?.demand?.towns,
+        lowWater: $('#lowWaterLanesSelect').value || saved?.lowWater?.lanes
     };
+    // The lanes that may be in low water: every one by water, each one by water or by rail.
+    const byWater = lowWaterLanes('water');
+    $('#lowWaterLanesSelect').innerHTML = (byWater.length > 1 ? '<option value="water">every lane by water</option>' : '')
+        + lowWaterLanes('all').map((lane) => `<option value="lane:${escape(lane.name)}">${escape(lane.mode === 'rail' ? 'by rail, ' : '')}${escape(laneEnds(lane))} (${number(lane.rate)} ${goods()}/day)</option>`).join('');
+    keep('#lowWaterLanesSelect', previous.lowWater);
+    if (saved?.lowWater) {
+        $('#lowWaterShareInput').value = saved.lowWater.share ?? 40;
+        $('#lowWaterModeSelect').value = saved.lowWater.mode ?? 'wait';
+    }
     // Busiest lanes first: closing one of them matters most.
     $('#closureLaneSelect').innerHTML = [...view().lanes].sort((a, b) => b.rate - a.rate)
-        .map((lane) => `<option value="${escape(lane.name)}">${escape(laneEnds(lane))} (${number(lane.rate)} ${goods()}/day)</option>`).join('');
+        .map((lane) => `<option value="${escape(lane.name)}">${lane.mode && lane.mode !== 'road' ? `by ${lane.mode}, ` : ''}${escape(laneEnds(lane))} (${number(lane.rate)} ${goods()}/day)</option>`).join('');
     keep('#closureLaneSelect', previous.lane);
     $('#fleetLanesSelect').innerHTML = (built.operator ? `<option value="operator">every lane ${escape(built.operator.name)} carries</option>` : '')
         + '<option value="all">every lane</option>'
@@ -3710,8 +3846,17 @@ function scenarioSettings() {
         supplier: { supplier: $('#supplierSelect').value || null, goods: $('#supplierGoodsSelect').value || 'all', short: Number($('#supplierShortInput').value) || 0, late: Number($('#supplierLateInput').value) || 0, mode: $('#supplierModeSelect').value },
         closure: { lane: $('#closureLaneSelect').value || null, mode: $('#closureModeSelect').value, open: Number($('#closureOpenInput').value) || 0, detourHours: Number($('#detourHoursInput').value) || 0 },
         fleet: { lanes: $('#fleetLanesSelect').value || null, change: Number($('#fleetChangeInput').value) },
-        demand: { towns: $('#demandTownsSelect').value || null, change: Number($('#demandChangeInput').value) }
+        demand: { towns: $('#demandTownsSelect').value || null, change: Number($('#demandChangeInput').value) },
+        lowWater: { lanes: $('#lowWaterLanesSelect').value || null, share: Number($('#lowWaterShareInput').value), mode: $('#lowWaterModeSelect').value }
     };
+}
+// The lanes by water (and by rail) a low-water scenario may choose: 'water' every lane by water, 'all' those by rail
+// too, or one, 'lane:<name>'. Standby lanes carry nothing to cut.
+function lowWaterLanes(choice) {
+    const lanes = (view()?.lanes ?? []).filter((lane) => (lane.mode === 'water' || lane.mode === 'rail') && !lane.standby);
+    if (choice === 'all') return lanes;
+    if (choice === 'water') return lanes.filter((lane) => lane.mode === 'water');
+    return lanes.filter((lane) => `lane:${lane.name}` === choice);
 }
 
 const fleetLanes = (choice) => {
@@ -3770,6 +3915,14 @@ function renderScenarioHints() {
     const lanes = fleetLanes(settings.fleet.lanes);
     const trucks = lanes.reduce((sum, item) => sum + item.fleet + (item.fleet2 ?? 0), 0);
     $('#fleetHint').textContent = `${lanes.length} lane${lanes.length === 1 ? '' : 's'} with ${number(trucks)} ${state.built.vehicles ? 'vehicles' : 'trucks'}.`;
+    const low = lowWaterLanes(settings.lowWater.lanes);
+    if (low.length) {
+        const share = settings.lowWater.share / 100;
+        const vehicles = low.reduce((sum, lane) => sum + lane.fleet + (lane.fleet2 ?? 0), 0);
+        const others = low.flatMap((lane) => view().lanes.filter((item) => item.to === lane.to && !low.includes(item) && (item.rate > 0 || item.standby)));
+        $('#lowWaterHint').textContent = `${low.length === 1 ? laneEnds(low[0]) : `${low.length} lanes`}: ${number(low.reduce((sum, lane) => sum + lane.rate, 0), 1)} ${goods()} a day on ${number(vehicles)} vehicle${vehicles === 1 ? '' : 's'}. `
+            + { wait: 'Each carries what its vehicles can at that share; a fleet with room to spare carries it all.', moreVehicles: `They would need ${number(low.reduce((sum, lane) => sum + Math.ceil((lane.fleet + (lane.fleet2 ?? 0)) / Math.max(share, 0.01) - 1e-9), 0))} vehicles to carry what they do: whether as many are to be had is yours to judge.`, otherSources: others.length ? `${listed([...new Set(others.map((item) => item.from))])} ${others.length === 1 ? 'takes' : 'take'} the rest, shipping only what ${sourcesHave(others)}.` : 'Their sites have no other lane: their orders wait.' }[settings.lowWater.mode];
+    }
     const towns = demandTowns(settings.demand.towns);
     $('#demandHint').textContent = `${towns.length} ${view().stores ? 'site' : 'town'}${towns.length === 1 ? '' : 's'} ordering ${number(towns.reduce((sum, town) => sum + town.demand, 0), 1)} ${goods()}/day.`;
 }
@@ -3819,7 +3972,8 @@ function renderDownHint(settings) {
 for (const selector of ['#downSiteSelect', '#downModeSelect']) $(selector).addEventListener('change', () => { renderScenarioHints(); renderMarks(); });
 $('#supplierSelect').addEventListener('change', () => { renderSupplierGoods(); renderScenarioHints(); renderMarks(); });
 for (const selector of ['#supplierGoodsSelect', '#supplierShortInput', '#supplierLateInput', '#supplierModeSelect']) $(selector).addEventListener('input', renderScenarioHints);
-for (const selector of ['#closureLaneSelect', '#closureModeSelect', '#fleetLanesSelect', '#demandTownsSelect']) $(selector).addEventListener('change', renderScenarioHints);
+for (const selector of ['#closureLaneSelect', '#closureModeSelect', '#fleetLanesSelect', '#demandTownsSelect', '#lowWaterLanesSelect', '#lowWaterModeSelect']) $(selector).addEventListener('change', renderScenarioHints);
+$('#lowWaterShareInput').addEventListener('input', renderScenarioHints);
 for (const selector of ['#closureLaneSelect', '#closureModeSelect']) $(selector).addEventListener('change', () => { state.closureChosen = true; renderMarks(); });
 
 // ---- the scenarios: running one ------------------------------------------------------------------------------------
@@ -3929,6 +4083,20 @@ function scenarioRun(id, start, runTime, status) {
             supplied: { byParameter: plan.supplied }, lanes: [...new Set(plan.supplied.orderShare.entities.map(view().siteOf))], describe: `${laneEnds(lane)} ${what}.`,
             // For the map's X on the closed road.
             extra: { closure: { lane: lane.name, mode, open: settings.closure.open, startDay: Number($('#startInput').value), days: Number($('#durationInput').value) } }
+        };
+    }
+    if (id === 'lowWater') {
+        const low = lowWaterLanes(settings.lowWater.lanes);
+        if (!low.length) throw new Error('Choose a lane by water or by rail in low water.');
+        const share = settings.lowWater.share / 100;
+        // Each lane's copies, one for each category it carries.
+        const plan = lowWaterPlan({ lanes: state.built.lanes, chosen: low.flatMap((lane) => lane.members).map((lane) => lane.name), share, mode: settings.lowWater.mode, ...common });
+        const which = settings.lowWater.lanes === 'water' ? 'every lane by water' : laneEnds(low[0]);
+        const elsewhere = [...new Set(plan.reroutedTo.map((lane) => view().lanes.find((item) => item.name === view().siteOf(lane))?.from).filter(Boolean))];
+        const meanwhile = { wait: 'orders waiting for room', moreVehicles: 'each hiring enough vehicles to carry what it did', otherSources: elsewhere.length ? `the rest ordered from ${listed(elsewhere)}` : 'its orders waiting: no other lane leads to its site' }[settings.lowWater.mode];
+        return {
+            supplied: { byParameter: plan.supplied }, lanes: [...new Set([...low.map((lane) => lane.name), ...plan.supplied.orderShare.entities.map(view().siteOf)])],
+            describe: `Low water on ${which} ${days}: vehicles load ${settings.lowWater.share}% of what they can carry, ${meanwhile}.`
         };
     }
     if (id === 'fleetChange') {

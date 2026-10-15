@@ -1,6 +1,6 @@
 /* Copyright © 2026 Zenin Easa Panthakkalakath */
 
-// The land, coastlines and country borders the toolbox window draws under a region's own map data, cut from Natural
+// The land, coastlines, lakes, rivers and country borders the toolbox window draws under a region's own map data, cut from Natural
 // Earth's 1:10m layers (public domain, https://www.naturalearthdata.com) into 10-degree tiles, so the window loads only
 // the tiles a region touches, offline. Run it when the Natural Earth release changes; the tiles are committed.
 //
@@ -10,6 +10,10 @@
 //   land:    rings of land and of lakes in it, cut exactly to the tile (for an even-odd fill; the cut edges are not
 //            coastline, so the fill has no stroke)
 //   coast:   coastlines, as lines
+//   lakes:   [[ring, ...]] each lake's rings (its shore and its islands), cut exactly to the tile, for an even-odd fill
+//            of its own (a lake in both the world layer and a continent's finer one is drawn twice, not cancelled out)
+//   rivers:  [{ rank, points }] rivers as lines, rank Natural Earth's scale rank (0 the largest; lines through lakes are
+//            left out, the lakes being drawn)
 //   borders: [{ settled, points }] country borders on land; settled is false for Natural Earth's disputed, indefinite and
 //            de facto lines (lines of control, claim lines, breakaway regions and the like), drawn dashed
 // Points are rounded to a thousandth of a degree (about 100 m; the 1:10m layers are good to about a kilometre) and
@@ -71,7 +75,7 @@ function encode(list) {
 
 const tiles = new Map();
 const tile = (name) => {
-    if (!tiles.has(name)) tiles.set(name, { land: [], coast: [], borders: [] });
+    if (!tiles.has(name)) tiles.set(name, { land: [], coast: [], borders: [], lakes: [], rivers: [] });
     return tiles.get(name);
 };
 // A feature's lines, cut to every tile they reach (with a small margin, so they meet across tile edges).
@@ -85,24 +89,45 @@ function addLines(list, put) {
 }
 
 const settledClasses = new Set(['International boundary (verify)']);
-for (const feature of await layer('ne_10m_land')) {
-    for (const ring of rings(feature.geometry)) {
-        const list = points(ring);
-        // A ring's tiles: every tile its bounding box covers (a large ring may enclose tiles none of its points fall in).
-        const south = Math.floor(Math.min(...list.map((p) => p.lat)) / tileSize) * tileSize;
-        const north = Math.max(...list.map((p) => p.lat));
-        const west = Math.floor(Math.min(...list.map((p) => p.lon)) / tileSize) * tileSize;
-        const east = Math.max(...list.map((p) => p.lon));
-        for (let lat = south; lat < north; lat += tileSize) {
-            for (let lon = west; lon < east; lon += tileSize) {
-                const name = tileName(lat, lon);
-                // Cut exactly at the tile's edges: neighbouring tiles' land then meets without overlapping, which an
-                // even-odd fill (keeping lakes as holes) would otherwise show as unfilled stripes.
-                const cut = clipRing(list, bounds(name), 0);
-                const encoded = cut.length >= 3 ? encode(cut) : null;
-                if (encoded) tile(name).land.push(encoded);
-            }
+// A ring cut to every tile its bounding box covers (a large ring may enclose tiles none of its points fall in), exactly
+// at the tile's edges: neighbouring tiles' pieces then meet without overlapping, which an even-odd fill (keeping lakes
+// and islands as holes) would otherwise show as unfilled stripes.
+function cutRing(list, put) {
+    const south = Math.floor(Math.min(...list.map((p) => p.lat)) / tileSize) * tileSize;
+    const north = Math.max(...list.map((p) => p.lat));
+    const west = Math.floor(Math.min(...list.map((p) => p.lon)) / tileSize) * tileSize;
+    const east = Math.max(...list.map((p) => p.lon));
+    for (let lat = south; lat < north; lat += tileSize) {
+        for (let lon = west; lon < east; lon += tileSize) {
+            const name = tileName(lat, lon);
+            const cut = clipRing(list, bounds(name), 0);
+            const encoded = cut.length >= 3 ? encode(cut) : null;
+            if (encoded) put(name, encoded);
         }
+    }
+}
+for (const feature of await layer('ne_10m_land')) {
+    for (const ring of rings(feature.geometry)) cutRing(points(ring), (name, encoded) => tile(name).land.push(encoded));
+}
+// Lakes: the world's, and the finer layers for Europe and North America (Lake Lugano is only in Europe's). Each lake's
+// rings stay together in each tile, for a fill of its own.
+for (const name of ['ne_10m_lakes', 'ne_10m_lakes_europe', 'ne_10m_lakes_north_america']) {
+    for (const feature of await layer(name)) {
+        if (!feature.geometry) continue;
+        const polygons = feature.geometry.type === 'Polygon' ? [feature.geometry.coordinates] : feature.geometry.type === 'MultiPolygon' ? feature.geometry.coordinates : [];
+        for (const polygon of polygons) {
+            const pieces = new Map();
+            for (const ring of polygon) cutRing(points(ring), (tileId, encoded) => { if (!pieces.has(tileId)) pieces.set(tileId, []); pieces.get(tileId).push(encoded); });
+            for (const [tileId, list] of pieces) tile(tileId).lakes.push(list);
+        }
+    }
+}
+// Rivers, as lines with their rank; the lines Natural Earth draws through lakes are left out.
+for (const name of ['ne_10m_rivers_lake_centerlines', 'ne_10m_rivers_europe', 'ne_10m_rivers_north_america']) {
+    for (const feature of await layer(name)) {
+        if (!feature.geometry || /Lake Centerline/.test(feature.properties.featurecla ?? '')) continue;
+        const rank = Math.round(Number(feature.properties.scalerank ?? 10));
+        for (const line of lines(feature.geometry)) addLines(points(line), (item, encoded) => item.rivers.push({ rank, points: encoded }));
     }
 }
 for (const feature of await layer('ne_10m_coastline')) {
@@ -124,6 +149,6 @@ for (const [name, content] of tiles) {
     bytes += text.length;
     await writeFile(join(target, `${name}.json`), text);
 }
-const index = { source: `Natural Earth ${release} (1:10m land, coastline, admin 0 boundary lines on land and disputed areas), public domain`, tileSize, tiles: [...tiles.keys()].sort() };
+const index = { source: `Natural Earth ${release} (1:10m land, coastline, lakes with Europe's and North America's, rivers with Europe's and North America's, admin 0 boundary lines on land and disputed areas), public domain`, tileSize, tiles: [...tiles.keys()].sort() };
 await writeFile(join(target, 'index.json'), `${JSON.stringify(index, null, 1)}\n`);
 console.log(`wrote ${tiles.size} tiles, ${(bytes / 1024 / 1024).toFixed(1)} MB, to ${target}`);

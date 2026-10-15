@@ -18,9 +18,10 @@
 
 import { groupOfRole, roleNames } from './sites.mjs';
 import { calendarOf, calendarProblem, hoursForModel, kindsFor } from './calendars.mjs';
-import { categoriesForModel, categoriesProblem, hasMix, mixForModel } from './categories.mjs';
+import { categoriesForModel, categoriesProblem, hasMix, listed, mixForModel, mixOf } from './categories.mjs';
 import { holidayProblem, holidaysForModel } from './holidays.mjs';
 import { carriersFor, catalogueForModel, linkKind, linkVehicleProblem, vehicleProblem, vehiclesOf } from './vehicles.mjs';
+import { linkMode, modeLegProblem, modeProblem, modes } from './modes.mjs';
 
 // The network counts goods in pallets: a site's figures, a vehicle's capacity and the model's stocks and flows. A port's
 // volume is in containers (TEU), counted as `palletsPerTeu` pallets each.
@@ -221,17 +222,26 @@ export function suggestLinks(pins, links, router, dismissed = new Set()) {
     return [...user, ...suggested];
 }
 
-// Routes every link whose ends moved since it was last routed (or that was never routed); returns how many were.
-export function routeLinks(pins, links, router) {
+// Routes every link whose ends or mode changed since it was last routed (or that was never routed); returns how many
+// were. A link by road goes over `router`; one by rail or by water along its mode's lines (`lines`: { rail, water },
+// each a router over that mode's graph, absent where none was loaded), its leg then saying why it could not be routed
+// where it could not ({ problem }, modes.mjs).
+export function routeLinks(pins, links, router, lines = {}) {
     const byId = new Map(pins.map((pin) => [pin.id, pin]));
     let routed = 0;
     for (const link of links) {
         const from = byId.get(link.from);
         const to = byId.get(link.to);
         if (!from || !to) continue;
-        const ends = `${from.lat},${from.lon}|${to.lat},${to.lon}`;
+        const mode = linkMode(link);
+        const ends = `${mode === 'road' ? '' : `${mode}|`}${from.lat},${from.lon}|${to.lat},${to.lon}`;
         if (link.leg && link.ends === ends) continue;
-        link.leg = router.route(from, to);
+        if (mode === 'road') link.leg = router.route(from, to);
+        else if (!lines[mode]) link.leg = { problem: 'none' };
+        else {
+            const along = lines[mode].routeAlong(from, to, modes[mode].reach);
+            link.leg = along.leg ?? along;
+        }
         link.ends = ends;
         routed += 1;
     }
@@ -271,10 +281,25 @@ export function networkProblems(allPins, allLinks, catalogue = null, categories 
     for (const [name, ids] of named) if (ids.length > 1) add('error', `Two sites are named ${name}: give each its own name.`, ids);
     for (const link of links) {
         const problem = linkProblem(byId.get(link.from), byId.get(link.to));
-        if (problem) add('error', problem, [link.from, link.to].filter((id) => byId.has(id)));
-        else if (catalogue) {
-            const [from, to] = [byId.get(link.from), byId.get(link.to)];
-            const kind = linkKind(from.role, to.role);
+        if (problem) { add('error', problem, [link.from, link.to].filter((id) => byId.has(id))); continue; }
+        const [from, to] = [byId.get(link.from), byId.get(link.to)];
+        const kind = linkKind(from.role, to.role);
+        // A link by rail or by water: of a kind that may go so, at the line at both ends, and with vehicles of its mode.
+        const mode = linkMode(link);
+        if (mode !== 'road') {
+            const issue = modeProblem(mode, kind) ?? (link.leg?.problem ? modeLegProblem(link.leg, mode, from.name, to.name) : null);
+            if (issue) { add('error', issue, [from.id, to.id]); continue; }
+            if (catalogue && !vehiclesOf(link, kind, catalogue).length) { add('error', `No vehicle type runs by ${modes[mode].name.toLowerCase()} for ${from.name} → ${to.name}: add one under Vehicles.`, [from.id, to.id]); continue; }
+            // Chilled goods go by refrigerated vehicles of the link's own mode: a refrigerated truck does not ride a barge.
+            // From a source, those it supplies; between warehouses, any (what it carries is what the far one needs).
+            const chilled = (categories ?? []).filter((category) => category.chilled && (kind !== 'supply' || mixOf(from, categories).find((item) => item.id === category.id)?.share > 0));
+            if (catalogue && chilled.length && !carriersFor(vehiclesOf(link, kind, catalogue), kind, catalogue, true, mode).length) {
+                const names = listed(chilled.map((category) => category.name));
+                add('error', `${from.name} → ${to.name} goes by ${mode} and carries ${names}, which ${chilled.length === 1 ? 'needs' : 'need'} a refrigerated vehicle, and no vehicle type that runs by ${mode} is one. Tick Refrigerated on one under Vehicles, or carry the link by road.`, [from.id, to.id]);
+                continue;
+            }
+        }
+        if (catalogue) {
             const vehicleIssue = linkVehicleProblem(vehiclesOf(link, kind, catalogue), kind, catalogue, { from: from.name, to: to.name });
             if (vehicleIssue) add('error', vehicleIssue, [from.id, to.id]);
         }
@@ -363,8 +388,10 @@ export function networkSelection(allPins, allLinks, { paths = true, catalogue = 
     // A supply link's road is drawn on the map as its lane's corridor (as [lat, lon] pairs, which are smaller to send);
     // a link to a store needs only its time and distance.
     // A link's own time, door to door, when the user gave one (see travelTimes.mjs).
-    const leg = (link, withPath) => (link.leg ? {
+    // A link by rail or by water says so: its lane is named for its mode, and runs on its mode's vehicles.
+    const leg = (link, withPath) => (link.leg && !link.leg.problem ? {
         kilometres: link.leg.kilometres, hours: link.leg.hours, basis: link.leg.basis, ...(link.time?.hours > 0 ? { own: link.time } : {}),
+        ...(linkMode(link) !== 'road' ? { mode: linkMode(link) } : {}),
         path: withPath && paths && link.leg.path?.points?.length ? { points: link.leg.path.points.map((point) => [point.lat, point.lon]) } : null
     } : null);
     const vehicles = (link) => {

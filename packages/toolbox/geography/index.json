@@ -1,5 +1,5 @@
 {
- "source": "Natural Earth v5.1.2 (1:10m land, coastline, admin 0 boundary lines on land and disputed areas), public domain",
+ "source": "Natural Earth v5.1.2 (1:10m land, coastline, lakes with Europe's and North America's, rivers with Europe's and North America's, admin 0 boundary lines on land and disputed areas), public domain",
  "tileSize": 10,
  "tiles": [
   "N00E000",

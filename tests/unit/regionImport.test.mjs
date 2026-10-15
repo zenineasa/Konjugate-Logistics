@@ -29,7 +29,10 @@ test('distances and areas on the sphere are accurate enough for a region', () =>
 
 test('each kind of infrastructure is its own query, sent as a GET address to Overpass', () => {
     const queries = overpassQueries(syntheticBbox);
-    assert.deepEqual(Object.keys(queries).sort(), ['logistics', 'places', 'ports', 'rail', 'roads']);
+    assert.deepEqual(Object.keys(queries).sort(), ['logistics', 'places', 'ports', 'rail', 'roads', 'water']);
+    // Water: areas of it to draw (a large lake is a relation), and the rivers, canals and fairways a barge may take.
+    assert.match(queries.water, /relation\["natural"="water"\]/);
+    assert.match(queries.water, /way\["waterway"~"\^\(river\|canal\|fairway\)\$"\]/);
     for (const query of Object.values(queries)) {
         assert.match(query, /^\[out:json\]/);
         assert.ok(query.includes(`(${syntheticBbox.south},${syntheticBbox.west},${syntheticBbox.north},${syntheticBbox.east})`));
@@ -1041,6 +1044,16 @@ test('geography tiles are named by their corner, and rings and lines are cut to 
     const layers = geographyLayers([tile], { south: 24.9, north: 25.1, west: 54.9, east: 55.1 });
     assert.equal(layers.land.length, 1);
     assert.deepEqual(layers.borders.map((border) => border.settled), [true, false]);
+    assert.deepEqual([layers.lakes, layers.rivers], [[], []], 'a tile from before lakes and rivers has none');
+    // A lake with an island keeps both rings together; rivers are kept by rank, fewer the wider the region.
+    const water = {
+        lakes: [[[24950, 54950, 100, 0, 0, 100, -100, 0], [24980, 54980, 40, 0, 0, 40, -40, 0]], [[30000, 60000, 100, 0, 0, 100, -100, 0]]],
+        rivers: [{ rank: 3, points: [24900, 55000, 200, 0] }, { rank: 10, points: [24900, 55010, 200, 0] }]
+    };
+    const near = geographyLayers([water], { south: 24.9, north: 25.1, west: 54.9, east: 55.1 });
+    assert.deepEqual([near.lakes.length, near.lakes[0].length, near.rivers.map((river) => river.rank)], [1, 2, [3, 10]], 'the far lake left out, the island kept');
+    const wide = geographyLayers([water], { south: 20, north: 30, west: 50, east: 60 });
+    assert.deepEqual(wide.rivers.map((river) => river.rank), [3], 'a region 1,100 km across leaves out the small river');
 });
 
 test('a routed lane gives the roads it follows, and lanes sharing a road are drawn as one corridor carrying both', async () => {

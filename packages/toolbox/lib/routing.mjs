@@ -27,10 +27,11 @@ const round = (value, digits) => Number(value.toFixed(digits));
 
 // ---- compacting -----------------------------------------------------------------------------------------------
 
-// `graph` is buildRoadGraph's. Only its main network is kept, as createRouter snaps only to it. Returns
-// { vertices: [[lat, lon]], edges: [[from, to, metres, hours, [lat, lon, lat, lon, ...]]] }, every edge two-way, its
-// geometry running from `from` to `to`.
-export function compactRoadGraph(graph) {
+// `graph` is buildRoadGraph's (or buildLineGraph's, modes.mjs). Only its main network is kept, as createRouter snaps
+// only to it. Returns { vertices: [[lat, lon]], edges: [[from, to, metres, hours, [lat, lon, lat, lon, ...]]] }, every
+// edge two-way, its geometry running from `from` to `to`, simplified to within `tolerance` metres (a railway or a
+// waterway coarser than a road: a site is at the line within a kilometre or two, not on it).
+export function compactRoadGraph(graph, { tolerance = geometryMetres } = {}) {
     const main = new Map(graph.mainVertices.map((vertex) => [vertex.id, vertex]));
     // The fastest edge to each distinct neighbour: two ways drawn over each other are one road.
     const neighbours = new Map();
@@ -77,7 +78,7 @@ export function compactRoadGraph(graph) {
                 previous = current;
                 current = next;
             }
-            edges.push([vertexIndex(start), vertexIndex(current), round(metres, 1), round(hours, 7), simplify(points, geometryMetres).flatMap((point) => [round(point.lat, 5), round(point.lon, 5)])]);
+            edges.push([vertexIndex(start), vertexIndex(current), round(metres, 1), round(hours, 7), simplify(points, tolerance).flatMap((point) => [round(point.lat, 5), round(point.lon, 5)])]);
         }
     };
     for (const id of junction) walkFrom(id);
@@ -350,6 +351,28 @@ export function createNetworkRouter(compact, { astar = true } = {}) {
                 hours: leg.hours + accessKilometres / accessSpeed,
                 basis: 'routed',
                 path: { points: [a, ...(leg.points ?? []), b].map((item) => ({ lat: round(item.lat, 6), lon: round(item.lon, 6) })) }
+            };
+        },
+        // Along a railway or a waterway: routed over the lines alone, both ends within `reachKilometres` of them (a
+        // site's siding or quay, taken at the line's speed). Returns { leg } ({ kilometres, hours, basis: 'routed',
+        // path }) or { problem: 'far', end: 'from' | 'to', kilometres } (how far that end is from the line, when it is
+        // more than the reach; null when no line is within the snapping distance) or { problem: 'apart' } (the lines
+        // at the two ends do not meet).
+        routeAlong(a, b, reachKilometres) {
+            const from = snap(a);
+            const to = snap(b);
+            for (const [end, snapped] of [['from', from], ['to', to]]) {
+                if (!snapped || snapped.metres > reachKilometres * 1000) return { problem: 'far', end, kilometres: snapped ? snapped.metres / 1000 : null };
+            }
+            const leg = roadLeg(from, to);
+            if (!leg) return { problem: 'apart' };
+            const speed = leg.hours > 0 ? leg.metres / 1000 / leg.hours : fastest;
+            const access = (from.metres + to.metres) / 1000;
+            return {
+                leg: {
+                    kilometres: leg.metres / 1000 + access, hours: leg.hours + access / speed, basis: 'routed',
+                    path: { points: [a, ...(leg.points ?? []), b].map((item) => ({ lat: round(item.lat, 6), lon: round(item.lon, 6) })) }
+                }
             };
         },
         // For each of `sources` ({ id, lat, lon }), one multi-source Dijkstra over the roads; returns a lookup giving

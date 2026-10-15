@@ -51,7 +51,7 @@ test('the manifest declares a file role for every kind the importer reads, and e
     assert.ok(addon.permissions.includes('scenario.run'));
     for (const feature of ['scenarioForkTime', 'parameterSchedules', 'suppliedPerParameter']) assert.ok(addon.requires.includes(feature), feature);
     assert.deepEqual(addon.contributes.scenarios.map((scenario) => [scenario.scenarioId, scenario.interventions.map((item) => item.parameter)]), [
-        ['chokepointDisruption', ['vesselArrivals', 'orderShare', 'baseDemand']], ['chokepointDiversion', ['vesselArrivals', 'orderShare', 'fleetSize', 'berthCapacity', 'outageCapacity', 'baseDemand']], ['roadClosure', ['laneOpen', 'orderShare', 'leadTime', 'distance', 'fleetSize']], ['fleetChange', ['fleetSize', 'fleetSize2']], ['demandSurge', ['baseDemand']],
+        ['chokepointDisruption', ['vesselArrivals', 'orderShare', 'baseDemand']], ['chokepointDiversion', ['vesselArrivals', 'orderShare', 'fleetSize', 'berthCapacity', 'outageCapacity', 'baseDemand']], ['roadClosure', ['laneOpen', 'orderShare', 'leadTime', 'distance', 'fleetSize']], ['lowWater', ['loadShare', 'orderShare', 'fleetSize', 'fleetSize2']], ['fleetChange', ['fleetSize', 'fleetSize2']], ['demandSurge', ['baseDemand']],
         ['supplierTrouble', ['supplierCapacity', 'supplierLeadTime', 'orderShare', 'fleetSize']],
         ['siteDown', ['laneOpen', 'orderShare', 'share', 'fleetSize']]
     ]);
@@ -160,7 +160,9 @@ test('every lane and town has its own live parameters for the scenarios, however
     const portNames = result.data.ports.map((port) => port.name);
     // A supplier's are its own (this region has ports alone, so none).
     const supplierNames = result.data.ports.filter((port) => port.supplier).map((port) => port.name);
-    const entitiesOf = { vesselArrivals: portNames, berthCapacity: portNames, outageCapacity: portNames, baseDemand: result.data.towns.map((town) => town.name), supplierCapacity: supplierNames, supplierLeadTime: supplierNames, share: result.data.deliveries.map((delivery) => delivery.name) };
+    const entitiesOf = { vesselArrivals: portNames, berthCapacity: portNames, outageCapacity: portNames, baseDemand: result.data.towns.map((town) => town.name), supplierCapacity: supplierNames, supplierLeadTime: supplierNames, share: result.data.deliveries.map((delivery) => delivery.name),
+        // Only a lane by rail or by water can be loaded short: this region's are all by road.
+        loadShare: result.data.lanes.filter((lane) => lane.mode !== 'road').map((lane) => lane.name) };
     for (const key of new Set(scenarioKeys)) {
         for (const entity of entitiesOf[key] ?? result.data.lanes.map((lane) => lane.name)) {
             const entries = result.parameterIndex.filter((entry) => entry.key === key && entry.entity === entity);
@@ -250,11 +252,22 @@ test('a fetched region gets land, coast and borders around it from the bundled N
     const { geography, attribution } = fetched.data.map;
     assert.ok(geography.land.length > 0 && geography.coast.length > 0, 'land and coast');
     assert.ok(geography.borders.some((border) => border.settled), 'the UAE and Oman border, settled');
-    assert.match(attribution, /Coast and borders: Natural Earth$/);
+    assert.match(attribution, /Coast, water and borders: Natural Earth$/);
     // Land is cut to the region and a margin of half its span; lines keep one point beyond that, so they meet across tiles.
     const within = (margin) => (point) => point[0] > dubai.south - margin && point[0] < dubai.north + margin && point[1] > dubai.west - margin && point[1] < dubai.east + margin;
     assert.ok(geography.land.flat().every(within(1.01)), 'land cut to the region and its margin');
     assert.ok([...geography.coast.flat(), ...geography.borders.flatMap((border) => border.points)].every(within(2)), 'lines near it');
+    // Lugano and 25 km around it: its lake, in Natural Earth's layer for Europe only, and the rivers about it.
+    const lugano = { south: 45.78, west: 8.63, north: 46.23, east: 9.27 };
+    const swiss = (await importRegion({ files: regionFiles(), helpers, options: { bbox: lugano } })).data.map.geography;
+    const inside = (ring, [lat, lon]) => ring.reduce((odd, point, index) => {
+        const last = ring[(index + ring.length - 1) % ring.length];
+        return (point[0] > lat) !== (last[0] > lat) && lon < ((last[1] - point[1]) * (lat - point[0])) / (last[0] - point[0]) + point[1] ? !odd : odd;
+    }, false);
+    // A point on the open water of Lake Lugano, off Lugano itself; and the town of Lugano, on its shore, not in it.
+    assert.ok(swiss.lakes.some((lake) => lake.some((ring) => inside(ring, [45.98, 8.97]))), 'Lake Lugano is drawn');
+    assert.ok(!swiss.lakes.some((lake) => lake.some((ring) => inside(ring, [46.02, 8.92]))), 'Lugano is not in it');
+    assert.ok(swiss.rivers.length > 0, 'rivers');
     const sample = await importRegion({ files: regionFiles(), helpers, options: {} });
     assert.equal(sample.data.map.geography, undefined, 'the made-up sample region has no place on Earth');
     assert.doesNotMatch(sample.data.map.attribution, /Natural Earth/);

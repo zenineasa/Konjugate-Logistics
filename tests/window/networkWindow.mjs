@@ -1193,6 +1193,110 @@ try {
     assert.equal(await page.textContent('#networkStatus'), '', 'linked as suggested, ready to build');
     noErrors();
 
+    // 12b. Links by rail and by water. The sample region has a railway along its coast and a river barges may take from
+    // the coast north to the primary road: a quarry on the coast and a river port up the river, a store by road. The map
+    // draws the region's own lakes and rivers; a link is carried by water from its card, by rail from its menu and back
+    // by road with M, each undone; one that cannot reach the line says why; the model names its lanes by their mode and
+    // offers low water on them; the session keeps how each link goes.
+    host.session = null;
+    await openWindow(page, host);
+    await page.click('#sampleButton');
+    await page.waitForSelector('#stepNetwork:not([hidden])', { timeout: 30000 }).catch(fail);
+    await settled();
+    assert.equal(await page.locator('#map path.water.lake.osm').count(), 2, 'Lake Wren (a relation of two ways, with its island) and Elm Pond');
+    assert.equal(await page.locator('#map path.water.river.osm.navigable').count(), 1, 'Alder River, which barges may take; not Mill Brook');
+    assert.match(await page.textContent('#coverageSummary'), /Railways\s*\d+ km/);
+    assert.match(await page.textContent('#coverageSummary'), /Waterways for barges\s*\d+ km \(by their class or as marked for ships\)/);
+    for (const [role, point] of [['supplier', { lat: -29.982, lon: -19.8 }], ['warehouse', { lat: -29.752, lon: -19.8 }], ['store', { lat: -29.74, lon: -19.7 }]]) {
+        if (!(await page.locator(`[data-add="${role}"].active`).count())) await page.click(`[data-add="${role}"]`);
+        await clickAt(point);
+    }
+    await page.keyboard.press('Escape');
+    await settled();
+    const [quarry, riverPort] = await pins();
+    const supply = (await links()).find((link) => link.from === quarry.id && link.to === riverPort.id);
+    const modeOf = (id) => page.evaluate((linkId) => window.logisticsToolboxState.links.find((link) => link.id === linkId).mode ?? 'road', id);
+    await clickAt(quarry);
+    await page.click(`#selectionCard [data-select-link="${supply.id}"]`);
+    // By water, from its card: a barge is added to the catalogue, its figures assumed, and the link runs along the river.
+    assert.equal(await page.isChecked('#selectionCard [data-link-mode][value="road"]'), true);
+    await page.check('#selectionCard [data-link-mode][value="water"]');
+    await settled();
+    assert.equal(await modeOf(supply.id), 'water');
+    assert.match(await page.textContent('#undoText'), /^The link goes by water, on a barge added under Vehicles with assumed figures\.$/);
+    // Timed at the barge's 12 km/h, as the model takes it, not at the waterway's own; no driving directions offered.
+    const riverLeg = await page.evaluate((id) => window.logisticsToolboxState.links.find((link) => link.id === id).leg, supply.id);
+    assert.match(await page.textContent('#selectionCard'), new RegExp(`${riverLeg.kilometres.toFixed(1)} km, ${(riverLeg.kilometres / 12).toFixed(1)} h along the navigable waterway at the barge's speed\\. Your link\\.`));
+    assert.equal(await page.locator('#selectionCard [data-directions]').count(), 0);
+    assert.match(await page.textContent('#selectionCard .vehicleChoice'), /Barge/);
+    assert.equal(await page.locator(`#map path.link.by-water[data-link="${supply.id}"]`).count(), 1);
+    assert.deepEqual([await page.isVisible('#legendWater'), await page.isVisible('#legendRail')], [true, false], 'the legend says what blue is');
+    const barge = await stateOf(() => window.logisticsToolboxState.vehicles.find((type) => type.mode === 'water'));
+    assert.deepEqual([barge.name, barge.fields.capacity], ['Barge', { value: 2000, basis: 'assumed' }]);
+    // A store's link goes by road: rail and water are offered on its card, but not to be chosen, and say why.
+    const storeLink = (await links()).find((link) => link.from === riverPort.id);
+    await clickAt(riverPort);
+    await page.click(`#selectionCard [data-select-link="${storeLink.id}"]`);
+    assert.equal(await page.isDisabled('#selectionCard [data-link-mode][value="water"]'), true);
+    assert.match(await page.getAttribute('#selectionCard label:has([data-link-mode][value="rail"])', 'title'), /^A link to a store goes by road/);
+    // By rail, from the link's menu: the river port is far from the railway on the coast, so the link says so, in red,
+    // and the network cannot be built until it goes otherwise.
+    await clickAt(quarry);
+    await page.click(`#selectionCard [data-select-link="${supply.id}"]`);
+    await page.keyboard.press('m');
+    await settled();
+    assert.equal(await modeOf(supply.id), 'road', 'M from water wraps round to road');
+    await page.keyboard.press('Control+z');
+    await settled();
+    assert.equal(await modeOf(supply.id), 'water', 'and is undone');
+    const onRiverLink = await linkPoint(supply.id);
+    await page.mouse.click(onRiverLink.x, onRiverLink.y, { button: 'right' });
+    await page.click('#contextMenu button:has-text("Carry it by rail")');
+    await settled();
+    assert.equal(await modeOf(supply.id), 'rail');
+    assert.match(await page.textContent('#selectionCard .problemText'), /^Warehouse 1 is more than 15 km from any railway loaded, so Supplier 1 → Warehouse 1 cannot go by rail\./);
+    assert.equal(await page.locator(`#map path.link.problem[data-link="${supply.id}"]`).count(), 1);
+    assert.match(await page.textContent('#networkStatus'), /km from any railway loaded/);
+    assert.equal(await page.isDisabled('#buildButton'), true);
+    await page.check('#selectionCard [data-link-mode][value="water"]');
+    await settled();
+    // Chilled goods go by refrigerated vehicles of the link's own mode: a barge must be one, or the link goes by road.
+    assert.match(await page.textContent('#networkStatus'), /Supplier 1 → Warehouse 1 goes by water and carries Chilled and Frozen, which need a refrigerated vehicle, and no vehicle type that runs by water is one\. Tick Refrigerated on one under Vehicles, or carry the link by road\./);
+    await page.click('#vehicles summary');
+    assert.equal(await page.inputValue(`#vehicleList [data-type="${barge.id}"] [data-vehicle-mode]`), 'water');
+    await page.check(`#vehicleList [data-type="${barge.id}"] [data-vehicle-cold]`);
+    await settled();
+    assert.doesNotMatch(await page.textContent('#networkStatus'), /refrigerated/);
+    // Built: its lane by water, on barges, low water offered on it.
+    await page.click('#buildButton');
+    await page.waitForSelector('#buildStatus .notice.ok, #buildStatus .notice.error', { timeout: 60000 }).catch(fail);
+    assert.match(await page.textContent('#buildStatus'), /^1 supplier, 1 road lane, 1 lane by water, 1 store and customer area served/);
+    assert.ok(await stateOf(() => window.logisticsToolboxState.built.lanes.some((lane) => /^Water Supplier 1 → Warehouse 1/.test(lane.name) && lane.mode === 'water' && lane.vehicles[0].name === 'Barge')));
+    await page.selectOption('#scenarioSelect', 'lowWater');
+    assert.equal(await page.isVisible('#lowWaterShareInput'), true);
+    assert.match(await page.textContent('#lowWaterHint'), /^Supplier 1 → Warehouse 1: [\d.]+ pallets a day on \d+ vehicles?\. Each carries what its vehicles can at that share/);
+    await page.selectOption('#lowWaterModeSelect', 'moreVehicles');
+    assert.match(await page.textContent('#lowWaterHint'), /They would need \d+ vehicles to carry what they do/);
+    // With an engine: run, it says what it changed.
+    if (process.env.KONJUGATE_ENGINE === 'export') {
+        await page.selectOption('#lowWaterModeSelect', 'wait');
+        await page.fill('#startInput', '5');
+        await page.fill('#durationInput', '10');
+        await page.click('#runScenarioButton');
+        await page.waitForSelector('#scenarioResult table, #scenarioStatus .notice.error', { timeout: 120000 }).catch(fail);
+        assert.equal(await page.locator('#scenarioStatus .notice.error').count(), 0, await page.textContent('#scenarioStatus'));
+        assert.match((await page.textContent('#scenarioResult')).trim(), /^Low water on Supplier 1 → Warehouse 1 from day 5 for 10 days: vehicles load 40% of what they can carry, orders waiting for room\./);
+    }
+    // The session keeps how the link goes, and the barge.
+    await page.click('#showButton');
+    await openWindow(page, host);
+    await page.waitForFunction(() => /Restored the session kept with this project/.test(document.querySelector('#regionStatus').textContent), null, { timeout: 30000 }).catch(fail);
+    await settled();
+    assert.equal(await modeOf(supply.id), 'water');
+    assert.ok(await page.evaluate((id) => window.logisticsToolboxState.links.find((link) => link.id === id).leg?.kilometres > 20, supply.id), 'routed along the river again');
+    assert.ok(await stateOf(() => window.logisticsToolboxState.vehicles.some((type) => type.mode === 'water')));
+    noErrors();
+
     // 13. A searched region: the roads and place names alone; ports fetched only when asked for, with their activity.
     host.requests.length = 0;
     host.session = null;
@@ -1212,7 +1316,8 @@ try {
     await page.waitForSelector('#stepNetwork:not([hidden])', { timeout: 60000 }).catch(fail);
     await settled();
     const queries = () => host.requests.filter((url) => url.includes('/api/interpreter')).map((url) => new URL(url).searchParams.get('data'));
-    assert.ok(queries().length >= 2 && queries().every((query) => query.includes('"highway"') || query.includes('"place"')), 'roads and place names only');
+    assert.ok(queries().length >= 4 && queries().every((query) => query.includes('"highway"') || query.includes('"place"') || query.includes('"natural"="water"') || query.includes('"railway"="rail"')), 'roads, place names, water and railways only');
+    assert.ok(queries().some((query) => query.includes('"natural"="water"')) && queries().some((query) => query.includes('"railway"="rail"')), 'water and railways with the roads');
     assert.ok(queries().filter((query) => query.includes('"highway"')).every((query) => /secondary\|tertiary/.test(query)), 'city streets asked for');
     assert.equal(host.requests.filter((url) => url.includes('arcgis')).length, 0, 'no port activity yet');
     assert.equal(await page.locator('#map .site').count(), 0);
@@ -1235,9 +1340,9 @@ try {
     const fetchedBefore = interpreter();
     const statusBefore = host.requests.filter((url) => url.endsWith('/api/status')).length;
     await page.click('#fetchButton');
-    await page.waitForFunction(() => document.querySelectorAll('#fetchProgress li.done').length === 2, null, { timeout: 30000 }).catch(fail);
+    await page.waitForFunction(() => document.querySelectorAll('#fetchProgress li.done').length === 4, null, { timeout: 30000 }).catch(fail);
     await settled();
-    assert.equal(interpreter(), fetchedBefore, 'nothing fetched: the roads and place names came from the cache');
+    assert.equal(interpreter(), fetchedBefore, 'nothing fetched: the roads, place names, water and railways came from the cache');
     assert.equal(host.requests.filter((url) => url.endsWith('/api/status')).length, statusBefore, 'and the server was not even asked whether it is busy');
     assert.match(await page.textContent('#fetchProgress'), /from the cache, fetched/);
     assert.match(await page.textContent('#dataAgeText'), /from the cache\.$/);
@@ -1250,7 +1355,7 @@ try {
     assert.match(await page.textContent('[data-source-state="ports"]'), /found, fetched .+ \(kept\)/);
     // Load fresh: everything fetched again from the servers, and kept again.
     await page.click('#dataAgeFresh');
-    await page.waitForFunction(() => document.querySelectorAll('#fetchProgress li.done').length === 2, null, { timeout: 30000 }).catch(fail);
+    await page.waitForFunction(() => document.querySelectorAll('#fetchProgress li.done').length === 4, null, { timeout: 30000 }).catch(fail);
     await settled();
     assert.ok(interpreter() > fetchedBefore, 'fetched again');
     assert.ok(!/from the cache/.test(await page.textContent('#dataAgeText')));
@@ -1534,6 +1639,9 @@ try {
         assert.match(await page.textContent('#regionStatus'), /^The public map server is busy\. Download Alderland, Africa \(\d+ KB\) instead, keep it, and read the roads from it\.$/);
         await page.click('#downloadInstead');
         await page.waitForFunction(() => /from alderland-latest\.osm\.pbf$/.test(document.querySelector('#fetchProgress li.done')?.textContent ?? ''), null, { timeout: 30000 }).catch(fail);
+        // The line under the map says so once the roads are loaded, a moment after the reading is done: waited for, as
+        // under load it may still say the file read before.
+        await page.waitForFunction(() => /^Roads read from alderland-latest/.test(document.querySelector('#dataAgeText').textContent), null, { timeout: 30000 }).catch(fail);
         assert.match(await page.textContent('#dataAgeText'), /^Roads read from alderland-latest\.osm\.pbf \(from Geofabrik\): OpenStreetMap as of \d+ \w+ \d{4}\.$/);
         // Searched again, the map kept is proposed: read in seconds, with no server, whatever the area's size.
         await page.click('#searchButton');

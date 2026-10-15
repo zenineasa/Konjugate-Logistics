@@ -1,7 +1,8 @@
 /* Copyright © 2026 Zenin Easa Panthakkalakath */
 
-// Writes a small OpenStreetMap extract (.osm.pbf) from nodes and ways, as the tools that publish extracts write them:
-// a header block, then blocks of dense nodes, then blocks of ways, each zlib-compressed. For tests of the reader.
+// Writes a small OpenStreetMap extract (.osm.pbf) from nodes, ways and relations, as the tools that publish extracts
+// write them: a header block, then blocks of dense nodes, then blocks of ways, then of relations, each zlib-compressed.
+// For tests of the reader.
 
 import { deflateSync } from 'node:zlib';
 
@@ -30,10 +31,11 @@ class Strings {
     of(value) { let at = this.list.indexOf(value); if (at < 0) { at = this.list.length; this.list.push(value); } return at; }
 }
 
-// `nodes`: [{ id, lat, lon, tags }]; `ways`: [{ id, nodes: [id], tags }]; `bounds`: { south, west, north, east } or
-// null to leave the header without one. `perBlock`: how many of each go in a block.
+// `nodes`: [{ id, lat, lon, tags }]; `ways`: [{ id, nodes: [id], tags }]; `relations`: [{ id, tags, members: [{ type
+// ('node', 'way' or 'relation'), ref, role }] }]; `bounds`: { south, west, north, east } or null to leave the header
+// without one. `perBlock`: how many of each go in a block.
 // `dataDate` (ISO) and `program`: what Geofabrik's extracts say of themselves.
-export function writeOsmPbf({ nodes, ways, bounds = null, perBlock = 4, compress = true, dataDate = null, program = null }) {
+export function writeOsmPbf({ nodes, ways, relations = [], bounds = null, perBlock = 4, compress = true, dataDate = null, program = null }) {
     const nano = (degrees) => zigzag(Math.round(degrees * 1e9));
     const header = [
         ...(bounds ? delimited(1, [...field(1, 0, nano(bounds.west)), ...field(2, 0, nano(bounds.east)), ...field(3, 0, nano(bounds.north)), ...field(4, 0, nano(bounds.south))]) : []),
@@ -62,6 +64,19 @@ export function writeOsmPbf({ nodes, ways, bounds = null, perBlock = 4, compress
             ...delimited(2, Object.keys(way.tags ?? {}).flatMap((key) => varint(strings.of(key)))),
             ...delimited(3, Object.values(way.tags ?? {}).flatMap((value) => varint(strings.of(value)))),
             ...delimited(8, deltas(way.nodes))
+        ]));
+        out.push(...blob('OSMData', primitiveBlock(group, strings.list), { compress }));
+    }
+    const memberTypes = { node: 0, way: 1, relation: 2 };
+    for (let start = 0; start < relations.length; start += perBlock) {
+        const strings = new Strings();
+        const group = relations.slice(start, start + perBlock).flatMap((relation) => delimited(4, [
+            ...field(1, 0, varint(relation.id)),
+            ...delimited(2, Object.keys(relation.tags ?? {}).flatMap((key) => varint(strings.of(key)))),
+            ...delimited(3, Object.values(relation.tags ?? {}).flatMap((value) => varint(strings.of(value)))),
+            ...delimited(8, relation.members.flatMap((member) => varint(strings.of(member.role ?? '')))),
+            ...delimited(9, deltas(relation.members.map((member) => member.ref))),
+            ...delimited(10, relation.members.flatMap((member) => varint(memberTypes[member.type ?? 'way'])))
         ]));
         out.push(...blob('OSMData', primitiveBlock(group, strings.list), { compress }));
     }

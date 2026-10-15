@@ -176,6 +176,16 @@ details summary:hover { text-decoration: underline; }
 #map.adding { cursor: crosshair; }
 #map .land { fill: #10212f; stroke: none; }
 #map .coast { fill: none; stroke: rgba(140, 174, 196, 0.5); stroke-linejoin: round; }
+#map .water.lake { fill: #0d2a40; stroke: rgba(140, 174, 196, 0.45); stroke-linejoin: round; }
+#map .water.river { fill: none; stroke: rgba(96, 150, 196, 0.55); stroke-linecap: round; stroke-linejoin: round; }
+#map .water.river.navigable { stroke: rgba(110, 170, 220, 0.8); }
+#map .link.by-rail { stroke: var(--rail); stroke-opacity: 0.9; }
+#map .link.by-water { stroke: #60a5fa; stroke-opacity: 0.9; }
+#map .link.problem { stroke: var(--danger); stroke-opacity: 0.9; }
+.modeChoice .modes { display: flex; gap: 12px; }
+.modeChoice .modes label { display: flex; align-items: center; gap: 4px; }
+.modeChoice .modes label:has(input:disabled) { color: var(--muted); }
+.problemText { color: var(--danger); }
 #map .border { fill: none; stroke: rgba(222, 205, 180, 0.55); stroke-linejoin: round; }
 #map .road { fill: none; stroke: var(--road); stroke-linecap: round; stroke-linejoin: round; }
 #map .road.motorway, #map .road.trunk { stroke: #6295b3; }
@@ -236,6 +246,8 @@ details summary:hover { text-decoration: underline; }
 .swatch.hollow { background: none; border: 1.5px solid var(--muted); border-radius: 50%; }
 .swatch.link { background: none; height: 0; width: 14px; border-top: 1.5px solid var(--link); vertical-align: 3px; }
 .swatch.link.suggested { border-top-style: dashed; opacity: 0.7; }
+.swatch.link.byRail { border-top-color: var(--rail); }
+.swatch.link.byWater { border-top-color: #60a5fa; }
 .swatch.lane { background: var(--lane); height: 3px; vertical-align: 2px; }
 .swatch.lane.fell { background: var(--danger); }
 .swatch.lane.rose { background: var(--warn); }

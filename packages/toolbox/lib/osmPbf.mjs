@@ -2,17 +2,19 @@
 
 // Reads roads and place names out of an OpenStreetMap extract (a .osm.pbf file, as Geofabrik and others publish for
 // countries and regions), for an area, as the answers OpenStreetMap's server would have given for it: so a city's
-// streets can be loaded from a file on the user's computer, with no server to wait for.
+// streets can be loaded from a file on the user's computer, with no server to wait for. Railways, waterways and water
+// (lakes and rivers, a large lake being a relation of several ways) are read with them when asked for.
 //
 // The format (wiki.openstreetmap.org/wiki/PBF_Format): a sequence of blobs, each a length, a small header and a
 // zlib-compressed block of protocol buffers. A block holds a table of strings and groups of nodes (usually "dense":
 // ids and coordinates as differences from the one before), ways (their tags and the ids of their nodes) and relations.
-// Only what is needed is decoded: the ways tagged as roads of the wanted classes, the nodes those ways run through,
-// and the nodes tagged as places.
+// Only what is needed is decoded: the ways tagged as roads of the wanted classes (and railways, waterways and water when
+// asked for), the nodes those ways run through, and the nodes tagged as places.
 //
 // The file is read twice. Ways come after nodes in a file, and which nodes are wanted is known only from the ways:
 // the first reading takes the ways, the second the coordinates of their nodes. Coordinates of every node of a region
-// would not fit in memory; those of its roads do.
+// would not fit in memory; those of its roads do. A lake made of several ways is a relation, and relations come after
+// ways: when there are any, the blocks that hold ways are read once more between the two, for its ways.
 
 // ---- protocol buffers, as far as the format needs them --------------------------------------------------------------
 
@@ -193,6 +195,25 @@ const placeKinds = ['city', 'town', 'suburb', 'quarter'];
 // The tags kept of a road and of a place: what the toolbox reads of them, and no more, so what is kept stays small.
 const roadTags = ['highway', 'maxspeed', 'name', 'name:en', 'ref', 'oneway'];
 const placeTags = ['place', 'name', 'name:en', 'population'];
+// Railways, waterways and water, as the server's own queries take them (overpass.mjs): railway lines; rivers, canals and
+// fairways; and lakes, reservoirs and rivers mapped as areas, of those kinds or named.
+const lineTags = {
+    rail: ['railway', 'service', 'usage', 'maxspeed', 'name'],
+    waterway: ['waterway', 'name', 'CEMT', 'ship'],
+    water: ['natural', 'water', 'waterway', 'name', 'type']
+};
+const waterKinds = /^(lake|reservoir|river|canal|lagoon|oxbow)$/;
+// What a way (or relation) is, from a lookup of its tags, among the layers wanted: 'road', 'rail', 'waterway', 'water'
+// (an area of water) or null.
+function wayKind(tag, wantedRoads, layers) {
+    if (wantedRoads.has(tag('highway'))) return 'road';
+    if (layers.rail && tag('railway') === 'rail') return 'rail';
+    if (!layers.water) return null;
+    const waterway = tag('waterway');
+    if (waterway === 'river' || waterway === 'canal' || waterway === 'fairway') return 'waterway';
+    if (waterway === 'riverbank' || (tag('natural') === 'water' && (waterKinds.test(tag('water') ?? '') || tag('name')))) return 'water';
+    return null;
+}
 
 const inside = (lat, lon, bbox) => lat >= bbox.south && lat <= bbox.north && lon >= bbox.west && lon <= bbox.east;
 
@@ -240,20 +261,58 @@ export function extractHeader(bytes, inflate) {
 // whole when any of it lies in the area (a road is not cut at the edge); a place is { type: 'node', id, lat, lon, tags }.
 // A road whose nodes the file lacks (cut off at the extract's own edge) keeps the stretch the file has.
 // `roadLevel: 'none'` reads no roads, and `places` names the kinds of place wanted (cities, towns, suburbs and
-// quarters unless said).
+// quarters unless said). `layers` names what else is read: 'rail' (railway lines, as `rail`) and 'water' (waterways
+// and areas of water, ways and relations, as `water`), each in the server's form as roads are.
 // `onProgress(share)` hears how far it has got, 0 to 1 (the first reading is the first half).
-export function readExtract(bytes, { bbox, roadLevel = 'major', inflate, places: wantedPlaces = placeKinds, onProgress = null }) {
+export function readExtract(bytes, { bbox, roadLevel = 'major', inflate, places: wantedPlaces = placeKinds, onProgress = null, layers: wantedLayers = [] }) {
     if (typeof inflate !== 'function') throw new Error('readExtract needs a function that undoes zlib.');
     const wantedRoads = new Set(roadLevel === 'none' ? [] : roadLevel === 'city' ? cityRoads : majorRoads);
-    // Each road: its id, its tags, and where its nodes start in `refs` (they end where the next road's start).
+    const layers = { rail: wantedLayers.includes('rail'), water: wantedLayers.includes('water') };
+    // Each way kept: its id, its kind, its tags, and where its nodes start in `refs` (they end where the next one's start).
     const ways = [];
     const refs = new Numbers();
     const withNodes = [];
+    const withWays = [];
+    // Relations of water: { id, tags, members: [{ ref, role }] }, and the ids of the ways they are made of.
+    const relations = [];
+    const memberWays = new Set();
     let blocks = 0;
     let bounds = null;
     let sawHeader = false;
     let index = -1;
-    // First reading: the roads, and which nodes they run through.
+    const keysOfInterest = ['highway', ...(layers.rail ? ['railway'] : []), ...(layers.water ? ['waterway', 'natural'] : [])];
+    // A way's message read: its id, tag indices and node ids (as a reader, not yet decoded).
+    const readWay = (way) => {
+        let id = 0;
+        let keys = null;
+        let values = null;
+        let nodeIds = null;
+        while (way.more) {
+            const [part, partWire] = way.tag();
+            if (part === 1 && partWire === 0) id = way.varint();
+            else if (part === 2 && partWire === 2) keys = packed(way.sub(), (reader) => reader.varint());
+            else if (part === 3 && partWire === 2) values = packed(way.sub(), (reader) => reader.varint());
+            else if (part === 8 && partWire === 2) nodeIds = way.sub();
+            else way.skip(partWire);
+        }
+        return { id, keys: keys ?? [], values: values ?? [], nodeIds };
+    };
+    const keep = (id, kind, tags, nodeIds) => {
+        const start = refs.length;
+        let node = 0;
+        while (nodeIds.more) { node += nodeIds.signed(); refs.push(node); }
+        if (refs.length - start < 2) { refs.length = start; return; }
+        ways.push({ id, kind, tags, start });
+    };
+    const tagsOf = (strings, keys, values, wanted) => {
+        const tags = {};
+        for (let tag = 0; tag < keys.length; tag += 1) {
+            const key = strings.at(keys[tag]);
+            if (wanted.includes(key)) tags[key] = strings.at(values[tag]);
+        }
+        return tags;
+    };
+    // First reading: the ways wanted, which nodes they run through, and the relations of water.
     for (const blob of blobs(bytes, inflate)) {
         onProgress?.(blob.through / 2);
         index += 1;
@@ -262,44 +321,76 @@ export function readExtract(bytes, { bbox, roadLevel = 'major', inflate, places:
         if (!sawHeader) throw new Error('This is not an OpenStreetMap extract (.osm.pbf): it has no header.');
         blocks += 1;
         const { strings, groups } = block(blob.data());
-        const highwayKey = strings.indexOf('highway');
-        const roadValues = new Map([...wantedRoads].map((value) => [strings.indexOf(value), value]).filter(([at]) => at >= 0));
+        const interesting = new Set(keysOfInterest.map((key) => strings.indexOf(key)).filter((at) => at >= 0));
         let hasNodes = false;
+        let hasWays = false;
         for (const group of groups) {
             while (group.more) {
                 const [field, wire] = group.tag();
                 if (field === 1 || field === 2) { hasNodes = true; group.skip(wire); continue; }
-                if (field !== 3 || wire !== 2 || highwayKey < 0 || !roadValues.size) { group.skip(wire); continue; }
-                const way = group.sub();
-                let id = 0;
-                let keys = null;
-                let values = null;
-                let nodeIds = null;
-                while (way.more) {
-                    const [part, partWire] = way.tag();
-                    if (part === 1 && partWire === 0) id = way.varint();
-                    else if (part === 2 && partWire === 2) keys = packed(way.sub(), (reader) => reader.varint());
-                    else if (part === 3 && partWire === 2) values = packed(way.sub(), (reader) => reader.varint());
-                    else if (part === 8 && partWire === 2) nodeIds = way.sub();
-                    else way.skip(partWire);
+                if (field === 3 && wire === 2) {
+                    hasWays = true;
+                    if (!interesting.size) { group.skip(wire); continue; }
+                    const { id, keys, values, nodeIds } = readWay(group.sub());
+                    if (!nodeIds || !keys.some((key) => interesting.has(key))) continue;
+                    const tag = (name) => { const at = keys.findIndex((key) => strings.at(key) === name); return at < 0 ? undefined : strings.at(values[at]); };
+                    const kind = wayKind(tag, wantedRoads, layers);
+                    if (!kind) continue;
+                    keep(id, kind, tagsOf(strings, keys, values, kind === 'road' ? roadTags : lineTags[kind]), nodeIds);
+                    continue;
                 }
-                const at = keys?.indexOf(highwayKey) ?? -1;
-                if (at < 0 || !roadValues.has(values?.[at]) || !nodeIds) continue;
-                const start = refs.length;
-                let node = 0;
-                while (nodeIds.more) { node += nodeIds.signed(); refs.push(node); }
-                if (refs.length - start < 2) { refs.length = start; continue; }
-                const tags = {};
-                for (let tag = 0; tag < keys.length; tag += 1) {
-                    const key = strings.at(keys[tag]);
-                    if (roadTags.includes(key)) tags[key] = strings.at(values[tag]);
+                if (field === 4 && wire === 2 && layers.water) {
+                    // A relation: its tags, and the roles and ids of its members (ids as differences).
+                    const relation = group.sub();
+                    let id = 0;
+                    let keys = [];
+                    let values = [];
+                    let roles = [];
+                    let ids = [];
+                    let types = [];
+                    while (relation.more) {
+                        const [part, partWire] = relation.tag();
+                        if (part === 1 && partWire === 0) id = relation.varint();
+                        else if (part === 2 && partWire === 2) keys = packed(relation.sub(), (reader) => reader.varint());
+                        else if (part === 3 && partWire === 2) values = packed(relation.sub(), (reader) => reader.varint());
+                        else if (part === 8 && partWire === 2) roles = packed(relation.sub(), (reader) => reader.varint());
+                        else if (part === 9 && partWire === 2) { let member = 0; ids = packed(relation.sub(), (reader) => (member += reader.signed())); }
+                        else if (part === 10 && partWire === 2) types = packed(relation.sub(), (reader) => reader.varint());
+                        else relation.skip(partWire);
+                    }
+                    const tag = (name) => { const at = keys.findIndex((key) => strings.at(key) === name); return at < 0 ? undefined : strings.at(values[at]); };
+                    if (wayKind(tag, new Set(), { water: true }) !== 'water' || (tag('type') && tag('type') !== 'multipolygon')) continue;
+                    const members = ids.map((ref, at) => ({ ref, role: strings.at(roles[at]) ?? '', type: types[at] })).filter((member) => member.type === 1).map(({ ref, role }) => ({ ref, role }));
+                    if (!members.length) continue;
+                    for (const member of members) memberWays.add(member.ref);
+                    relations.push({ id, tags: tagsOf(strings, keys, values, lineTags.water), members });
+                    continue;
                 }
-                ways.push({ id, tags, start });
+                group.skip(wire);
             }
         }
         if (hasNodes) withNodes.push(index);
+        if (hasWays) withWays.push(index);
     }
     if (!sawHeader) throw new Error('This is not an OpenStreetMap extract (.osm.pbf): it has no header.');
+    // The ways the relations of water are made of: read again from the blocks that hold ways.
+    if (memberWays.size) {
+        const wayBlocks = new Set(withWays);
+        index = -1;
+        for (const blob of blobs(bytes, inflate)) {
+            index += 1;
+            if (!wayBlocks.has(index)) continue;
+            const { groups } = block(blob.data());
+            for (const group of groups) {
+                while (group.more) {
+                    const [field, wire] = group.tag();
+                    if (field !== 3 || wire !== 2) { group.skip(wire); continue; }
+                    const { id, nodeIds } = readWay(group.sub());
+                    if (nodeIds && memberWays.has(id)) keep(id, 'member', {}, nodeIds);
+                }
+            }
+        }
+    }
     // Second reading: where those nodes are, and the places.
     // The nodes wanted, each once, in order of id, with a place for its coordinates (in ten-millionths of a degree,
     // the precision of OpenStreetMap itself).
@@ -418,12 +509,16 @@ export function readExtract(bytes, { bbox, roadLevel = 'major', inflate, places:
             }
         }
     }
-    // The roads of the area: whole when any of their nodes lies in it, with the stretch the file has coordinates for.
+    // The ways of the area: whole when any of their nodes lies in it, with the stretch the file has coordinates for.
     const roads = [];
+    const rail = [];
+    const water = [];
+    const members = new Map();
     const south = Math.round(bbox.south * 1e7);
     const north = Math.round(bbox.north * 1e7);
     const west = Math.round(bbox.west * 1e7);
     const east = Math.round(bbox.east * 1e7);
+    const geometryOf = (kept) => kept.map((slot) => ({ lat: lats[slot] / 1e7, lon: lons[slot] / 1e7 }));
     for (const [number, way] of ways.entries()) {
         const end = number + 1 < ways.length ? ways[number + 1].start : refs.length;
         const slots = [];
@@ -434,7 +529,8 @@ export function readExtract(bytes, { bbox, roadLevel = 'major', inflate, places:
             slots.push(known ? slot : -1);
             if (known && !touches && lats[slot] >= south && lats[slot] <= north && lons[slot] >= west && lons[slot] <= east) touches = true;
         }
-        if (!touches) continue;
+        // A way a relation is made of is kept whatever it touches: the relation is kept when any of it does.
+        if (!touches && way.kind !== 'member') continue;
         // The longest run of nodes the file places: a way cut at the extract's edge keeps what lies within.
         let best = [0, 0];
         let start = 0;
@@ -445,28 +541,40 @@ export function readExtract(bytes, { bbox, roadLevel = 'major', inflate, places:
         }
         if (best[1] - best[0] < 2) continue;
         const kept = slots.slice(best[0], best[1]);
-        roads.push({ type: 'way', id: way.id, tags: way.tags, nodes: kept.map((slot) => wantedIds[slot]), geometry: kept.map((slot) => ({ lat: lats[slot] / 1e7, lon: lons[slot] / 1e7 })) });
+        if (way.kind === 'member') { members.set(way.id, { geometry: geometryOf(kept), touches }); continue; }
+        const element = { type: 'way', id: way.id, tags: way.tags, nodes: kept.map((slot) => wantedIds[slot]), geometry: geometryOf(kept) };
+        (way.kind === 'road' ? roads : way.kind === 'rail' ? rail : water).push(element);
     }
-    return { roads, places, counts: { blocks, ways: ways.length, nodes }, bounds };
+    // Relations of water, as the server writes them with their members' geometry, when any member reaches the area.
+    for (const relation of relations) {
+        const parts = relation.members.filter((member) => members.has(member.ref));
+        if (!parts.some((member) => members.get(member.ref).touches)) continue;
+        water.push({ type: 'relation', id: relation.id, tags: relation.tags, members: parts.map((member) => ({ type: 'way', ref: member.ref, role: member.role, geometry: members.get(member.ref).geometry })) });
+    }
+    return { roads, places, rail, water, counts: { blocks, ways: ways.length, nodes }, bounds };
 }
 
-// What was read, as the answers the rest of the toolbox reads (OpenStreetMap's server's own form): the roads in parts
-// of at most `maximumBytes` each (a file an importer is given has a size limit), and the places.
-//   { roads: [text], places: text }
-export function extractAnswers({ roads, places }, { source = 'an OpenStreetMap extract', maximumBytes = 8 * 1024 * 1024 } = {}) {
+// What was read, as the answers the rest of the toolbox reads (OpenStreetMap's server's own form): the roads, the
+// railways and the water each in parts of at most `maximumBytes` (a file an importer is given has a size limit), and
+// the places.
+//   { roads: [text], places: text, rail: [text], water: [text] } (rail and water empty when none were read)
+export function extractAnswers({ roads, places, rail = [], water = [] }, { source = 'an OpenStreetMap extract', maximumBytes = 8 * 1024 * 1024 } = {}) {
     const head = { version: 0.6, generator: `Konjugate Logistics Toolbox, from ${source}`, osm3s: { copyright: 'The data included in this document is from www.openstreetmap.org. The data is made available under ODbL.' } };
-    const parts = [];
-    let current = [];
-    let size = 0;
-    for (const road of roads) {
-        const text = JSON.stringify(road);
-        if (current.length && size + text.length + 1 > maximumBytes - 1024) { parts.push(current); current = []; size = 0; }
-        current.push(text);
-        size += text.length + 1;
-    }
-    if (current.length || !parts.length) parts.push(current);
     const wrap = (elements) => `${JSON.stringify(head).slice(0, -1)},"elements":[${elements.join(',')}]}`;
-    return { roads: parts.map(wrap), places: wrap(places.map((place) => JSON.stringify(place))) };
+    const inParts = (elements, always) => {
+        const parts = [];
+        let current = [];
+        let size = 0;
+        for (const element of elements) {
+            const text = JSON.stringify(element);
+            if (current.length && size + text.length + 1 > maximumBytes - 1024) { parts.push(current); current = []; size = 0; }
+            current.push(text);
+            size += text.length + 1;
+        }
+        if (current.length || (always && !parts.length)) parts.push(current);
+        return parts.map(wrap);
+    };
+    return { roads: inParts(roads, true), places: wrap(places.map((place) => JSON.stringify(place))), rail: inParts(rail, false), water: inParts(water, false) };
 }
 
 // The cities and towns a file holds, for choosing one of them as the place to load when the file covers far more than
@@ -497,14 +605,20 @@ export function orderPlaces(places) {
 }
 
 // What was read from several extracts, as one: a road or a place in two of them (Geofabrik's extracts overlap at a
-// border, and a road across it is in both) is kept once, a road with the more of its nodes; the counts are added up.
+// border, and a road across it is in both) is kept once, a road with the more of its nodes (a railway, a waterway or a
+// lake likewise, a lake with the more of its members); the counts are added up.
 export function mergeReads(reads) {
     const roads = new Map();
     const places = new Map();
+    const rail = new Map();
+    const water = new Map();
+    const longer = (kept, element) => !kept.has(`${element.type}/${element.id}`) || (element.nodes ?? element.members).length > (kept.get(`${element.type}/${element.id}`).nodes ?? kept.get(`${element.type}/${element.id}`).members).length;
     for (const read of reads) {
         for (const road of read.roads) if (!roads.has(road.id) || roads.get(road.id).nodes.length < road.nodes.length) roads.set(road.id, road);
         for (const place of read.places) if (!places.has(place.id)) places.set(place.id, place);
+        for (const line of read.rail ?? []) if (longer(rail, line)) rail.set(`${line.type}/${line.id}`, line);
+        for (const item of read.water ?? []) if (longer(water, item)) water.set(`${item.type}/${item.id}`, item);
     }
     const counts = reads.reduce((sum, read) => ({ blocks: sum.blocks + read.counts.blocks, ways: sum.ways + read.counts.ways, nodes: sum.nodes + read.counts.nodes }), { blocks: 0, ways: 0, nodes: 0 });
-    return { roads: [...roads.values()], places: [...places.values()], counts };
+    return { roads: [...roads.values()], places: [...places.values()], rail: [...rail.values()], water: [...water.values()], counts };
 }

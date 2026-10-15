@@ -204,6 +204,7 @@
                             </optgroup>
                             <optgroup label="A disruption">
                                 <option value="roadClosure">A road closed</option>
+                                <option value="lowWater" hidden disabled>Low water</option>
                                 <option value="supplierTrouble" hidden disabled>A supplier short or late</option>
                                 <option value="siteDown" hidden disabled>A site down</option>
                                 <option value="fleetChange">A change of fleet</option>
@@ -265,6 +266,19 @@
                             <label>The detour adds <input type="number" id="detourHoursInput" min="0.5" max="72" step="0.5" value="3"> hours each way</label>
                         </div>
                         <div class="muted small" id="closureHint"></div>
+                    </div>
+                    <div class="scenarioPanel" data-panel="lowWater" hidden>
+                        <p class="muted small">A river runs low for a while: barges may load only part of what they can carry. Vehicles already loaded arrive with what they carry.</p>
+                        <label class="row small">On <select id="lowWaterLanesSelect"></select></label>
+                        <div class="row small" title="How much of its capacity a vehicle may load while the water is low: on the Rhine it follows the level at gauges such as Kaub. The figure is yours: nothing here reads a gauge.">
+                            <label>Each loads <input type="number" id="lowWaterShareInput" min="5" max="95" step="5" value="40"> % of what it can carry</label>
+                        </div>
+                        <label class="row small">Meanwhile <select id="lowWaterModeSelect">
+                            <option value="wait">their orders wait for room</option>
+                            <option value="moreVehicles">they hire enough vehicles to carry what they did</option>
+                            <option value="otherSources">their sites order the rest from their other sources</option>
+                        </select></label>
+                        <div class="muted small" id="lowWaterHint"></div>
                     </div>
                     <div class="scenarioPanel" data-panel="fleetChange" hidden>
                         <p class="muted small">Fewer vehicles (drivers short, vehicles off the road) or more (hired). They are hired or released over a few days; only idle ones are released.</p>
@@ -394,6 +408,8 @@
             <div class="legend">
                 <span id="legendSuggestedLink" hidden><i class="swatch link suggested"></i>Suggested link</span>
                 <span id="legendYourLink" hidden><i class="swatch link drawn"></i>Your link</span>
+                <span id="legendRail" hidden><i class="swatch link byRail"></i>By rail</span>
+                <span id="legendWater" hidden><i class="swatch link byWater"></i>By water</span>
                 <span id="legendSuggestion" hidden><i class="swatch hollow"></i>Suggestion</span>
                 <span><i class="swatch lane"></i>Road lane, as built</span>
                 <span id="legendFell" hidden><i class="swatch lane fell"></i>Carried less</span>

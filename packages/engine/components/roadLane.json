@@ -6,7 +6,7 @@
     "domains": [
         "logistics"
     ],
-    "description": "A trucking lane with its own fleet, in up to two truck sizes. Loaded trucks travel in three stages (an Erlang-3 travel time, so arrivals spread out realistically), unload at the destination and return empty over the same travel time to wait at the origin. Each size keeps its own count of idle, loaded and returning trucks, and each is conserved: they always add up to that size's fleet. Changing a fleet size hires or releases trucks towards it over the hiring time; only idle trucks are released. Loads are shared between the sizes in proportion to their idle capacity, and the lane can load at most its idle trucks times their capacities per turnaround time, so a small fleet caps throughput. Open scales the loading: 1 normally, 0 while the road is closed (trucks on the road still finish their trips), in between for a restriction. Orders waiting holds what the destination has ordered but not yet been shipped. Transport cost counts each completed round trip at twice the distance times the size's cost per km; fleet cost counts every truck on the lane, busy or idle, at its size's cost per day. The second size has no trucks unless its fleet size is set. Connect it with a Road shipment bundle. Dispatching and Receiving are 1 normally and follow a calendar when the sites at its ends keep hours: 0 outside them, and above 1 within them by as much as the hours are short of the whole week. While the origin does not dispatch nothing is loaded, and while it does the orders waiting are loaded that much sooner (Orders to load now: a day's orders picked within a shift); while the destination does not receive, loaded vehicles wait at its door, and unload when it opens, in an hour or so however long the trip was.",
+    "description": "A trucking lane with its own fleet, in up to two truck sizes. Loaded trucks travel in three stages (an Erlang-3 travel time, so arrivals spread out realistically), unload at the destination and return empty over the same travel time to wait at the origin. Each size keeps its own count of idle, loaded and returning trucks, and each is conserved: they always add up to that size's fleet. Changing a fleet size hires or releases trucks towards it over the hiring time; only idle trucks are released. Loads are shared between the sizes in proportion to their idle capacity, and the lane can load at most its idle trucks times their capacities per turnaround time, so a small fleet caps throughput. Open scales the loading: 1 normally, 0 while the road is closed (trucks on the road still finish their trips), in between for a restriction. Load carried is the share of its capacity a vehicle is loaded with: 1 normally, less when it may carry only part of it (a barge in low water); vehicles then load and leave with that much, so more of them are needed for the same flow. Each loaded vehicle is unloaded as the goods it carries arrive, in proportion to the goods still on the way. Orders waiting holds what the destination has ordered but not yet been shipped. Transport cost counts each completed round trip at twice the distance times the size's cost per km; fleet cost counts every truck on the lane, busy or idle, at its size's cost per day. The second size has no trucks unless its fleet size is set. Connect it with a Road shipment bundle. Dispatching and Receiving are 1 normally and follow a calendar when the sites at its ends keep hours: 0 outside them, and above 1 within them by as much as the hours are short of the whole week. While the origin does not dispatch nothing is loaded, and while it does the orders waiting are loaded that much sooner (Orders to load now: a day's orders picked within a shift); while the destination does not receive, loaded vehicles wait at its door, and unload when it opens, in an hour or so however long the trip was.",
     "shape": "cylinder",
     "color": "#d98b54",
     "states": [
@@ -89,6 +89,12 @@
             "unit": "TEU/day"
         },
         {
+            "symbol": "loadCarried",
+            "label": "Share of capacity carried",
+            "initialValue": 1,
+            "unit": ""
+        },
+        {
             "symbol": "utilisation",
             "label": "Fleet utilisation",
             "initialValue": 0.8235294117647058,
@@ -144,6 +150,14 @@
             "key": "receiveOpen",
             "name": "Receiving",
             "symbol": "receiveOpen",
+            "value": 1,
+            "unit": "",
+            "scope": "instance"
+        },
+        {
+            "key": "loadShare",
+            "name": "Load carried",
+            "symbol": "loadShare",
             "value": 1,
             "unit": "",
             "scope": "instance"
@@ -317,18 +331,8 @@
         },
         {
             "state": "loadedTrucks",
-            "expression": "-\\frac{\\frac{\\mathrm{arriving} \\cdot (1 - \\begin{cases} \\frac{\\mathrm{loadedTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{loadedTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{loadedTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{loadedTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{loadedTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases})}{\\mathrm{truckCapacity}}}{\\mathrm{secondsPerDay}}",
+            "expression": "-\\frac{\\begin{cases} \\frac{\\mathrm{arriving} \\cdot \\mathrm{loadedTrucks}}{\\mathrm{loaded1} + \\mathrm{loaded2} + \\mathrm{loaded3}} & \\mathrm{loaded1} + \\mathrm{loaded2} + \\mathrm{loaded3} > 0 \\\\ 0 & \\text{otherwise} \\end{cases}}{\\mathrm{secondsPerDay}}",
             "parameters": [
-                {
-                    "name": "Truck capacity",
-                    "symbol": "truckCapacity",
-                    "shared": "truckCapacity"
-                },
-                {
-                    "name": "Truck capacity, second size",
-                    "symbol": "truckCapacity2",
-                    "shared": "truckCapacity2"
-                },
                 {
                     "name": "Seconds per day",
                     "symbol": "secondsPerDay",
@@ -338,22 +342,12 @@
         },
         {
             "state": "returning",
-            "expression": "\\frac{\\frac{\\mathrm{arriving} \\cdot (1 - \\begin{cases} \\frac{\\mathrm{loadedTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{loadedTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{loadedTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{loadedTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{loadedTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases})}{\\mathrm{truckCapacity}} - \\frac{\\mathrm{returning}}{\\mathrm{leadTime}}}{\\mathrm{secondsPerDay}}",
+            "expression": "\\frac{\\begin{cases} \\frac{\\mathrm{arriving} \\cdot \\mathrm{loadedTrucks}}{\\mathrm{loaded1} + \\mathrm{loaded2} + \\mathrm{loaded3}} & \\mathrm{loaded1} + \\mathrm{loaded2} + \\mathrm{loaded3} > 0 \\\\ 0 & \\text{otherwise} \\end{cases} - \\frac{\\mathrm{returning}}{\\mathrm{leadTime}}}{\\mathrm{secondsPerDay}}",
             "parameters": [
                 {
                     "name": "Travel time",
                     "symbol": "leadTime",
                     "shared": "leadTime"
-                },
-                {
-                    "name": "Truck capacity",
-                    "symbol": "truckCapacity",
-                    "shared": "truckCapacity"
-                },
-                {
-                    "name": "Truck capacity, second size",
-                    "symbol": "truckCapacity2",
-                    "shared": "truckCapacity2"
                 },
                 {
                     "name": "Seconds per day",
@@ -390,18 +384,8 @@
         },
         {
             "state": "loadedTrucks2",
-            "expression": "-\\frac{\\frac{\\mathrm{arriving} \\cdot \\begin{cases} \\frac{\\mathrm{loadedTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{loadedTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{loadedTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{loadedTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{loadedTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases}}{\\mathrm{truckCapacity2}}}{\\mathrm{secondsPerDay}}",
+            "expression": "-\\frac{\\begin{cases} \\frac{\\mathrm{arriving} \\cdot \\mathrm{loadedTrucks2}}{\\mathrm{loaded1} + \\mathrm{loaded2} + \\mathrm{loaded3}} & \\mathrm{loaded1} + \\mathrm{loaded2} + \\mathrm{loaded3} > 0 \\\\ 0 & \\text{otherwise} \\end{cases}}{\\mathrm{secondsPerDay}}",
             "parameters": [
-                {
-                    "name": "Truck capacity",
-                    "symbol": "truckCapacity",
-                    "shared": "truckCapacity"
-                },
-                {
-                    "name": "Truck capacity, second size",
-                    "symbol": "truckCapacity2",
-                    "shared": "truckCapacity2"
-                },
                 {
                     "name": "Seconds per day",
                     "symbol": "secondsPerDay",
@@ -411,22 +395,12 @@
         },
         {
             "state": "returning2",
-            "expression": "\\frac{\\frac{\\mathrm{arriving} \\cdot \\begin{cases} \\frac{\\mathrm{loadedTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{loadedTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{loadedTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{loadedTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{loadedTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases}}{\\mathrm{truckCapacity2}} - \\frac{\\mathrm{returning2}}{\\mathrm{leadTime}}}{\\mathrm{secondsPerDay}}",
+            "expression": "\\frac{\\begin{cases} \\frac{\\mathrm{arriving} \\cdot \\mathrm{loadedTrucks2}}{\\mathrm{loaded1} + \\mathrm{loaded2} + \\mathrm{loaded3}} & \\mathrm{loaded1} + \\mathrm{loaded2} + \\mathrm{loaded3} > 0 \\\\ 0 & \\text{otherwise} \\end{cases} - \\frac{\\mathrm{returning2}}{\\mathrm{leadTime}}}{\\mathrm{secondsPerDay}}",
             "parameters": [
                 {
                     "name": "Travel time",
                     "symbol": "leadTime",
                     "shared": "leadTime"
-                },
-                {
-                    "name": "Truck capacity",
-                    "symbol": "truckCapacity",
-                    "shared": "truckCapacity"
-                },
-                {
-                    "name": "Truck capacity, second size",
-                    "symbol": "truckCapacity2",
-                    "shared": "truckCapacity2"
                 },
                 {
                     "name": "Seconds per day",
@@ -463,12 +437,17 @@
         },
         {
             "state": "canLoad",
-            "expression": "\\frac{\\mathrm{laneOpen} \\cdot \\min(1, \\mathrm{dispatchOpen}) \\cdot (\\mathrm{idleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{idleTrucks2} \\cdot \\mathrm{truckCapacity2})}{\\mathrm{loadDays}}",
+            "expression": "\\frac{\\mathrm{laneOpen} \\cdot \\min(1, \\mathrm{dispatchOpen}) \\cdot \\mathrm{loadShare} \\cdot (\\mathrm{idleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{idleTrucks2} \\cdot \\mathrm{truckCapacity2})}{\\mathrm{loadDays}}",
             "parameters": [
                 {
                     "name": "Open",
                     "symbol": "laneOpen",
                     "shared": "laneOpen"
+                },
+                {
+                    "name": "Load carried",
+                    "symbol": "loadShare",
+                    "shared": "loadShare"
                 },
                 {
                     "name": "Truck capacity",
@@ -501,22 +480,12 @@
         },
         {
             "state": "transportCost",
-            "expression": "\\frac{2 \\cdot \\mathrm{distance} \\cdot (\\frac{\\mathrm{arriving} \\cdot (1 - \\begin{cases} \\frac{\\mathrm{loadedTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{loadedTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{loadedTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{loadedTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{loadedTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases})}{\\mathrm{truckCapacity}} \\cdot \\mathrm{costPerKm} + \\frac{\\mathrm{arriving} \\cdot \\begin{cases} \\frac{\\mathrm{loadedTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{loadedTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{loadedTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{loadedTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{loadedTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases}}{\\mathrm{truckCapacity2}} \\cdot \\mathrm{costPerKm2})}{\\mathrm{secondsPerDay}}",
+            "expression": "\\frac{2 \\cdot \\mathrm{distance} \\cdot (\\begin{cases} \\frac{\\mathrm{arriving} \\cdot \\mathrm{loadedTrucks}}{\\mathrm{loaded1} + \\mathrm{loaded2} + \\mathrm{loaded3}} & \\mathrm{loaded1} + \\mathrm{loaded2} + \\mathrm{loaded3} > 0 \\\\ 0 & \\text{otherwise} \\end{cases} \\cdot \\mathrm{costPerKm} + \\begin{cases} \\frac{\\mathrm{arriving} \\cdot \\mathrm{loadedTrucks2}}{\\mathrm{loaded1} + \\mathrm{loaded2} + \\mathrm{loaded3}} & \\mathrm{loaded1} + \\mathrm{loaded2} + \\mathrm{loaded3} > 0 \\\\ 0 & \\text{otherwise} \\end{cases} \\cdot \\mathrm{costPerKm2})}{\\mathrm{secondsPerDay}}",
             "parameters": [
                 {
                     "name": "Distance",
                     "symbol": "distance",
                     "shared": "distance"
-                },
-                {
-                    "name": "Truck capacity",
-                    "symbol": "truckCapacity",
-                    "shared": "truckCapacity"
-                },
-                {
-                    "name": "Truck capacity, second size",
-                    "symbol": "truckCapacity2",
-                    "shared": "truckCapacity2"
                 },
                 {
                     "name": "Truck cost per km",
@@ -555,6 +524,18 @@
                     "shared": "secondsPerDay"
                 }
             ]
+        },
+        {
+            "state": "loadCarried",
+            "expression": "\\mathrm{loadShare}",
+            "parameters": [
+                {
+                    "name": "Load carried",
+                    "symbol": "loadShare",
+                    "shared": "loadShare"
+                }
+            ],
+            "setsValue": true
         }
     ]
 }

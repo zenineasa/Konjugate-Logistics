@@ -63,7 +63,7 @@ export async function createHost() {
     const chosen = {}; // role -> text the next chooseFile picks
     let session = null;
     const kindOf = (query) => (query.includes('"landuse"="port"') ? 'ports' : query.includes('"building"="warehouse"') ? 'logistics'
-        : query.includes('"highway"') ? 'roads' : query.includes('"railway"="rail"') ? 'rail' : query.includes('"place"') ? 'places' : null);
+        : query.includes('"highway"') ? 'roads' : query.includes('"railway"="rail"') ? 'rail' : query.includes('"natural"="water"') ? 'water' : query.includes('"place"') ? 'places' : null);
     const answerFor = (url) => {
         const address = new URL(url);
         // Geofabrik's index of extracts, as a test sets it (host.mapIndex).

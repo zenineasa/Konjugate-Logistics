@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { completeFields, createPin, networkSelection, setField } from '../../packages/toolbox/lib/network.mjs';
 import {
-    catalogueForModel, completeCatalogue, createVehicle, defaultCatalogue, linkKind, linkVehicleProblem, setVehicleField, vehicleProblem, vehiclesOf
+    carriersFor, catalogueForModel, completeCatalogue, createVehicle, defaultCatalogue, linkKind, linkVehicleProblem, setVehicleField, typeMode, vehicleProblem,
+    vehiclesOf, withModeType
 } from '../../packages/toolbox/lib/vehicles.mjs';
 
 test('the default catalogue has five types, one refrigerated, every figure assumed, heavy trucks kept off store deliveries', () => {
@@ -60,7 +61,7 @@ test('the catalogue the model builder reads is plain numbers with where each cam
     const catalogue = defaultCatalogue();
     setVehicleField(catalogue[3], 'capacity', '2.5');
     const model = catalogueForModel(catalogue);
-    assert.deepEqual(model[3], { id: 'miniVan', name: 'Mini-van', toStores: true, refrigerated: false, capacity: 2.5, costPerKm: 0.5, costPerDay: 40, speed: 50, loadingHours: 0.25, basis: { capacity: 'user', costPerKm: 'assumed', costPerDay: 'assumed', speed: 'assumed', loadingHours: 'assumed' } });
+    assert.deepEqual(model[3], { id: 'miniVan', name: 'Mini-van', mode: 'road', toStores: true, refrigerated: false, capacity: 2.5, costPerKm: 0.5, costPerDay: 40, speed: 50, loadingHours: 0.25, basis: { capacity: 'user', costPerKm: 'assumed', costPerDay: 'assumed', speed: 'assumed', loadingHours: 'assumed' } });
     assert.deepEqual(completeCatalogue(undefined).map((type) => type.id), ['heavyTruck', 'mediumTruck', 'smallTruck', 'miniVan', 'refrigeratedTruck']);
     // A catalogue saved before categories has no refrigerated type: it is given the default one, once, so chilled goods can go.
     const before = structuredClone(catalogue).filter((type) => !type.refrigerated).map(({ refrigerated, ...type }) => type);
@@ -106,4 +107,31 @@ test('a store loses most of the sales it cannot make, a dark store half; 0 is a 
     const old = { role: 'store', fields: { demand: { value: 4, basis: 'user' } } };
     completeFields(old);
     assert.deepEqual(old.fields.lostSales, { value: 80, basis: 'assumed' }, 'a store from an older session loses the default');
+});
+
+test('a link by rail or by water runs on its mode\'s vehicles: a train or a barge is added the first time, its figures assumed', () => {
+    const roads = defaultCatalogue();
+    assert.ok(roads.every((type) => typeMode(type) === 'road'), 'a new catalogue is road vehicles');
+    // No type of the mode yet: a link by rail has no vehicles, until one is added.
+    assert.deepEqual(vehiclesOf({ mode: 'rail' }, 'supply', roads), []);
+    const railed = withModeType(roads, 'rail');
+    const train = railed.at(-1);
+    assert.deepEqual([train.id, train.name, train.mode, train.toStores, train.fields.capacity, train.fields.speed], ['freightTrain', 'Freight train', 'rail', false, { value: 800, basis: 'assumed' }, { value: 50, basis: 'assumed' }]);
+    assert.equal(withModeType(railed, 'rail'), railed, 'not added twice');
+    assert.equal(withModeType(roads, 'road'), roads);
+    const both = withModeType(railed, 'water');
+    assert.deepEqual(both.at(-1).fields.capacity, { value: 2000, basis: 'assumed' });
+    // Each link takes its own mode's types, whatever it was given before.
+    assert.deepEqual(vehiclesOf({ mode: 'rail' }, 'supply', both), [{ type: 'freightTrain', fleet: null }]);
+    assert.deepEqual(vehiclesOf({ mode: 'water', vehicles: [{ type: 'heavyTruck', fleet: 3 }] }, 'transfer', both), [{ type: 'barge', fleet: null }], 'a truck chosen while it was by road is not a barge');
+    assert.deepEqual(vehiclesOf({ vehicles: [{ type: 'barge', fleet: 1 }] }, 'supply', both), [{ type: 'heavyTruck', fleet: null }], 'and a barge is not a truck');
+    // Chilled goods on a train go by a refrigerated train, not a refrigerated truck.
+    assert.deepEqual(carriersFor([{ type: 'freightTrain', fleet: null }], 'supply', both, true, 'rail'), []);
+    const cold = both.map((type) => (type.id === 'freightTrain' ? { ...type, refrigerated: true } : type));
+    assert.deepEqual(carriersFor([{ type: 'freightTrain', fleet: null }], 'supply', cold, true, 'rail'), [{ type: 'freightTrain', fleet: null }]);
+    // Kept with a session, the mode and all.
+    assert.deepEqual(completeCatalogue(structuredClone(both)).slice(-2).map((type) => [type.id, typeMode(type)]), [['freightTrain', 'rail'], ['barge', 'water']]);
+    assert.deepEqual(catalogueForModel(both).slice(-2).map((type) => [type.id, type.mode, type.capacity]), [['freightTrain', 'rail', 800], ['barge', 'water', 2000]]);
+    // A type the user adds may run by rail, from a train's figures.
+    assert.deepEqual([createVehicle({ name: 'Short train', mode: 'rail' }, both).mode, createVehicle({ name: 'Short train', mode: 'rail' }, both).fields.capacity.value], ['rail', 800]);
 });

@@ -48,7 +48,8 @@
                     { "role": "ports", "label": "Ports and anchorages", "accept": ["json"], "description": "OpenStreetMap ports, harbours, marinas and anchorages, as Overpass returns them.", "sample": "samples/ports.json" },
                     { "role": "logistics", "multiple": true, "label": "Warehouses and industrial land", "accept": ["json"], "description": "OpenStreetMap warehouses and industrial land, as Overpass returns them.", "sample": "samples/logistics.json" },
                     { "role": "roads", "multiple": true, "label": "Roads", "accept": ["json"], "description": "OpenStreetMap motorways, trunk and primary roads (and for a city its secondary and tertiary roads), as Overpass returns them.", "sample": "samples/roads.json" },
-                    { "role": "rail", "label": "Rail", "accept": ["json"], "description": "OpenStreetMap rail lines and yards, as Overpass returns them.", "sample": "samples/rail.json" },
+                    { "role": "rail", "multiple": true, "label": "Rail", "accept": ["json"], "description": "OpenStreetMap rail lines and yards, as Overpass returns them: drawn on the map and routed over by links by rail.", "sample": "samples/rail.json" },
+                    { "role": "water", "multiple": true, "label": "Water", "accept": ["json"], "description": "OpenStreetMap lakes, reservoirs and rivers as areas, and rivers, canals and fairways as lines, as Overpass returns them: drawn on the map, and the waterways barges may take routed over by links by water.", "sample": "samples/water.json" },
                     { "role": "places", "label": "Towns and cities", "accept": ["json"], "description": "OpenStreetMap towns and cities, as Overpass returns them.", "sample": "samples/places.json" },
                     { "role": "portwatchPorts", "label": "IMF PortWatch ports", "accept": ["json"], "description": "The IMF PortWatch ports around the region, as its ArcGIS service returns them." },
                     { "role": "portwatchActivity", "multiple": true, "label": "IMF PortWatch port activity", "accept": ["json"], "description": "A port's daily calls and trade estimates from IMF PortWatch, one file per port." },
@@ -103,6 +104,25 @@
                     { "parameter": "leadTime", "target": "supplied", "samples": true },
                     { "parameter": "distance", "target": "supplied", "samples": true },
                     { "parameter": "fleetSize", "target": "supplied", "samples": true }
+                ]
+            },
+            {
+                "scenarioId": "lowWater",
+                "name": "Low water",
+                "description": "A river runs low for a while, and barges may load only part of what they can carry (or trains part of theirs). The lanes carry less, hire more vehicles, or their sites order the rest from their other sources. Watch the river port's stock fall, the vehicles on its lanes and their costs.",
+                "forkAt": 864000,
+                "runTime": 7776000,
+                "effects": [
+                    "Each chosen lane's vehicles load the share given of their capacity, for the chosen days; vehicles already loaded arrive with what they carry.",
+                    "Waiting, orders wait for room on the lanes and arrive late.",
+                    "With more vehicles, each lane hires enough to carry what it did, at their cost.",
+                    "Ordering elsewhere moves what the lanes cannot carry to the other lanes into their sites."
+                ],
+                "interventions": [
+                    { "parameter": "loadShare", "target": "supplied", "samples": true },
+                    { "parameter": "orderShare", "target": "supplied", "samples": true },
+                    { "parameter": "fleetSize", "target": "supplied", "samples": true },
+                    { "parameter": "fleetSize2", "target": "supplied", "samples": true }
                 ]
             },
             {

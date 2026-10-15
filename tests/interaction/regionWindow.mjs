@@ -71,7 +71,7 @@ try {
         await app.evaluate((_electron, answers) => {
             globalThis.logisticsRequests = [];
             const kindOf = (query) => (query.includes('"landuse"="port"') ? 'ports' : query.includes('"building"="warehouse"') ? 'logistics'
-                : query.includes('"highway"') ? 'roads' : query.includes('"railway"="rail"') ? 'rail' : query.includes('"place"') ? 'places' : null);
+                : query.includes('"highway"') ? 'roads' : query.includes('"railway"="rail"') ? 'rail' : query.includes('"natural"="water"') ? 'water' : query.includes('"place"') ? 'places' : null);
             globalThis.fetch = async (url) => {
                 const address = new URL(url);
                 globalThis.logisticsRequests.push(address.href);
@@ -135,7 +135,7 @@ try {
         await toolbox.dispatchEvent('#marginInput', 'change');
         assert.match(await toolbox.textContent('#areaSize'), /^\d+ × \d+ km/);
         await toolbox.click('#fetchButton');
-        await toolbox.waitForFunction(() => document.querySelectorAll('#fetchProgress li.done').length === 2, null, { timeout: 60000 }).catch(fail);
+        await toolbox.waitForFunction(() => document.querySelectorAll('#fetchProgress li.done').length === 4, null, { timeout: 60000 }).catch(fail);
         await toolbox.waitForFunction(() => !document.querySelector('#fetchButton').disabled, null, { timeout: 60000 }).catch(fail);
         let requests = await app.evaluate(() => globalThis.logisticsRequests);
         let queries = requests.filter((url) => url.includes('overpass-api.de/api/interpreter')).map((url) => new URL(url).searchParams.get('data'));
@@ -146,7 +146,12 @@ try {
             const [south, west, north, east] = boxOf(query);
             assert.ok((north - south) * 111.32 <= 40.01 && (east - west) * 111.32 * Math.cos((south + north) / 2 * Math.PI / 180) <= 40.01, 'No tile is wider than 40 km.');
         }
-        assert.ok(queries.every((query) => query.includes('"highway"') || query.includes('"place"')), 'the roads and place names alone');
+        assert.ok(queries.every((query) => query.includes('"highway"') || query.includes('"place"') || query.includes('"natural"="water"') || query.includes('"railway"="rail"')), 'the roads, place names, water and railways alone');
+        const railQueries = queries.filter((query) => query.includes('"railway"="rail"')).length;
+        assert.equal(railQueries, 1, 'the railways once, with the roads');
+        // Lake Wren and Elm Pond drawn, Alder River as a waterway barges may take.
+        assert.equal(await toolbox.locator('#map path.water.lake.osm').count(), 2);
+        assert.equal(await toolbox.locator('#map path.water.river.navigable').count(), 1);
         assert.equal(requests.filter((url) => url.includes('services9.arcgis.com')).length, 0, 'no port activity unless ports are asked for');
         const bbox = boxOf(queries.find((query) => query.includes('"place"')));
         assert.ok(bbox[0] < -29.9 - 0.2 && bbox[2] > -29.8 + 0.2, `25 km is added around the place (${bbox}).`);
@@ -159,7 +164,8 @@ try {
         requests = await app.evaluate(() => globalThis.logisticsRequests);
         queries = requests.filter((url) => url.includes('overpass-api.de/api/interpreter')).map((url) => new URL(url).searchParams.get('data'));
         assert.ok(queries.some((query) => query.includes('"landuse"="port"')));
-        assert.ok(!queries.some((query) => query.includes('"building"="warehouse"') || query.includes('"railway"="rail"')), 'warehouses and rail not fetched');
+        assert.ok(!queries.some((query) => query.includes('"building"="warehouse"')), 'warehouses not fetched');
+        assert.equal(queries.filter((query) => query.includes('"railway"="rail"')).length, railQueries, 'nor the railways again');
         const portwatch = requests.filter((url) => url.includes('services9.arcgis.com'));
         assert.equal(portwatch.length, 2, portwatch.join('\n'));
         assert.ok(portwatch.every((url) => new URL(url).pathname.startsWith('/weJ1QsnbMYJlCHdG/ArcGIS/rest/services/')), 'only under the IMF account');
@@ -419,7 +425,7 @@ try {
         const saved = JSON.parse(await decodeProjectFile(await readFile(savedPath)));
         const entry = saved.addonData?.['konjugate.logistics.toolbox'];
         assert.ok(entry, 'The project carries the toolbox session.');
-        assert.deepEqual([...new Set(entry.inputs.map((input) => input.role))].sort(), ['logistics', 'places', 'ports', 'portwatchActivity', 'portwatchPorts', 'roads'], 'rail was never asked for');
+        assert.deepEqual([...new Set(entry.inputs.map((input) => input.role))].sort(), ['logistics', 'places', 'ports', 'portwatchActivity', 'portwatchPorts', 'rail', 'roads', 'water'], 'the railways and water fetched with the roads are kept with the rest');
         assert.ok(entry.inputs.every((input) => /^https:\/\/(overpass-api\.de|services9\.arcgis\.com)\//.test(input.url ?? '') && input.retrievedAt), 'Every input records where and when it was fetched.');
         assert.equal(entry.window.version, 2);
         assert.equal(entry.window.pins.filter((pin) => pin.role === 'customerArea').length, 4, 'the three towns and the customer area placed on the map');

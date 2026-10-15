@@ -231,14 +231,15 @@
                     "wanted",
                     "canLoad",
                     "idleTrucks",
-                    "idleTrucks2"
+                    "idleTrucks2",
+                    "loadCarried"
                 ]
             },
             "output": {
                 "role": "target",
                 "state": "idleTrucks"
             },
-            "latex": "-\\frac{\\min(\\frac{\\mathrm{targetWanted}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{supplyShare} \\cdot \\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot (1 - \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases})}{\\mathrm{truckCapacity} \\cdot \\mathrm{secondsPerDay}}",
+            "latex": "-\\frac{\\min(\\frac{\\mathrm{targetWanted}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{supplyShare} \\cdot \\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot (1 - \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases})}{\\mathrm{truckCapacity} \\cdot \\max(\\mathrm{targetLoadCarried}, 0.001) \\cdot \\mathrm{secondsPerDay}}",
             "parameters": [
                 {
                     "name": "Share of the supplier's ready goods",
@@ -283,14 +284,15 @@
                     "wanted",
                     "canLoad",
                     "idleTrucks",
-                    "idleTrucks2"
+                    "idleTrucks2",
+                    "loadCarried"
                 ]
             },
             "output": {
                 "role": "target",
                 "state": "loadedTrucks"
             },
-            "latex": "\\frac{\\min(\\frac{\\mathrm{targetWanted}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{supplyShare} \\cdot \\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot (1 - \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases})}{\\mathrm{truckCapacity} \\cdot \\mathrm{secondsPerDay}}",
+            "latex": "\\frac{\\min(\\frac{\\mathrm{targetWanted}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{supplyShare} \\cdot \\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot (1 - \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases})}{\\mathrm{truckCapacity} \\cdot \\max(\\mathrm{targetLoadCarried}, 0.001) \\cdot \\mathrm{secondsPerDay}}",
             "parameters": [
                 {
                     "name": "Share of the supplier's ready goods",
@@ -335,14 +337,15 @@
                     "wanted",
                     "canLoad",
                     "idleTrucks",
-                    "idleTrucks2"
+                    "idleTrucks2",
+                    "loadCarried"
                 ]
             },
             "output": {
                 "role": "target",
                 "state": "idleTrucks2"
             },
-            "latex": "-\\frac{\\min(\\frac{\\mathrm{targetWanted}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{supplyShare} \\cdot \\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases}}{\\mathrm{truckCapacity2} \\cdot \\mathrm{secondsPerDay}}",
+            "latex": "-\\frac{\\min(\\frac{\\mathrm{targetWanted}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{supplyShare} \\cdot \\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases}}{\\mathrm{truckCapacity2} \\cdot \\max(\\mathrm{targetLoadCarried}, 0.001) \\cdot \\mathrm{secondsPerDay}}",
             "parameters": [
                 {
                     "name": "Share of the supplier's ready goods",
@@ -387,14 +390,15 @@
                     "wanted",
                     "canLoad",
                     "idleTrucks",
-                    "idleTrucks2"
+                    "idleTrucks2",
+                    "loadCarried"
                 ]
             },
             "output": {
                 "role": "target",
                 "state": "loadedTrucks2"
             },
-            "latex": "\\frac{\\min(\\frac{\\mathrm{targetWanted}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{supplyShare} \\cdot \\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases}}{\\mathrm{truckCapacity2} \\cdot \\mathrm{secondsPerDay}}",
+            "latex": "\\frac{\\min(\\frac{\\mathrm{targetWanted}}{\\mathrm{responseDays}}, \\min(\\mathrm{targetCanLoad}, \\frac{\\mathrm{supplyShare} \\cdot \\mathrm{sourceStock}}{\\mathrm{originDrainDays}})) \\cdot \\begin{cases} \\frac{\\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}}{\\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2}} & \\mathrm{targetIdleTrucks} \\cdot \\mathrm{truckCapacity} + \\mathrm{targetIdleTrucks2} \\cdot \\mathrm{truckCapacity2} > 0 \\\\ 0 & \\text{otherwise} \\end{cases}}{\\mathrm{truckCapacity2} \\cdot \\max(\\mathrm{targetLoadCarried}, 0.001) \\cdot \\mathrm{secondsPerDay}}",
             "parameters": [
                 {
                     "name": "Share of the supplier's ready goods",

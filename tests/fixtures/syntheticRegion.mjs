@@ -10,6 +10,8 @@
 //   - warehouses on two industrial estates, a large industrial estate with none mapped, and a
 //     parcel too small to matter
 //   - a city and a town with populations, and a town without one
+//   - a railway along the coast with a yard, and a river barges may take from the coast north to Cedarton, a stream that
+//     they may not, a lake mapped as a relation of two ways with an island, and a pond
 
 let nextNode = 1;
 const nodeIds = new Map();
@@ -85,8 +87,18 @@ export function syntheticRegion({ warehouses = true } = {}) {
         point(-29.9, -19.45, { place: 'town', name: 'Dunmore', population: '40 000' }),
         point(-29.72, -19.92, { place: 'town', name: 'Elmwick' })
     ];
+    // Water, made last so the ids of everything above are as they were. The lake's shore is two ways, as a large lake's is.
+    const lakeShore = rectangle({ lat: -29.86, lon: -19.6 }, 6, 4);
+    const lakeHalves = [way(lakeShore.slice(0, 3), {}), way(lakeShore.slice(2), {})];
+    const island = way(rectangle({ lat: -29.86, lon: -19.6 }, 1, 0.6), {});
+    const water = [
+        way(line({ lat: -29.985, lon: -19.8 }, { lat: -29.73, lon: -19.8 }, 20), { waterway: 'river', name: 'Alder River', CEMT: 'IV' }),
+        way(line({ lat: -29.9, lon: -19.4 }, { lat: -29.8, lon: -19.35 }, 4), { waterway: 'stream', name: 'Mill Brook' }),
+        { type: 'relation', id: 9000, tags: { type: 'multipolygon', natural: 'water', water: 'lake', name: 'Lake Wren' }, members: [...lakeHalves.map((half) => ({ type: 'way', ref: half.id, role: 'outer', geometry: half.geometry })), { type: 'way', ref: island.id, role: 'inner', geometry: island.geometry }] },
+        { ...area({ lat: -29.65, lon: -19.95 }, 0.6, 0.4, { natural: 'water', name: 'Elm Pond' }), nodes: undefined }
+    ];
     const answer = (elements) => ({ version: 0.6, generator: 'synthetic', elements });
-    return { ports: answer(ports), logistics: answer(logistics), roads: answer(roads), rail: answer(rail), places: answer(places) };
+    return { ports: answer(ports), logistics: answer(logistics), roads: answer(roads), rail: answer(rail), places: answer(places), water: answer(water) };
 }
 
 // IMF PortWatch answers for the same made-up coast, shaped as its ArcGIS service returns them: Port

@@ -150,16 +150,23 @@ export class MapView {
             return `${index ? 'L' : 'M'}${x.toFixed(3)} ${y.toFixed(3)}`;
         }).join('') + (close ? 'Z' : '');
         const scaled = (node, width, dash = null) => { node.classList.add('scaled'); node.dataset.width = width; if (dash) node.dataset.dash = dash; return node; };
-        // Under everything: land (Natural Earth), its coastline and country borders, faint, so the region's own data reads
-        // first. A border Natural Earth does not class as an international boundary (disputed, indefinite, a line of
-        // control or a claim) is dashed; every other border is solid.
+        // Under everything: land (Natural Earth), its lakes, rivers, coastline and country borders, faint, so the region's
+        // own data reads first. A border Natural Earth does not class as an international boundary (disputed, indefinite,
+        // a line of control or a claim) is dashed; every other border is solid. Each lake is a fill of its own, its islands
+        // holes in it; a river is wider the larger Natural Earth ranks it.
         if (map.geography) {
             element('path', { d: map.geography.land.map((ring) => path(ring, true)).join(''), class: 'land', 'fill-rule': 'evenodd' }, this.base);
+            for (const lake of map.geography.lakes ?? []) scaled(element('path', { d: lake.map((ring) => path(ring, true)).join(''), class: 'water lake', 'fill-rule': 'evenodd' }, this.base), 0.8);
+            for (const river of map.geography.rivers ?? []) scaled(element('path', { d: path(river.points), class: 'water river' }, this.base), river.rank <= 4 ? 1.6 : river.rank <= 7 ? 1.1 : 0.7);
             for (const line of map.geography.coast) scaled(element('path', { d: path(line), class: 'coast' }, this.base), 1);
             for (const border of map.geography.borders) {
                 scaled(element('path', { d: path(border.points), class: `border${border.settled ? '' : ' unsettled'}` }, this.base), 1.2, border.settled ? null : '5 4');
             }
         }
+        // OpenStreetMap's own water, over Natural Earth's: each lake or river area a fill of its own (its islands holes),
+        // rivers and canals as lines, those barges may take a little stronger.
+        for (const area of map.water?.areas ?? []) scaled(element('path', { d: area.map((ring) => path(ring, true)).join(''), class: 'water lake osm', 'fill-rule': 'evenodd' }, this.base), 0.6);
+        for (const river of map.water?.rivers ?? []) scaled(element('path', { d: path(river.points), class: `water river osm${river.freight ? ' navigable' : ''}` }, this.base), river.freight ? 1.6 : 0.9);
         for (const ring of map.industrial) scaled(element('path', { d: path(ring, true), class: 'industrial' }, this.base), 1);
         for (const ring of map.ports) scaled(element('path', { d: path(ring, true), class: 'portArea' }, this.base), 1);
         // What suggestions from public data show (port land, industrial land), under the roads.
@@ -232,7 +239,8 @@ export class MapView {
         this.drawLinks();
     }
 
-    // `links`: [{ id, from, to (pin ids), basis: suggested | user, points (the road it was routed over), unused }]
+    // `links`: [{ id, from, to (pin ids), basis: suggested | user, points (the road, railway or waterway it was routed
+    // over), mode (road, rail or water), problem (a link by rail or by water that could not be routed), unused }]
     setLinks(links) {
         this.links = links;
         this.selection = this.selection.filter((item) => item.kind !== 'link' || links.some((link) => link.id === item.id));
@@ -364,7 +372,7 @@ export class MapView {
             const kind = link.basis === 'user' ? 'drawn' : 'suggested';
             element('path', { d, class: 'linkHit', 'stroke-width': 9 * unit, 'data-link': link.id }, this.linkLayer);
             const path = element('path', {
-                d, class: `link ${kind}${selected ? ' selected' : ''}${link.unused ? ' unused' : ''}`, 'data-link': link.id,
+                d, class: `link ${kind} by-${link.mode ?? 'road'}${selected ? ' selected' : ''}${link.unused ? ' unused' : ''}${link.problem ? ' problem' : ''}`, 'data-link': link.id,
                 'stroke-width': (selected ? 2.6 : 1.4) * unit, ...(kind === 'suggested' ? { 'stroke-dasharray': `${5 * unit} ${3 * unit}` } : {})
             }, this.linkLayer);
             element('title', {}, path).textContent = `${from.name} → ${to.name}${link.title ? `\n${link.title}` : ''}`;

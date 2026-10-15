@@ -118,6 +118,64 @@ export function closurePlan({ lanes, closed, mode = 'wait', open = 0, detourHour
     };
 }
 
+// Low water on some lanes by water (or any lanes by rail or by water whose vehicles may carry only part of their
+// capacity): from `start` for `duration`, each vehicle is loaded with `share` of its capacity (0.4: a barge loads 40%
+// of what it can carry). Meanwhile:
+//   'wait'          the lanes carry what their vehicles can; orders wait for room on them and arrive late, not lost,
+//                   so they are not scaled away (a closed road's are: its cargo would never come)
+//   'moreVehicles'  each lane hires enough vehicles to carry what it did (its fleet over the share, in whole vehicles,
+//                   over its hiring time), at their cost; whether that many barges are to be had is the user's to judge
+//   'otherSources'  each warehouse orders over its other lanes what the low-water ones can't carry, by what those
+//                   carry (its backups first), as a restricted road's are moved
+// `lanes` are the build's lanes ({ name, to, rate, fleet, fleet2, kind, standby }), `chosen` the names of those in low
+// water. The plan always holds the lanes' load share, their warehouses' order shares and their fleets.
+export const lowWaterModes = ['wait', 'moreVehicles', 'otherSources'];
+export function lowWaterPlan({ lanes, chosen, share, mode = 'wait', start, duration, forkAt, runTime }) {
+    const affected = chosen.map((name) => lanes.find((lane) => lane.name === name));
+    if (!affected.length) throw new Error('Choose at least one lane by water or by rail in low water.');
+    if (affected.some((lane) => !lane)) throw new Error(`There is no lane "${chosen[affected.indexOf(undefined)]}" in the model.`);
+    if (!lowWaterModes.includes(mode)) throw new Error(`In low water the lanes wait, hire more vehicles or order from other sources, not "${mode}".`);
+    if (!(share > 0 && share < 1)) throw new Error('In low water a vehicle carries more than 0% and less than 100% of its capacity.');
+    const hold = (outside, inside) => heldPath({ outside, inside, start, duration, forkAt, runTime });
+    const loadShare = { entities: affected.map((lane) => lane.name), samples: Object.fromEntries(affected.map((lane) => [lane.name, hold(1, share)])) };
+    const fleets = { fleetSize: { entities: [], samples: {} }, fleetSize2: { entities: [], samples: {} } };
+    const more = (count) => (Number.isInteger(count) ? Math.ceil(count / share - 1e-9) : count / share);
+    for (const lane of affected) {
+        for (const [key, field] of [['fleetSize', 'fleet'], ['fleetSize2', 'fleet2']]) {
+            const count = lane[field] ?? 0;
+            fleets[key].entities.push(lane.name);
+            fleets[key].samples[lane.name] = hold(count, mode === 'moreVehicles' ? more(count) : count);
+        }
+    }
+    // Each warehouse's order shares: as they are, or, with other sources, what the low-water lanes can't carry moved to
+    // its other lanes.
+    const orderShare = { entities: [], samples: {} };
+    const reroutedTo = new Set();
+    let moved = 0;
+    for (const site of [...new Set(affected.map((lane) => lane.to))]) {
+        const siblings = lanes.filter((item) => item.to === site);
+        const total = siblings.reduce((sum, item) => sum + item.rate, 0);
+        if (!(total > 0)) continue;
+        const low = new Set(affected.filter((lane) => lane.to === site));
+        const split = mode === 'otherSources' ? takers(siblings, (item) => low.has(item)) : new Map();
+        const away = split.size ? [...low].reduce((sum, lane) => sum + (1 - share) * lane.rate, 0) : 0;
+        moved += away;
+        for (const item of siblings) {
+            const usual = item.rate / total;
+            orderShare.entities.push(item.name);
+            orderShare.samples[item.name] = hold(usual, low.has(item) && split.size ? usual * share : usual + (away / total) * (split.get(item) ?? 0));
+            if (!(split.get(item) > 0)) continue;
+            reroutedTo.add(item.name);
+            // A backup has no vehicles until orders move to it: it hires what their flow needs while they do.
+            if (item.standby && !fleets.fleetSize.entities.includes(item.name)) {
+                fleets.fleetSize.entities.push(item.name);
+                fleets.fleetSize.samples[item.name] = hold(item.fleet ?? 0, Math.max(item.fleet ?? 0, fleetFor(item, item.rate + away * split.get(item))));
+            }
+        }
+    }
+    return { supplied: { loadShare, orderShare, ...fleets }, reroutedTo: [...reroutedTo], movedPerDay: moved };
+}
+
 // The fleet on some lanes changed by `change` (-0.3 for 30% fewer trucks, 0.2 for a fifth more) from `start`, for
 // `duration` or for the rest of the run. Each size changes on its own, rounded to whole trucks (a category's share of a
 // link's vehicles, which is not a whole number, is scaled as it is). Trucks are hired or

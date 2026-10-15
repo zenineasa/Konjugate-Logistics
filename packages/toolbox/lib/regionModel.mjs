@@ -24,6 +24,7 @@ import { allocateFleet, parseOperator } from './operator.mjs';
 import { calendarSamples, describeCalendar, laneGates, openShare, patternSamples, weeklyHours } from './calendars.mjs';
 import { closeDuring, describeHoliday, seasonSamples, supplierClosures } from './holidays.mjs';
 import { carriersFor } from './vehicles.mjs';
+import { laneEnds, laneName, modes } from './modes.mjs';
 import { historyWindow, tonnesPerTeu } from './portwatch.mjs';
 
 export const regionModelDefaults = {
@@ -757,11 +758,11 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         return usual ? [{ type: usual.id, fleet: null }] : [];
     };
     // A chilled category goes only by the link's refrigerated types, or, when it has none, by the first that may go there.
-    const choiceOf = (chosen, kind, where) => {
+    const choiceOf = (chosen, kind, where, mode = 'road') => {
         const usual = chosen?.length ? chosen : catalogue ? usualChoice(kind) : null;
         if (!usual || !scope?.category.chilled) return usual;
-        const cold = carriersFor(usual, kind === 'store' ? 'store' : 'supply', catalogue, true);
-        if (!cold.length) throw new Error(`${where} carries ${scope.category.name}, which needs a refrigerated vehicle, and no vehicle type ${kind === 'store' ? 'that may deliver to stores ' : ''}is refrigerated. Tick Refrigerated on a vehicle type, or add one.`);
+        const cold = carriersFor(usual, kind === 'store' ? 'store' : 'supply', catalogue, true, mode);
+        if (!cold.length) throw new Error(`${where} carries ${scope.category.name}, which needs a refrigerated vehicle, and no vehicle type ${mode !== 'road' ? `that runs by ${mode} ` : kind === 'store' ? 'that may deliver to stores ' : ''}is refrigerated. Tick Refrigerated on a vehicle type, or add one.`);
         return cold;
     };
     // The types a link names, as the catalogue has them.
@@ -823,8 +824,9 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
     // warehouse to a store's stock); `chosen` the link's vehicles ({ type, fleet }), with a catalogue.
     const placeLane = ({ name: link, kind, origin, destination, originSite, destinationSite, rate, share, leg, chosen: given = null, standby = false, offset = 0, destinationTotal: allItTakes = null }) => {
         const name = label(link);
-        const ends = link.replace(/^Road /, '');
-        const chosen = choiceOf(given, kind, ends);
+        const ends = laneEnds(link);
+        const mode = leg.mode ?? 'road';
+        const chosen = choiceOf(given, kind, ends, mode);
         const types = catalogue ? typesOf(chosen, ends) : null;
         if (types && !types.length) throw new Error(`${ends} has no vehicles. Choose a vehicle for it.`);
         types?.forEach(noteType);
@@ -896,11 +898,16 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         const fleetMaximum = niceCeiling(Math.max(10, 3 * Math.max(fleet, fleet2), 3 * Math.ceil(laneNeed(destinationTotal, leadTime, laneLoadDays) / Math.min(capacity1, capacity2))));
         makeLive(name, 'fleetSize', fleetMaximum, 1);
         makeLive(name, 'fleetSize2', fleetMaximum, 1);
-        const how = {
+        // By rail or by water: a scenario can cut how much of their capacity its vehicles may carry (low water lets a
+        // barge load only part of it), from all of it down to nothing.
+        if (mode !== 'road') makeLive(name, 'loadShare', 1);
+        const how = (mode !== 'road' ? {
+            routed: [`${leg.hours.toFixed(1)} h along the ${modes[mode].noun} at the line's own speed`, `Along the ${modes[mode].noun} (OpenStreetMap), with each end's way to the line.`]
+        } : {
             routed: [`${leg.hours.toFixed(1)} h over major roads`, 'Over major roads.'],
             local: [`${leg.hours.toFixed(1)} h estimated over local streets (the sites are close)`, 'Straight line lengthened for local streets.'],
             'straight-line': [`${leg.hours.toFixed(1)} h, a straight-line estimate (no road route was found)`, 'Straight line lengthened for detours.']
-        }[leg.basis];
+        })[leg.basis];
         const slowed = roadHours > leg.hours + 1e-9 ? `; ${roadHours.toFixed(1)} h at the ${slowest} km/h a ${types.find((type) => type.speed === slowest).name.toLowerCase()} can go` : '';
         const floor = raised ? ` Raised to ${number(leadTime * 24, 1)} h, the shortest trip the model's ${settings.stepMinutes}-minute steps follow faithfully.` : '';
         if (own) {
@@ -931,11 +938,11 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
             note(name, 'Fleet', fleet, 'trucks', 'assumed', `Enough for the baseline flow of ${rate.toFixed(1)} ${unit}/day, plus a reserve.`);
         }
         lanes.push({
-            name, kind, from: origin.name, to: destination.name, site: destinationSite.name, fromSite: originSite.name, link, category: scope?.category.id ?? null, needs, rate, leadTime, kilometres, fleet, fleet2,
+            name, kind, mode, from: origin.name, to: destination.name, site: destinationSite.name, fromSite: originSite.name, link, category: scope?.category.id ?? null, needs, rate, leadTime, kilometres, fleet, fleet2,
             operator: Boolean(contract), standby, basis: leg.basis, timeBasis: own ? 'user' : estimated ? 'estimated' : leg.basis, truckCapacity: capacity1, truckCapacity2: capacity2, loadDays: laneLoadDays,
             ...(types ? { vehicles: types.map((type, index) => ({ type: type.id, name: type.name, fleet: index ? fleet2 : fleet, user: chosen[index].fleet !== null })) } : {})
         });
-        if (kind === 'supply' || kind === 'transfer') laneGeometry.push({ name: link, rate, standby, basis: leg.basis, origin: originSite, destination: destinationSite, path: leg.path ?? null });
+        if (kind === 'supply' || kind === 'transfer') laneGeometry.push({ name: link, mode, rate, standby, basis: leg.basis, origin: originSite, destination: destinationSite, path: leg.path ?? null });
         return node;
     };
 
@@ -1001,13 +1008,13 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
             .map((port) => ({ port, rate: 0, leg: legOf(`${zone.id}|${port.id}`), standby: true, link: null }));
         const laneSpecs = [...zoneFlows, ...standby].map((flow) => {
             // The lane's travel time as placeLane works it out: at least the slowest of its vehicles' speeds allows.
-            const types = catalogue ? typesOf(choiceOf(flow.link?.vehicles, 'supply', `${flow.port.name} → ${zone.name}`), `${flow.port.name} → ${zone.name}`) : null;
+            const types = catalogue ? typesOf(choiceOf(flow.link?.vehicles, 'supply', `${flow.port.name} → ${zone.name}`, flow.leg?.mode), `${flow.port.name} → ${zone.name}`) : null;
             return { ...flow, leadTime: laneTiming(flow.leg, types, 'supply').leadTime, waitDays: suppliers.get(flow.port.id)?.pipelineDays ?? responseDays };
         });
         // And what other warehouses send it, over lanes placed once every warehouse is: they count towards what is on its way.
         const transfersIn = transferLinks.filter((link) => link.to === zone.id && zoneDemand.get(link.from) > 0).map((link) => {
             const ends = `${zoneById.get(link.from).name} → ${zone.name}`;
-            const types = catalogue ? typesOf(choiceOf(link.vehicles, 'transfer', ends), ends) : null;
+            const types = catalogue ? typesOf(choiceOf(link.vehicles, 'transfer', ends, link.leg?.mode), ends) : null;
             return { link, rate: transferRate.get(link).rate, leadTime: laneTiming(link.leg ?? route(zoneById.get(link.from), zone), types, 'transfer').leadTime, waitDays: responseDays };
         });
         transfersInto.set(zone.id, transfersIn);
@@ -1017,7 +1024,7 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         });
         for (const [laneIndex, lane] of laneSpecs.entries()) {
             placeLane({
-                name: `Road ${lane.port.name} → ${zone.name}`, kind: 'supply', origin: portNodes.get(lane.port.id), destination: warehouse,
+                name: laneName(lane.leg?.mode, lane.port.name, zone.name), kind: 'supply', origin: portNodes.get(lane.port.id), destination: warehouse,
                 originSite: lane.port, destinationSite: zone, rate: lane.rate, share: Math.min(1, lane.rate / total), leg: lane.leg,
                 chosen: lane.link?.vehicles ?? null, standby: Boolean(lane.standby), offset: laneIndex * 0.8
             });
@@ -1031,7 +1038,7 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
             const from = zoneById.get(transfer.link.from);
             const { share } = transferRate.get(transfer.link);
             placeLane({
-                name: `Road ${from.name} → ${zone.name}`, kind: 'transfer', origin: warehouses.get(from.id), destination: warehouses.get(zone.id),
+                name: laneName(transfer.link.leg?.mode, from.name, zone.name), kind: 'transfer', origin: warehouses.get(from.id), destination: warehouses.get(zone.id),
                 originSite: from, destinationSite: zone, rate: transfer.rate, share, leg: transfer.link.leg ?? route(from, zone),
                 chosen: transfer.link.vehicles ?? null, standby: Boolean(transfer.link.backup), offset: -(laneIndex + 1) * 0.8, destinationTotal: zoneDemand.get(zone.id)
             });

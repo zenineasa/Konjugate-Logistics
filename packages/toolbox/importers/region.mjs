@@ -4,7 +4,9 @@
 // no state between them.
 //
 //   roads: reads the roads and place names alone and returns the map to draw and the road graph, compacted,
-//     for the window to route with. Nothing else is discovered: the user places the network.
+//     for the window to route with; with railways and water fetched, those drawn too and the railways' and the
+//     navigable waterways' graphs, for links by rail and by water. Nothing else is discovered: the user places the
+//     network.
 //   discover with `sources` (ports, warehouses, towns): the suggestions the user asked for, from the answers
 //     fetched for them, with their coverage and notices and the map layers that show them.
 //   sites: reads a CSV of the user's own sites, for the window to place as pins.
@@ -21,7 +23,8 @@ import { discoverRegion, parsePopulation } from '../lib/discovery.mjs';
 import { holidaysForModel } from '../lib/holidays.mjs';
 import { portwatchAttribution } from '../lib/portwatch.mjs';
 import { tilesFor } from '../lib/geography.mjs';
-import { geographyAttribution, geographyLayers, mapLayers } from '../lib/mapData.mjs';
+import { geographyAttribution, geographyLayers, linesLayers, mapLayers } from '../lib/mapData.mjs';
+import { buildLineGraph, isFreightRail, waterOf } from '../lib/modes.mjs';
 import { ModelBuilder } from '../lib/modelBuilder.mjs';
 import { buildRegionModel, regionModelDefaults } from '../lib/regionModel.mjs';
 import { generateOperator, parseOperator } from '../lib/operator.mjs';
@@ -34,7 +37,7 @@ import { createRouter } from '../lib/roadGraph.mjs';
 import { compactRoadGraph, createNetworkRouter } from '../lib/routing.mjs';
 import { parseSites } from '../lib/sites.mjs';
 
-export const osmRoles = ['ports', 'logistics', 'roads', 'rail', 'places'];
+export const osmRoles = ['ports', 'logistics', 'roads', 'rail', 'water', 'places'];
 // IMF PortWatch: the ports around the region, and the history of each matched port.
 export const portwatchRoles = ['portwatchPorts', 'portwatchActivity'];
 export const templateIds = ['port', 'roadLane', 'railLane', 'warehouse', 'demandZone', 'roadShipment', 'railShipment', 'delivery', 'storeShipment', 'supplier', 'supplierShipment'];
@@ -315,11 +318,13 @@ async function finishBuild({ templates, helpers, selection, route, links, option
     const built = buildWith(settings);
     const townsServed = new Set(built.served.map((item) => item.town)).size;
     const sources = selection.ports.filter((port) => port.supplier).length;
-    // A link is one road lane to the user, however many categories it carries.
-    const roadLanes = new Set(built.lanes.map((lane) => lane.link ?? lane.name)).size;
+    // A link is one lane to the user, however many categories it carries: by road, or by rail or water, counted apart.
+    const linksBy = (mode) => new Set(built.lanes.filter((lane) => (lane.mode ?? 'road') === mode).map((lane) => lane.link ?? lane.name)).size;
+    const roadLanes = linksBy('road');
+    const otherLanes = ['rail', 'water'].map((mode) => [linksBy(mode), mode]).filter(([count]) => count).map(([count, mode]) => `${count} lane${count === 1 ? '' : 's'} by ${mode}`).map((text) => `${text}, `).join('');
     const kinds = built.categories?.length > 1 ? `, each in ${built.categories.length} categories (${built.categories.map((category) => category.name).join(', ')})` : '';
     const what = step === 'buildNetwork'
-        ? `${sources ? `${sources} supplier${sources === 1 ? '' : 's'}, ` : ''}${selection.ports.length - sources ? `${selection.ports.length - sources} port${selection.ports.length - sources === 1 ? '' : 's'}, ` : ''}${roadLanes} road lane${roadLanes === 1 ? '' : 's'}, ${townsServed} store${townsServed === 1 ? '' : 's'} and customer area${townsServed === 1 ? '' : 's'} served${kinds}`
+        ? `${sources ? `${sources} supplier${sources === 1 ? '' : 's'}, ` : ''}${selection.ports.length - sources ? `${selection.ports.length - sources} port${selection.ports.length - sources === 1 ? '' : 's'}, ` : ''}${roadLanes} road lane${roadLanes === 1 ? '' : 's'}, ${otherLanes}${townsServed} store${townsServed === 1 ? '' : 's'} and customer area${townsServed === 1 ? '' : 's'} served${kinds}`
         : `${selection.ports.length} port${selection.ports.length === 1 ? '' : 's'}, ${roadLanes} road lane${roadLanes === 1 ? '' : 's'}, ${townsServed} town${townsServed === 1 ? '' : 's'} served`;
     const lanesByBasis = built.lanes.reduce((counts, lane) => ({ ...counts, [lane.basis]: (counts[lane.basis] ?? 0) + 1 }), {});
     return {
@@ -416,8 +421,10 @@ async function extractStep(files, options, helpers) {
         skipped = covers.filter((item) => !meets(item.covered)).map(({ file, covered }) => `${file.name} does not reach this area (it runs from ${covered.south.toFixed(2)}, ${covered.west.toFixed(2)} to ${covered.north.toFixed(2)}, ${covered.east.toFixed(2)}), so it was not read.`);
         readFrom = listed(reaching.map(({ file }) => file.name));
         const progressOf = readingProgress(helpers, reaching.map(({ file }) => file), 'Reading the roads of');
+        // Railways and water with the roads, as the server is asked for them: for links by rail and by water, and the
+        // lakes and rivers drawn.
         read = mergeReads(reaching.map(({ file }) => {
-            try { return readExtract(file.data, { bbox, roadLevel, inflate: inflateSync, onProgress: progressOf(file) }); } catch (error) { throw new Error(`${file.name} could not be read: ${error.message}`); }
+            try { return readExtract(file.data, { bbox, roadLevel, inflate: inflateSync, onProgress: progressOf(file), layers: ['rail', 'water'] }); } catch (error) { throw new Error(`${file.name} could not be read: ${error.message}`); }
         }));
     } catch (error) {
         return failure(/could not be read/.test(error.message) ? error.message : `${named} could not be read: ${error.message}`);
@@ -426,9 +433,11 @@ async function extractStep(files, options, helpers) {
     const answers = extractAnswers(read, { source: readFrom });
     return {
         ok: true,
-        data: { step: 'extract', bbox, roadLevel, file: readFrom, files: files.map((file) => file.name), coverage: { roads: read.roads.length, places: read.places.length }, counts: read.counts },
+        data: { step: 'extract', bbox, roadLevel, file: readFrom, files: files.map((file) => file.name), coverage: { roads: read.roads.length, places: read.places.length, rail: read.rail.length, water: read.water.length }, counts: read.counts },
         derived: [
             ...answers.roads.map((text, index) => ({ role: 'roads', name: `roads-extract-${index + 1}.json`, text, source: readFrom })),
+            ...answers.rail.map((text, index) => ({ role: 'rail', name: `rail-extract-${index + 1}.json`, text, source: readFrom })),
+            ...answers.water.map((text, index) => ({ role: 'water', name: `water-extract-${index + 1}.json`, text, source: readFrom })),
             { role: 'places', name: 'places-extract.json', text: answers.places, source: readFrom }
         ],
         report: { errors: [], warnings: skipped }
@@ -496,14 +505,40 @@ async function roadsStep(answers, options, helpers) {
         }
     }
     const graph = compactRoadGraph(discovered.roadGraph);
+    // Railways and water, where they were fetched or read from a file: drawn, and graphs for links by rail and by water
+    // (their geometry coarser than a road's, as a site is at the line within a kilometre or two).
+    const lines = {};
+    try {
+        lines.rail = answers.rail ? readOverpass(answers.rail) : null;
+        lines.water = answers.water ? readOverpass(answers.water) : null;
+    } catch (error) {
+        return failure(`The railways and water could not be read: ${error.message}`);
+    }
+    const water = lines.water ? waterOf(lines.water) : null;
+    const railLines = (lines.rail ?? []).filter((feature) => isFreightRail(feature.tags) && feature.line);
+    const drawn = linesLayers({ water, rail: railLines.map((feature) => feature.line) }, bbox);
+    map.rail = drawn.rail;
+    if (drawn.water) map.water = drawn.water;
+    const graphs = {};
+    const lineCoverage = {};
+    for (const mode of ['rail', 'water']) {
+        if (!lines[mode]) continue;
+        const built = buildLineGraph(lines[mode], mode);
+        lineCoverage[mode] = Math.round(built.kilometres);
+        if (built.mainVertices.length) graphs[mode] = compactRoadGraph(built, { tolerance: 25 });
+    }
     // The window may receive 8 MB from an importer: roads beyond that are too many to place a network on in one go.
-    if (JSON.stringify(graph).length + JSON.stringify(map).length > maximumRoadsBytes) {
-        return failure(`The roads of this area are more than the window can take (${Math.round((JSON.stringify(graph).length + JSON.stringify(map).length) / 1048576)} MB). Choose a smaller area${options.roadLevel === 'city' ? ', or major roads only' : ''}.`);
+    const size = JSON.stringify(graph).length + JSON.stringify(map).length + JSON.stringify(graphs).length;
+    if (size > maximumRoadsBytes) {
+        return failure(`The roads of this area are more than the window can take (${Math.round(size / 1048576)} MB). Choose a smaller area${options.roadLevel === 'city' ? ', or major roads only' : ''}.`);
     }
     return {
         ok: true,
         data: {
-            step: 'roads', map, graph, coverage: { roads: discovered.coverage.roads, places: map.places.length },
+            step: 'roads', map, graph, graphs,
+            // Kilometres of railway and of waterway a barge may take, where they were loaded (absent where not).
+            lineKilometres: lineCoverage,
+            coverage: { roads: discovered.coverage.roads, places: map.places.length },
             notices: discovered.notices.filter((notice) => notice.kind === 'roads'),
             defaults: { portTeuPerDay: regionModelDefaults.portTeuPerDay }
         },

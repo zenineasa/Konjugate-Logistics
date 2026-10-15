@@ -11,8 +11,13 @@
 // counted and conserved as the two truck sizes of a road lane are.
 //
 // Deliveries to a customer area have no vehicles: they stand for a parcel or courier service, with a response time.
+//
+// A type runs by one mode (modes.mjs): road, rail or water. A link carries only types of its own mode. A new network's
+// catalogue has road vehicles alone; a freight train or a barge, with assumed figures, is added to it the first time a
+// link goes by rail or by water.
 
 import { calendarProblem, changeCalendar, wholeCalendar } from './calendars.mjs';
+import { linkMode, modes } from './modes.mjs';
 
 export const vehicleFields = [
     { key: 'capacity', label: 'Capacity', unit: 'pallets', digits: 1, detail: 'What one vehicle carries, in the pallets the network counts in.' },
@@ -34,6 +39,17 @@ export const defaultVehicles = [
     { id: 'miniVan', name: 'Mini-van', capacity: 2, costPerKm: 0.5, costPerDay: 40, speed: 50, loadingHours: 0.25, toStores: true },
     refrigeratedTruck
 ];
+// The type a link by rail or by water is first given, every figure assumed, in the same units as the trucks: a freight
+// train of about 40 wagons (some 80 containers of twenty feet, or 800 pallets), at 50 km/h on average with its stops,
+// loaded in 8 hours; a large Rhine barge (110 m, some 200 containers of twenty feet, or 2,000 pallets), at 12 km/h on
+// average (faster downstream than up: a lane has one time both ways), loaded in 12 hours. Neither delivers to stores.
+export const modeVehicles = {
+    rail: { id: 'freightTrain', name: 'Freight train', mode: 'rail', capacity: 800, costPerKm: 20, costPerDay: 3000, speed: 50, loadingHours: 8, toStores: false },
+    water: { id: 'barge', name: 'Barge', mode: 'water', capacity: 2000, costPerKm: 8, costPerDay: 2000, speed: 12, loadingHours: 12, toStores: false }
+};
+// The mode a type runs by: road unless it says otherwise.
+export const typeMode = (type) => (modes[type?.mode] ? type.mode : 'road');
+const templateOf = (id) => defaultVehicles.find((type) => type.id === id) ?? Object.values(modeVehicles).find((type) => type.id === id) ?? null;
 
 // A link's vehicles, by what it joins: heavy trucks from sources to warehouses, medium trucks to stores, mini-vans to
 // dark stores; none to a customer area.
@@ -44,8 +60,8 @@ export const typesPerLink = 2;
 const asField = (value) => ({ value, basis: 'assumed' });
 
 // A type from its figures: `fields` given are the user's; the rest start as assumed defaults (a medium truck's).
-export function createVehicle({ id, name, toStores = true, refrigerated = false, hours = null, basis = 'user', ...given } = {}, others = []) {
-    const template = defaultVehicles.find((type) => type.id === id) ?? defaultVehicles[1];
+export function createVehicle({ id, name, mode = 'road', toStores = true, refrigerated = false, hours = null, basis = 'user', ...given } = {}, others = []) {
+    const template = templateOf(id) ?? (modes[mode] && mode !== 'road' ? modeVehicles[mode] : defaultVehicles[1]);
     const fields = {};
     for (const field of vehicleFields) {
         const value = given[field.key];
@@ -55,7 +71,10 @@ export function createVehicle({ id, name, toStores = true, refrigerated = false,
     }
     // The hours it runs, where it keeps any: small vehicles deliver by day; a large one with two drivers who take turns
     // runs round the clock, and has none.
-    return { id: id ?? newVehicleId(others), name: name || nextVehicleName(others), toStores: Boolean(toStores), refrigerated: Boolean(refrigerated), fields, ...(wholeCalendar(hours) ? { hours: wholeCalendar(hours) } : {}) };
+    return {
+        id: id ?? newVehicleId(others), name: name || nextVehicleName(others), ...(modes[mode] && mode !== 'road' ? { mode } : {}),
+        toStores: Boolean(toStores), refrigerated: Boolean(refrigerated), fields, ...(wholeCalendar(hours) ? { hours: wholeCalendar(hours) } : {})
+    };
 }
 
 export function newVehicleId(others = []) {
@@ -66,6 +85,17 @@ export function newVehicleId(others = []) {
 function nextVehicleName(others) {
     const used = new Set(others.map((type) => type.name));
     for (let index = 1; ; index += 1) if (!used.has(`Vehicle ${index}`)) return `Vehicle ${index}`;
+}
+
+// The catalogue with a type of `mode` in it: as it is when it has one, else with the mode's default type added.
+export function withModeType(catalogue, mode) {
+    if (mode === 'road' || !modeVehicles[mode] || catalogue.some((type) => typeMode(type) === mode)) return catalogue;
+    const template = modeVehicles[mode];
+    const id = catalogue.some((type) => type.id === template.id) ? newVehicleId(catalogue) : template.id;
+    return [...catalogue, {
+        id, name: template.name, mode, toStores: false, refrigerated: false,
+        fields: Object.fromEntries(vehicleFields.map((field) => [field.key, asField(template[field.key])]))
+    }];
 }
 
 // The default catalogue, every figure assumed.
@@ -81,7 +111,7 @@ export function setVehicleField(type, key, text) {
     const field = vehicleFields.find((item) => item.key === key);
     if (!field) return type;
     const value = Number(text);
-    const template = defaultVehicles.find((item) => item.id === type.id) ?? defaultVehicles[1];
+    const template = templateOf(type.id) ?? (typeMode(type) !== 'road' ? modeVehicles[typeMode(type)] : defaultVehicles[1]);
     type.fields[key] = text !== '' && text !== null && Number.isFinite(value) && value > 0
         ? { value, basis: 'user' }
         : asField(template[key]);
@@ -120,26 +150,35 @@ export const carriesVehicles = (kind) => kind === 'supply' || kind === 'transfer
 // Between sites that take any vehicle: heavy trucks may go there, as they may not to a store.
 export const anyVehicle = (kind) => kind === 'supply' || kind === 'transfer';
 
-// The vehicles a link runs on: its own choice where it made one, of types still in the catalogue, else its kind's
-// default (or the first type that may go there). Each is { type, fleet } with fleet null when the toolbox sizes it.
+// May a type carry a link of this kind by this mode: one of the link's mode, and to a store or a dark store only one
+// that may deliver to stores.
+export const typeFits = (type, kind, mode = 'road') => typeMode(type) === mode && (anyVehicle(kind) || type.toStores);
+
+// The vehicles a link runs on: its own choice where it made one, of types still in the catalogue and of the link's mode,
+// else its kind's default (or the first type of its mode that may go there). Each is { type, fleet } with fleet null
+// when the toolbox sizes it. [] for a link by a mode the catalogue has no type of.
 export function vehiclesOf(link, kind, catalogue) {
     if (!carriesVehicles(kind) || !catalogue.length) return [];
-    const allowed = (type) => anyVehicle(kind) || type.toStores;
-    const chosen = (link?.vehicles ?? []).filter((item) => catalogue.some((type) => type.id === item.type)).slice(0, typesPerLink);
+    const mode = linkMode(link);
+    const ofMode = catalogue.filter((type) => typeMode(type) === mode);
+    if (!ofMode.length) return [];
+    const allowed = (type) => typeFits(type, kind, mode);
+    const chosen = (link?.vehicles ?? []).filter((item) => ofMode.some((type) => type.id === item.type)).slice(0, typesPerLink);
     if (chosen.length) return chosen.map((item) => ({ type: item.type, fleet: Number.isFinite(item.fleet) && item.fleet >= 0 ? item.fleet : null }));
-    const preferred = catalogue.find((type) => type.id === defaultTypeFor[kind] && allowed(type)) ?? catalogue.find(allowed) ?? catalogue[0];
+    const preferred = (mode === 'road' ? ofMode.find((type) => type.id === defaultTypeFor[kind] && allowed(type)) : null) ?? ofMode.find(allowed) ?? ofMode[0];
     return [{ type: preferred.id, fleet: null }];
 }
 
 // The vehicles that carry a chilled category on a link: its refrigerated ones, or, when it has none, the first
-// refrigerated type that may go there ([] when the catalogue has none). Other goods go by all of the link's vehicles.
-// `catalogue` is the window's or the model builder's: only a type's id, `refrigerated` and `toStores` are read.
-export function carriersFor(vehicles, kind, catalogue, chilled) {
+// refrigerated type of its mode that may go there ([] when the catalogue has none). Other goods go by all of the link's
+// vehicles. `catalogue` is the window's or the model builder's: only a type's id, `mode`, `refrigerated` and `toStores`
+// are read.
+export function carriersFor(vehicles, kind, catalogue, chilled, mode = 'road') {
     if (!chilled) return vehicles;
     const typeOf = (item) => catalogue.find((type) => type.id === item.type);
     const cold = vehicles.filter((item) => typeOf(item)?.refrigerated);
     if (cold.length) return cold;
-    const fallback = catalogue.find((type) => type.refrigerated && (anyVehicle(kind) || type.toStores));
+    const fallback = catalogue.find((type) => type.refrigerated && typeFits(type, kind, mode));
     return fallback ? [{ type: fallback.id, fleet: null }] : [];
 }
 
@@ -154,7 +193,7 @@ export function linkVehicleProblem(vehicles, kind, catalogue, { from = 'the ware
 // The catalogue as the model builder reads it: plain numbers, each with where it came from.
 export function catalogueForModel(catalogue) {
     return catalogue.map((type) => ({
-        id: type.id, name: type.name, toStores: type.toStores, refrigerated: Boolean(type.refrigerated),
+        id: type.id, name: type.name, mode: typeMode(type), toStores: type.toStores, refrigerated: Boolean(type.refrigerated),
         ...(wholeCalendar(type.hours) ? { hours: wholeCalendar(type.hours) } : {}),
         ...Object.fromEntries(vehicleFields.map((field) => [field.key, Number(type.fields[field.key].value)])),
         basis: Object.fromEntries(vehicleFields.map((field) => [field.key, type.fields[field.key].basis]))
@@ -173,7 +212,7 @@ export function completeCatalogue(saved, { refrigerated = false } = {}) {
 
 function completeSaved(saved) {
     return saved.filter((type) => type?.id).map((type) => createVehicle({
-        id: type.id, name: type.name, toStores: type.toStores !== false, refrigerated: type.refrigerated === true, hours: type.hours ?? null,
+        id: type.id, name: type.name, mode: typeMode(type), toStores: type.toStores !== false, refrigerated: type.refrigerated === true, hours: type.hours ?? null,
         ...Object.fromEntries(vehicleFields.map((field) => [field.key, type.fields?.[field.key] ?? null]))
     }, saved));
 }

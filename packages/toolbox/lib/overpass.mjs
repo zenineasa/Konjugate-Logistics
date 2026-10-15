@@ -21,7 +21,10 @@ export function overpassQueries(bbox, { roadLevel = 'major' } = {}) {
         logistics: `${head}(way["building"="warehouse"]${box};nwr["industrial"~"^(warehouse|logistics|distribution)$"]${box};)->.w;.w out bb qt;(way["landuse"="industrial"]${box};relation["landuse"="industrial"]${box};)->.l;.l out geom qt;`,
         roads: `${head}way["highway"~"^(${roadLevel === 'city' ? cityRoads : majorRoads})$"]${box};out geom qt;`,
         rail: `${head}(way["railway"="rail"]["service"!~"^(siding|spur|yard)$"]${box};)->.r;.r out geom qt;(nwr["railway"="yard"]${box};nwr["landuse"="railway"]${box};nwr["railway"="station"]["usage"="freight"]${box};)->.y;.y out center qt;`,
-        places: `${head}node["place"~"^(city|town|suburb|quarter)$"]${box};out qt;`
+        places: `${head}node["place"~"^(city|town|suburb|quarter)$"]${box};out qt;`,
+        // Water to draw (lakes, reservoirs and rivers mapped as areas, named or of those kinds, and rivers and canals as
+        // lines) and the waterways a barge may route over (rivers, canals and fairways, their navigability in their tags).
+        water: `${head}(way["natural"="water"]["water"~"^(lake|reservoir|river|canal|lagoon|oxbow)$"]${box};relation["natural"="water"]["water"~"^(lake|reservoir|river|canal|lagoon|oxbow)$"]${box};way["natural"="water"]["name"]${box};relation["natural"="water"]["name"]${box};way["waterway"="riverbank"]${box};way["waterway"~"^(river|canal|fairway)$"]${box};);out geom qt;`
     };
 }
 
@@ -121,7 +124,8 @@ const isClosed = (geometry) => geometry.length > 3
 
 // Reads an Overpass JSON answer (text or parsed), or a list of them, into features:
 //   { osmType, osmId, tags, point, ring (closed outline or null), rings (a relation's outlines),
-//     line (open geometry or null), nodes (a way's node ids), bounds }
+//     line (open geometry or null), nodes (a way's node ids), bounds, members (a relation's ways: [{ role, geometry }],
+//     for outlines drawn as several ways, which modes.mjs joins) }
 // A feature's point is its centre: a node's position, an outline's average, or its bounds' centre.
 // Several answers (the tiles of one kind) are read together, each element once: a road crossing a tile edge is in both.
 export function readOverpass(answer) {
@@ -155,10 +159,16 @@ export function readOverpass(answer) {
                 .filter((member) => member.role !== 'inner' && Array.isArray(member.geometry) && isClosed(member.geometry))
                 .map((member) => member.geometry);
             if (rings.length) feature.rings = rings;
+            const members = element.members
+                .filter((member) => member.type === 'way' && Array.isArray(member.geometry))
+                .map((member) => ({ role: member.role ?? '', geometry: member.geometry.filter((point) => point && Number.isFinite(point.lat)) }))
+                .filter((member) => member.geometry.length >= 2);
+            if (members.length) feature.members = members;
         }
         if (!feature.point && element.center) feature.point = { lat: element.center.lat, lon: element.center.lon };
         if (!feature.point && element.bounds) feature.point = { lat: (element.bounds.minlat + element.bounds.maxlat) / 2, lon: (element.bounds.minlon + element.bounds.maxlon) / 2 };
         if (!feature.point && feature.rings) feature.point = pointOfGeometry(feature.rings.flat());
+        if (!feature.point && feature.members) feature.point = pointOfGeometry(feature.members.flatMap((member) => member.geometry));
         if (feature.point) features.push(feature);
     }
     return features;
