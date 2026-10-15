@@ -306,8 +306,9 @@ export class MapView {
     }
 
     // A shape per role: a port square, a supplier triangle, a warehouse diamond, a store circle, a dark store a circle
-    // with a dot in it (drawn as a ring), a customer area a larger soft disc.
+    // with a dot in it (drawn as a ring), a customer area a larger soft disc, a maker a hexagon.
     shape(role, x, y, r) {
+        if (role === 'maker') return { name: 'path', attributes: { d: `${[0, 1, 2, 3, 4, 5].map((corner) => { const angle = Math.PI / 3 * corner; return `${corner ? 'L' : 'M'}${x + r * 1.25 * Math.cos(angle)} ${y + r * 1.25 * Math.sin(angle)}`; }).join('')}Z` } };
         if (role === 'port') return { name: 'rect', attributes: { x: x - r, y: y - r, width: 2 * r, height: 2 * r } };
         if (role === 'supplier') return { name: 'path', attributes: { d: `M${x} ${y - r * 1.35}L${x + r * 1.25} ${y + r * 0.95}L${x - r * 1.25} ${y + r * 0.95}Z` } };
         if (role === 'warehouse') return { name: 'path', attributes: { d: `M${x} ${y - r * 1.3}L${x + r * 1.3} ${y}L${x} ${y + r * 1.3}L${x - r * 1.3} ${y}Z` } };
@@ -318,7 +319,7 @@ export class MapView {
     drawSites() {
         const unit = this.unit();
         this.siteLayer.replaceChildren();
-        const order = { customerArea: 0, store: 1, darkStore: 2, warehouse: 3, supplier: 4, port: 5 };
+        const order = { customerArea: 0, store: 1, darkStore: 2, warehouse: 3, maker: 4, supplier: 5, port: 6 };
         const sorted = [...this.sites].sort((a, b) => (a.kept - b.kept) || ((order[a.role] ?? 0) - (order[b.role] ?? 0)));
         const labelled = [];
         for (const site of sorted) {
@@ -408,7 +409,7 @@ export class MapView {
     // left, else left out where it would overlap a name already written (hovering the site still names it). Where sites
     // crowd, the map stays readable at this zoom and zooming in brings the names back.
     drawLabels(labelled, unit) {
-        const order = { port: 0, supplier: 0, warehouse: 1, darkStore: 2, store: 2, customerArea: 3 };
+        const order = { port: 0, supplier: 0, maker: 0, warehouse: 1, darkStore: 2, store: 2, customerArea: 3 };
         const placed = [];
         const overlaps = (box) => placed.some((other) => box.left < other.right && other.left < box.right && box.top < other.bottom && other.top < box.bottom);
         for (const { site, x, y } of [...labelled].sort((a, b) => (order[a.site.role] ?? 3) - (order[b.site.role] ?? 3))) {

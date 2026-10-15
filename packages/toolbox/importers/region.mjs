@@ -40,7 +40,7 @@ import { parseSites } from '../lib/sites.mjs';
 export const osmRoles = ['ports', 'logistics', 'roads', 'rail', 'water', 'places'];
 // IMF PortWatch: the ports around the region, and the history of each matched port.
 export const portwatchRoles = ['portwatchPorts', 'portwatchActivity'];
-export const templateIds = ['port', 'roadLane', 'railLane', 'warehouse', 'demandZone', 'roadShipment', 'railShipment', 'delivery', 'storeShipment', 'supplier', 'supplierShipment'];
+export const templateIds = ['port', 'roadLane', 'railLane', 'warehouse', 'demandZone', 'roadShipment', 'railShipment', 'delivery', 'storeShipment', 'supplier', 'supplierShipment', 'maker', 'makerFeed'];
 const kinds = { ports: 'port', zones: 'zone', towns: 'town' };
 // The suggestions the user can ask for: the OpenStreetMap answers each reads (beside the roads and place names every
 // step reads), and the group of candidates it shows.
@@ -77,6 +77,17 @@ function resolvePin(entry, known, kind) {
     for (const key of ['name', 'lat', 'lon']) site[key] = entry[key];
     if (entry.role) site.role = entry.role;
     if (entry.supplier) site.supplier = true;
+    // A maker: its making (a source, `maker: true`, with its making time) or its store of what it uses (a zone, with its
+    // recipe: what it uses and makes, how much of it for each unit, what it is set to make, and its making's id).
+    if (entry.maker === true) site.maker = true;
+    else if (entry.maker && typeof entry.maker === 'object') {
+        const given = entry.maker;
+        site.maker = {
+            input: String(given.input ?? ''), output: String(given.output ?? ''), outputName: String(given.outputName ?? ''), port: String(given.port ?? ''),
+            perUnit: Number(given.perUnit) > 0 ? Number(given.perUnit) : 0, makes: Number(given.makes) > 0 ? Number(given.makes) : 0, basis: given.basis === 'assumed' ? 'assumed' : 'user'
+        };
+    }
+    if (entry.maker === true && Number(entry.leadDays) > 0) Object.assign(site, { leadDays: Number(entry.leadDays), leadDaysBasis: entry.leadDaysBasis === 'assumed' ? 'assumed' : 'user' });
     // A supplier's: the most it can make a day, and its own lead times by category; and any site's own mix of categories.
     if (Number(entry.makes) > 0) Object.assign(site, { makes: Number(entry.makes), makesBasis: entry.makesBasis === 'assumed' ? 'assumed' : 'user' });
     // The hours it keeps: when it is open, receives and dispatches, each from an hour to a later one on some days.
@@ -125,6 +136,8 @@ function checkedVehicles(types) {
         for (const key of vehicleKeys) if (!(Number(type[key]) > 0)) throw new Error(`${type.name}: its ${key.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`)} must be more than nothing.`);
         return {
             id: String(type.id), name: String(type.name).trim(), toStores: type.toStores !== false, refrigerated: type.refrigerated === true,
+            // What it runs by: a train or a barge goes only on a link of its own mode.
+            ...(type.mode === 'rail' || type.mode === 'water' ? { mode: type.mode } : {}),
             // The hours it runs, where it keeps any.
             ...(type.hours && Number(type.hours.from) >= 0 && Number(type.hours.to) <= 24 && Number(type.hours.to) !== Number(type.hours.from) && Array.isArray(type.hours.days) && type.hours.days.length === 7 && type.hours.days.some(Boolean)
                 ? { hours: { from: Number(type.hours.from), to: Number(type.hours.to), days: type.hours.days.map(Boolean) } } : {}),

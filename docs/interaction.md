@@ -45,7 +45,8 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 
 | Action | Newcomer | Regular | Power |
 |---|---|---|---|
-| Place a site | Palette above the map, then click the map; map menu "Place a … here" | Right-click the map | `1` to `6`, then click; the same key again to stop |
+| Place a site | Palette above the map, then click the map; map menu "Place a … here" | Right-click the map | `1` to `7` (7 a maker), then click; the same key again to stop |
+| Choose what a maker makes, and from what | Recipe on the maker's card: Makes and From | | |
 | Stop placing | Click the role again | | `Escape` |
 | Select | Click it, or its row in the list | Click it on the map | Shift-click or command-click to add; Shift-drag a box (with the command key: add); select all |
 | Rename | The name on its card, or in the bar beside it | Click it twice | `Enter` or `F2` |

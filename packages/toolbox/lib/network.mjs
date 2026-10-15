@@ -85,6 +85,20 @@ export const roles = {
             { key: 'demand', label: 'Orders', unit: 'pallets a day', value: null, detail: 'Empty: a share of what the sources supply, by population. Delivered by a parcel or courier service, with no stock or vehicles of its own.' },
             { key: 'population', label: 'Population', unit: 'people', value: 20000, detail: 'Weights its share when it has no orders of its own.' }
         ]
+    },
+    // Makes one category from another (flour into bread): a store of what it uses, ordered as it makes, and a source of
+    // what it makes, made to order. Its recipe (pin.recipe: { makes, uses }, category ids) is on its card.
+    maker: {
+        label: 'Maker', kind: 'maker',
+        fields: [
+            { key: 'supply', label: 'Makes', unit: 'pallets a day', value: 50, detail: 'What it makes in a normal week. It makes what is ordered, each order taking its making time, as far as what it uses allows.' },
+            { key: 'perUnit', label: 'Uses', unit: 'pallets for each pallet made', value: 1, positive: true, detail: 'How much of what it uses goes into each pallet of what it makes: 0.8 pallets of flour to a pallet of bread, say.' },
+            { key: 'makes', label: 'Can make at most', unit: 'pallets a day', value: null, positive: true, detail: 'The most it starts a day; orders beyond that wait, and arrive late. Empty: half as much again as it makes.' },
+            { key: 'makingDays', label: 'Making time', unit: 'days', value: 0.5, positive: true, detail: 'From an order reaching it to the goods standing ready to load.' },
+            capacityField('Its store of what it uses: the most it can hold. Empty: no limit.'),
+            coverField(7, 'The store of what it uses it aims to hold, in days of use, on top of what is on its way: a bakery\'s week or two of flour in its silos.'),
+            { key: 'holdingCost', label: 'Holding cost', unit: 'a pallet a day', value: 0.5, detail: 'What a pallet in its store costs a day.' }
+        ]
     }
 };
 export const roleIds = Object.keys(roles);
@@ -143,6 +157,11 @@ export function linkProblem(from, to) {
     if (from.id === to.id) return 'A link joins two different sites.';
     const a = kindOf(from.role);
     const b = kindOf(to.role);
+    // A maker takes what it uses from a source or a warehouse (or another maker), and sends what it makes to a
+    // warehouse (or another maker that uses it).
+    if (b === 'maker' && (a === 'source' || a === 'warehouse' || a === 'maker')) return null;
+    if (a === 'maker' && b === 'warehouse') return null;
+    if (a === 'maker' && b === 'demand') return `${to.name} is supplied through a warehouse in this version: link ${from.name} to a warehouse, and the warehouse to ${to.name}.`;
     if (a === 'source' && b === 'warehouse') return null;
     if (a === 'warehouse' && b === 'demand') return null;
     if (a === 'source' && b === 'demand') return `${to.name} is supplied through a warehouse in this version: link ${from.name} to a warehouse, and the warehouse to ${to.name}.`;
@@ -191,7 +210,8 @@ export function suggestLinks(pins, links, router, dismissed = new Set()) {
         suggested.push(previous.get(id) ?? { id, from: from.id, to: to.id, basis: 'suggested' });
     };
     const warehouses = pins.filter((pin) => kindOf(pin.role) === 'warehouse');
-    const sources = pins.filter((pin) => kindOf(pin.role) === 'source');
+    // A maker is a source of what it makes: suggested to warehouses as a supplier is. What it uses is linked by hand.
+    const sources = pins.filter((pin) => kindOf(pin.role) === 'source' || kindOf(pin.role) === 'maker');
     // Each demand pin with no link of the user's: from its nearest warehouse that is open (a candidate's stores are the
     // user's to choose; its suppliers are suggested as any warehouse's are, so it is supplied once it opens).
     const working = warehouses.filter((pin) => !isCandidate(pin));
@@ -335,12 +355,32 @@ export function networkProblems(allPins, allLinks, catalogue = null, categories 
         if (outOf(pin).length && !into(pin).some((link) => !link.backup)) add('error', `${pin.name} has no supplier, port or warehouse that restocks it. Drag a link from one to it.`, [pin.id]);
         if (!outOf(pin).length) add('warning', `${pin.name} serves no store or customer area, so it is left out of the model.`, [pin.id]);
     }
+    for (const pin of of('maker')) {
+        const issue = makerProblem(pin, categories);
+        if (issue) { add('error', issue, [pin.id]); continue; }
+        const uses = categories.find((category) => category.id === pin.recipe.uses).name;
+        if (!into(pin).length) add('error', `${pin.name} makes from ${uses}, and nothing brings it any: link a supplier of ${uses}, or a warehouse, to it.`, [pin.id]);
+        if (!outOf(pin).length) add('error', `${pin.name} sends what it makes nowhere: link it to a warehouse.`, [pin.id]);
+    }
     for (const pin of of('source')) {
         const served = outOf(pin).filter((link) => outOf(byId.get(link.to)).length);
         if (!served.length) add(pin.role === 'port' ? 'warning' : 'error', `${pin.name} supplies no warehouse that serves anyone${pin.role === 'port' ? ': it is kept as a port cargo can be diverted to, with no lanes' : '. Link it to a warehouse, or delete it'}.`, [pin.id]);
     }
     return problems;
 }
+
+// Why a maker's recipe cannot be built, or null: it needs the network's categories, two different ones, and some of what
+// it uses for each pallet it makes.
+export function makerProblem(pin, categories) {
+    const known = (id) => (categories ?? []).some((category) => category.id === id);
+    if (!categories || categories.length < 2) return `${pin.name} makes one category from another: add a second category under Categories.`;
+    if (!known(pin.recipe?.makes) || !known(pin.recipe?.uses)) return `${pin.name}: choose what it makes and what it makes it from, on its card.`;
+    if (pin.recipe.makes === pin.recipe.uses) return `${pin.name} makes what it uses: choose another category for one of them, on its card.`;
+    if (!(Number(pin.fields?.perUnit?.value) > 0)) return `${pin.name} uses nothing to make what it makes: give how much it uses for each pallet.`;
+    return null;
+}
+// A maker's recipe as it starts: the first category made from the second, both assumed until chosen.
+export const defaultRecipe = (categories) => (categories?.length >= 2 ? { makes: categories[0].id, uses: categories[1].id } : null);
 
 // What the importer builds from: the pins as the region builder's selection (by the candidate a pin was adopted from,
 // so the importer reads its sourced data again), the links with their legs and vehicles, and the vehicle catalogue.
@@ -352,8 +392,32 @@ export function networkSelection(allPins, allLinks, { paths = true, catalogue = 
     const selection = { ports: [], zones: [], towns: [] };
     const byId = new Map(pins.map((pin) => [pin.id, pin]));
     const siteId = (pin) => pin.candidate?.id ?? pin.id;
+    // A maker is two entries: its store of what it uses (with the warehouses) and its making (with the sources), the
+    // second under its own id.
+    const madeId = (pin) => `make:${siteId(pin)}`;
+    const sourceId = (pin) => (pin.role === 'maker' ? madeId(pin) : siteId(pin));
     for (const pin of pins) {
         const entry = { id: siteId(pin), pin: pin.id, role: pin.role, name: pin.name, lat: pin.lat, lon: pin.lon };
+        if (pin.role === 'maker') {
+            const field = (key) => pin.fields?.[key];
+            const recipe = pin.recipe ?? {};
+            const named = (id) => categories?.find((category) => category.id === id)?.name ?? '';
+            const makes = Number(field('supply')?.value) > 0 ? Number(field('supply').value) : 0;
+            selection.zones.push({
+                ...entry, maker: { input: recipe.uses, output: recipe.makes, outputName: named(recipe.makes), perUnit: Number(field('perUnit')?.value) || 0, makes, basis: field('supply')?.basis, port: madeId(pin) },
+                ...(field('capacity')?.value > 0 ? { capacity: field('capacity').value, capacityBasis: field('capacity').basis } : {}),
+                ...(field('cover')?.value > 0 ? { coverDays: field('cover').value, coverDaysBasis: field('cover').basis } : {}),
+                ...(field('holdingCost')?.value > 0 ? { holdingCost: field('holdingCost').value, holdingCostBasis: field('holdingCost').basis } : {})
+            });
+            selection.ports.push({
+                ...entry, id: madeId(pin), supplier: true, maker: true, teuPerDay: makes, teuPerDayBasis: field('supply')?.basis,
+                ...(field('makes')?.value > 0 ? { makes: field('makes').value, makesBasis: field('makes').basis } : {}),
+                ...(field('makingDays')?.value > 0 ? { leadDays: field('makingDays').value, leadDaysBasis: field('makingDays').basis } : {}),
+                // It makes one category: its mix is that alone.
+                ...(recipe.makes ? { mix: { [recipe.makes]: 1 } } : {})
+            });
+            continue;
+        }
         const field = (key) => pin.fields?.[key];
         // A figure set, with where it came from: `name` and `nameBasis` on the entry.
         const carry = (key, name) => { if (field(key)?.value > 0) Object.assign(entry, { [name]: field(key).value, [`${name}Basis`]: field(key).basis }); };
@@ -403,11 +467,12 @@ export function networkSelection(allPins, allLinks, { paths = true, catalogue = 
     return {
         selection,
         links: {
-            supply: usable.filter((link) => kindOf(byId.get(link.from).role) === 'source').map((link) => ({ port: siteId(byId.get(link.from)), zone: siteId(byId.get(link.to)), leg: leg(link, true), ...(link.basis === 'user' ? { user: true } : {}), ...vehicles(link) })),
+            // From a source or a maker, to a warehouse or a maker (to its store of what it uses).
+            supply: usable.filter((link) => ['source', 'maker'].includes(kindOf(byId.get(link.from).role)) && ['warehouse', 'maker'].includes(kindOf(byId.get(link.to).role))).map((link) => ({ port: sourceId(byId.get(link.from)), zone: siteId(byId.get(link.to)), leg: leg(link, true), ...(link.basis === 'user' ? { user: true } : {}), ...vehicles(link) })),
             serve: usable.filter((link) => kindOf(byId.get(link.from).role) === 'warehouse' && kindOf(byId.get(link.to).role) === 'demand').map((link) => ({ zone: siteId(byId.get(link.from)), town: siteId(byId.get(link.to)), leg: leg(link, false), ...vehicles(link) })),
             // Between warehouses: a standing link with its share of what the one it leads to needs (nothing: an even
             // share), or a backup.
-            transfer: usable.filter((link) => kindOf(byId.get(link.from).role) === 'warehouse' && kindOf(byId.get(link.to).role) === 'warehouse').map((link) => ({
+            transfer: usable.filter((link) => kindOf(byId.get(link.from).role) === 'warehouse' && ['warehouse', 'maker'].includes(kindOf(byId.get(link.to).role))).map((link) => ({
                 from: siteId(byId.get(link.from)), to: siteId(byId.get(link.to)), leg: leg(link, true), ...vehicles(link),
                 ...(link.backup ? { backup: true } : Number(link.share) > 0 ? { share: Math.min(1, Number(link.share) / 100) } : {})
             }))
@@ -446,7 +511,8 @@ export function networkFromSites(sites, pins = [], categories = []) {
     for (const site of [...sites.ports, ...sites.zones, ...sites.towns]) {
         const role = site.role ?? { port: 'port', zone: 'warehouse', town: 'customerArea' }[site.kind];
         const fields = {};
-        if (site.teuPerDay > 0) fields[role === 'supplier' ? 'supply' : role === 'port' ? 'teuPerDay' : 'demand'] = site.teuPerDay;
+        if (site.teuPerDay > 0) fields[role === 'supplier' || role === 'maker' ? 'supply' : role === 'port' ? 'teuPerDay' : 'demand'] = site.teuPerDay;
+        if (role === 'maker' && site.recipe?.perUnit > 0) fields.perUnit = site.recipe.perUnit;
         if (site.floorAreaSquareMetres > 0) fields.floorArea = site.floorAreaSquareMetres;
         if (site.population > 0) fields.population = site.population;
         if (site.capacity > 0) fields.capacity = site.capacity;
@@ -458,6 +524,13 @@ export function networkFromSites(sites, pins = [], categories = []) {
         if (Object.values(mix).some((weight) => weight > 0)) pin.mix = Object.fromEntries(categories.map((category) => [category.id, mix[category.id] ?? 0]));
         const lead = Object.fromEntries(Object.entries(byCategory(site, site.leadDaysBy)).filter(([, days]) => days > 0));
         if (Object.keys(lead).length) pin.leadDays = lead;
+        // A maker's recipe, by the categories' names: one the network does not have is said, and the usual recipe kept.
+        if (role === 'maker' && site.recipe) {
+            const made = categoryNamed.get(site.recipe.makes.trim().toLowerCase());
+            const used = categoryNamed.get(site.recipe.uses.trim().toLowerCase());
+            if (made && used) pin.recipe = { makes: made.id, uses: used.id, basis: 'user' };
+            else unknown.push(`${site.name}'s recipe names ${[made ? null : site.recipe.makes, used ? null : site.recipe.uses].filter(Boolean).map((name) => `"${name}"`).join(' and ')}, which this network does not have: add ${made || used ? 'it' : 'them'} under Categories and load the file again, or choose its recipe on its card.`);
+        }
         added.push({ site, pin });
     }
     const all = [...pins, ...added.map((item) => item.pin)];

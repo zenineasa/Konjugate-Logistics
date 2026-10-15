@@ -206,9 +206,13 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
     const partNote = (site) => (scope && !scope.single ? ` ${scope.category.name} is ${number(part(site) * 100, 1)}% of what it ${site.supplier ? 'supplies' : towns.includes(site) ? 'sells or orders' : 'hands inland'} (${scope.mixBasis.get(site.id) === 'user' ? 'your mix' : 'the categories\' usual shares, assumed'}).` : '');
     if (!ports.length) throw new Error(links ? 'Place a supplier or a port: it is where goods enter the network.' : 'Keep at least one port: it is where containers enter the region.');
     if (!zones.length) throw new Error(links ? 'Place a warehouse: stores and customers are served from warehouses.' : 'Keep at least one logistics zone: towns are served from zones.');
-    if (!towns.length) throw new Error(links ? 'Place a store, a dark store or a customer area: it is where the demand is.' : 'Keep at least one town or customer: it is where the demand is.');
+    // A maker's store of the category it uses (zones.mjs: a zone with `maker` { input, output, perUnit, makes, port }):
+    // what it uses is demand on this category's network, beside the customers', as a store's sales are.
+    const makerZones = zones.filter((zone) => zone.maker && scope && zone.maker.input === scope.category.id);
+    if (!towns.length && !makerZones.length) throw new Error(links ? 'Place a store, a dark store or a customer area: it is where the demand is.' : 'Keep at least one town or customer: it is where the demand is.');
     const names = new Map();
-    for (const site of [...ports, ...zones, ...towns]) names.set(site.name, (names.get(site.name) ?? 0) + 1);
+    // A maker is two entries, its store of what it uses and the source of what it makes: one site, one name.
+    for (const site of [...ports, ...zones.filter((zone) => !zone.maker || !ports.some((port) => port.id === zone.maker.port)), ...towns]) names.set(site.name, (names.get(site.name) ?? 0) + 1);
     const twice = [...names].filter(([, count]) => count > 1).map(([name]) => name);
     if (twice.length) throw new Error(`Two sites are named ${twice.join(', ')}: give each its own name, as the model and its scenarios find sites by name.`);
 
@@ -340,7 +344,9 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
     // ---- demand: fixed where given, the rest split by population
     const fixed = towns.filter((town) => Number(town.teuPerDay) > 0);
     const ownDemand = (town) => Number(town.teuPerDay) * part(town);
-    const fixedTotal = fixed.reduce((total, town) => total + ownDemand(town), 0);
+    // What each maker would use of this category: so much of it for every unit of what it is set to make.
+    const makerUse = (zone) => zone.maker.perUnit * zone.maker.makes;
+    const fixedTotal = fixed.reduce((total, town) => total + ownDemand(town), 0) + makerZones.reduce((total, zone) => total + makerUse(zone), 0);
     const weighted = towns.filter((town) => !(Number(town.teuPerDay) > 0));
     let remainder = totalSupply - fixedTotal;
     let fixedScale = 1;
@@ -350,7 +356,11 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         remainder = 0;
         // Said for the category it is about, to a decimal: 25.3 against 25.0 is a difference, 25 against 25 reads as none.
         const whose = scope && !scope.single ? `${scope.category.name}: the` : 'The';
-        warnings.push(`${whose} customers' own demand (${number(fixedTotal, 1)} ${unit}/day) differs from what ${supplied} (${number(totalSupply, 1)} ${unit}/day); it was scaled by ${number(fixedScale, 3)} to match so the baseline holds still.`);
+        if (!fixed.length && makerZones.length) {
+            // Only makers use it: what they would use set against what is supplied, and what they make with it.
+            const who = makerZones.map((zone) => zone.name);
+            warnings.push(`${scope.category.name}: what ${who.join(' and ')} would use (${number(fixedTotal, 1)} ${unit}/day, for what ${who.length === 1 ? 'it is' : 'they are'} set to make) differs from what ${supplied} (${number(totalSupply, 1)} ${unit}/day); ${who.length === 1 ? 'it uses' : 'they use'} what is supplied, ${number(fixedScale, 3)} times as much, and ${who.length === 1 ? 'makes' : 'make'} as much more.`);
+        } else warnings.push(`${whose} customers' own demand (${number(fixedTotal, 1)} ${unit}/day) differs from what ${supplied} (${number(totalSupply, 1)} ${unit}/day); it was scaled by ${number(fixedScale, 3)} to match so the baseline holds still.`);
     }
     const weightOf = (town) => (Number(town.population) || settings.assumedPopulation) * part(town);
     const weightTotal = weighted.reduce((total, town) => total + weightOf(town), 0);
@@ -413,6 +423,15 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
     }
     const zoneDemand = new Map();
     for (const allocation of allocations) zoneDemand.set(allocation.zone.id, (zoneDemand.get(allocation.zone.id) ?? 0) + allocation.share * demand.get(allocation.town.id));
+    // A maker's store sends out what the maker uses: what it would use, scaled with the customers' demand.
+    const makersUse = new Map();
+    for (const zone of makerZones) {
+        const use = makerUse(zone) * fixedScale;
+        makersUse.set(zone.id, use);
+        zoneDemand.set(zone.id, (zoneDemand.get(zone.id) ?? 0) + use);
+        note(zone.name, 'Uses', use, `${unit}/day`, fixedScale === 1 ? zone.maker.basis ?? 'user' : 'assumed',
+            `${number(zone.maker.perUnit, 3)} of ${scope.category.name} for each ${unit.replace(/s$/, '')} of ${zone.maker.outputName} it makes${fixedScale === 1 ? `, at the ${number(zone.maker.makes, 1)} a day it is set to make` : `, scaled by ${number(fixedScale, 3)} to what is supplied`}. From its own store of ${scope.category.name}, which orders it as it is used.`);
+    }
     // ---- warehouses restocked from other warehouses (`links.transfer`: { from, to, leg, share, backup }). A standing
     // link carries its share of what the warehouse it leads to sends out, every day: a hub restocking a spoke. A backup
     // link carries nothing until a scenario orders over it. What a warehouse sends out is then what its own stores and
@@ -600,14 +619,16 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
             // Made to order: every order takes its lead time, and it starts no more a day than it can make.
             const set = (key) => Number(port[key]) > 0 && port[`${key}Basis`] !== 'assumed';
             const categoryLead = Number(scope?.category.leadDays) > 0 ? Number(scope.category.leadDays) : null;
-            const wanted = set('leadDays') ? Number(port.leadDays) : categoryLead ?? settings.supplierLeadDays;
+            // A maker's making time is its own, assumed or not: a category's lead time is a supplier's.
+            const ownLead = set('leadDays') || (port.maker && Number(port.leadDays) > 0);
+            const wanted = ownLead ? Number(port.leadDays) : categoryLead ?? settings.supplierLeadDays;
             const leadTime = Math.max(wanted, 6 * settings.stepMinutes / 1440);
             const capacity = set('makes') ? Number(port.makes) * part(port) : arrivals * settings.berthHeadroom;
             if (capacity < arrivals - 1e-9) throw new Error(`${port.name} can make ${number(capacity, 1)} ${unit} a day, less than the ${number(arrivals, 1)} ordered from it. Give it more to make, or have it supply less.`);
-            note(port.name, 'Lead time', leadTime, 'day', set('leadDays') ? 'user' : categoryLead !== null && scope.category.basis?.leadDays === 'user' ? 'user' : 'assumed',
-                `${set('leadDays') ? 'Your figure.' : categoryLead !== null ? `The lead time of ${scope.category.name}${scope.category.basis?.leadDays === 'user' ? ' (yours)' : ', assumed until you set it'}.` : 'Assumed, until you set it.'} From an order reaching it to the goods standing ready to load: it makes to order.${leadTime > wanted ? ` Raised to ${number(leadTime * 24, 1)} h, the shortest the model's ${settings.stepMinutes}-minute steps follow faithfully.` : ''}`);
+            note(port.name, port.maker ? 'Making time' : 'Lead time', leadTime, 'day', ownLead ? (set('leadDays') ? 'user' : 'assumed') : categoryLead !== null && scope.category.basis?.leadDays === 'user' ? 'user' : 'assumed',
+                `${set('leadDays') ? 'Your figure.' : ownLead ? 'Assumed for a maker, until you set it.' : categoryLead !== null ? `The lead time of ${scope.category.name}${scope.category.basis?.leadDays === 'user' ? ' (yours)' : ', assumed until you set it'}.` : 'Assumed, until you set it.'} From an order reaching it to the goods standing ready to load: it makes to order.${leadTime > wanted ? ` Raised to ${number(leadTime * 24, 1)} h, the shortest the model's ${settings.stepMinutes}-minute steps follow faithfully.` : ''}`);
             note(port.name, 'Most it can make', capacity, `${unit}/day`, set('makes') ? 'user' : 'assumed', set('makes') ? `Your figure.${partNote(port)}` : `${settings.berthHeadroom} times what is ordered from it in the baseline, assumed until you set it.`);
-            portNodes.set(port.id, place('supplier', portName, {
+            portNodes.set(port.id, place(port.maker ? 'maker' : 'supplier', portName, {
                 name: portName, position: position(port),
                 initialValues: { toMake: arrivals * handlingDays, making1: arrivals * leadTime / 3, making2: arrivals * leadTime / 3, making3: arrivals * leadTime / 3, stock: arrivals * originDrainDays, makeRate: arrivals },
                 shared: { supplierLeadTime: leadTime, supplierCapacity: capacity }
@@ -999,7 +1020,7 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
     // Which zones serve customer areas (deliveries draw on a day's stock) and which only restock stores (shipments draw
     // on half a day's).
     const stocked = (town) => Boolean(catalogue) && (town.role === 'store' || town.role === 'darkStore');
-    const deliversTo = new Set(allocations.filter((item) => !stocked(item.town)).map((item) => item.zone.id));
+    const deliversTo = new Set([...allocations.filter((item) => !stocked(item.town)).map((item) => item.zone.id), ...makerZones.map((zone) => zone.id)]);
     const transfersInto = new Map();
     for (const zone of usedZones) {
         const zoneFlows = (flowsByZone.get(zone.id) ?? []).filter((flow) => flow.rate > 1e-9);
@@ -1179,6 +1200,14 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         // Each town's demand as built, what a scenario that steps it up starts from.
         towns: towns.map((town) => ({ name: label(town.name), site: town.name, category, demand: demand.get(town.id) })),
         unit, perTeu,
+        // A maker's two nodes, for the bundle that feeds it from its store: its store of what it uses (on the network
+        // of that category) and its making (on the network of what it makes), each by its entry's id; and what each
+        // maker's store uses.
+        makerNodes: {
+            stores: new Map(makerZones.filter((zone) => warehouses.has(zone.id)).map((zone) => [zone.id, warehouses.get(zone.id)])),
+            makers: new Map(ports.filter((port) => port.maker).map((port) => [port.id, portNodes.get(port.id)]))
+        },
+        makersUse,
         vehicles: catalogue ? catalogue.map((type) => ({ id: type.id, name: type.name, capacity: type.capacity, refrigerated: Boolean(type.refrigerated) })) : null,
         // One entry per town and zone serving it: the zone's share of the town's demand.
         served: allocations.map((allocation) => ({ town: allocation.town.name, zone: allocation.zone.name, category, share: allocation.share, demand: allocation.share * demand.get(allocation.town.id), hours: allocation.leg.hours })),
@@ -1297,6 +1326,18 @@ export function scaledTogether(warnings) {
 export function buildRegionModel({ builder, selection, route, links = null, options = {} }) {
     const settings = { ...regionModelDefaults, ...options };
     const categories = links && settings.vehicles?.length && settings.categories?.length ? settings.categories : null;
+    // Makers (a bakery, a dairy): each is a store of the category it uses and a source of the one it makes. They need
+    // categories, two of them at least.
+    const makers = (selection.zones ?? []).filter((zone) => zone.maker);
+    if (makers.length) {
+        if (!categories || categories.length < 2) throw new Error(`${makers[0].name} makes one category from another: the network needs vehicle types and at least two categories.`);
+        for (const zone of makers) {
+            const known = (id) => categories.some((category) => category.id === id);
+            if (!known(zone.maker.input) || !known(zone.maker.output)) throw new Error(`${zone.name} makes or uses a category that is not in the list: choose them again on its card.`);
+            if (zone.maker.input === zone.maker.output) throw new Error(`${zone.name} makes what it uses: choose another category for one of them.`);
+            if (!(zone.maker.perUnit > 0)) throw new Error(`${zone.name} uses nothing to make what it makes: give how much it uses for each pallet.`);
+        }
+    }
     if (!categories) return assemble([buildScope({ builder, selection, route, links, settings })], { builder, settings });
     const names = categories.map((category) => String(category.name ?? '').trim());
     if (names.some((name) => !name)) throw new Error('A category has no name. Name it in the Categories list.');
@@ -1317,17 +1358,23 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
     const everything = [...(selection.ports ?? []), ...(selection.zones ?? []), ...(selection.towns ?? [])];
     const layout = everything.length ? layoutOf(everything) : null;
     const shifts = layout ? categoryShifts(categories.length, layout) : [];
+    // What each maker makes a day: worked out from what it uses, once the network of that category is built (as a
+    // store's sales are scaled to what is supplied, so is what a maker uses, and it makes as much as that allows).
+    const made = new Map(); // maker's source entry id -> { value, use, input }
     const scopes = categories.map((category, index) => {
         const its = shares.get(category.id);
         const ports = (selection.ports ?? []).filter((port) => its.get(port.id) > 0).map((port) => {
             const lead = port.leadDaysBy?.[category.id];
-            return Number(lead?.value) > 0 ? { ...port, leadDays: Number(lead.value), leadDaysBasis: lead.basis ?? 'user' } : port;
+            const own = Number(lead?.value) > 0 ? { ...port, leadDays: Number(lead.value), leadDaysBasis: lead.basis ?? 'user' } : port;
+            // A maker: what it makes is what its store's use allows, as the network it uses was built.
+            const making = made.get(port.id);
+            return making ? { ...own, teuPerDay: making.value, teuPerDayBasis: making.basis, teuPerDaySource: making.source } : own;
         });
         const towns = (selection.towns ?? []).filter((town) => its.get(town.id) > 0);
         const kept = new Set([...ports, ...towns].map((site) => site.id));
         return {
             category, index, single, shares: its, mixBasis, layout, shift: shifts[index] ?? [0, 0],
-            selection: { ports, zones: selection.zones ?? [], towns },
+            selection: { get ports() { return ports.map((port) => { const making = made.get(port.id); return making ? { ...port, teuPerDay: making.value, teuPerDayBasis: making.basis, teuPerDaySource: making.source } : port; }); }, zones: selection.zones ?? [], towns },
             links: { supply: links.supply.filter((link) => kept.has(link.port)), serve: links.serve.filter((link) => kept.has(link.town)), transfer: links.transfer ?? [] }
         };
     });
@@ -1342,7 +1389,35 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
     // vehicles and the site's room shared by that.
     const fleets = new Map();
     const siteTotals = new Map();
-    const drafts = single ? [] : scopes.map((scope) => run(scope, builder.fresh(), { typesNoted: new Set() }));
+    // The order to build in: a category a maker uses before the one it makes (flour before bread), so what it makes is
+    // known from what it uses. A circle (bread from flour, flour from bread) cannot be built.
+    const order = [];
+    {
+        const after = new Map(categories.map((category) => [category.id, makers.filter((zone) => zone.maker.output === category.id).map((zone) => zone.maker.input)]));
+        const placed = new Set();
+        while (order.length < scopes.length) {
+            const next = scopes.find((scope) => !placed.has(scope.category.id) && after.get(scope.category.id).every((id) => placed.has(id)));
+            if (!next) throw new Error('The makers make categories from each other in a circle: one of them must use something no maker makes.');
+            placed.add(next.category.id);
+            order.push(next);
+        }
+    }
+    // Once a category is built, what each maker using it makes: its use over the input per unit made.
+    const learn = (scope, part) => {
+        for (const zone of makers.filter((item) => item.maker.input === scope.category.id)) {
+            const use = part.makersUse.get(zone.id) ?? 0;
+            const value = use / zone.maker.perUnit;
+            const outputName = categories.find((category) => category.id === zone.maker.output).name;
+            made.set(zone.maker.port, {
+                value, use, basis: Math.abs(value - zone.maker.makes) < 1e-9 ? zone.maker.basis ?? 'user' : 'assumed',
+                source: Math.abs(value - zone.maker.makes) < 1e-9
+                    ? `${zone.maker.basis === 'assumed' ? 'Assumed, until you set it' : 'Your figure'}: what it makes of ${outputName} from the ${number(use, 1)} ${scope.category.name} a day it uses.`
+                    : `What the ${number(use, 1)} ${scope.category.name} a day supplied to it makes, at ${number(zone.maker.perUnit, 3)} for each: not the ${number(zone.maker.makes, 1)} it was set to make, as its ${scope.category.name} was scaled to what is supplied.`
+            });
+        }
+    };
+    const draftsInOrder = single ? [] : order.map((scope) => { const part = run(scope, builder.fresh(), { typesNoted: new Set() }); learn(scope, part); return [scope.index, part]; });
+    const drafts = single ? [] : scopes.map((scope) => draftsInOrder.find(([index]) => index === scope.index)[1]);
     for (const draft of drafts) {
         for (const lane of draft.lanes) {
             for (const item of lane.needs ?? []) {
@@ -1354,9 +1429,21 @@ export function buildRegionModel({ builder, selection, route, links = null, opti
         for (const [id, total] of draft.totals) siteTotals.set(id, (siteTotals.get(id) ?? 0) + total);
     }
     const typesNoted = new Set();
-    const parts = scopes.map((scope, index) => run(scope, builder, single ? { typesNoted } : {
+    const built = new Map(order.map((scope) => [scope.index, run(scope, builder, single ? { typesNoted } : {
         typesNoted, fleets,
-        room: new Map([...drafts[index].totals].map(([id, total]) => [id, siteTotals.get(id) > 0 ? total / siteTotals.get(id) : 0]))
-    }));
+        room: new Map([...drafts[scope.index].totals].map(([id, total]) => [id, siteTotals.get(id) > 0 ? total / siteTotals.get(id) : 0]))
+    })]));
+    const parts = scopes.map((scope) => built.get(scope.index));
+    // Each maker fed from its store: it starts what is ordered as far as its store's stock allows, using so much of it
+    // for each unit made, and its store orders as it makes.
+    for (const zone of makers) {
+        const inputPart = parts[categories.findIndex((category) => category.id === zone.maker.input)];
+        const outputPart = parts[categories.findIndex((category) => category.id === zone.maker.output)];
+        const store = inputPart.makerNodes.stores.get(zone.id);
+        const maker = outputPart.makerNodes.makers.get(zone.maker.port);
+        if (!store) throw new Error(`${zone.name} has no ${categories.find((category) => category.id === zone.maker.input).name} coming in: link a supplier of it, or a warehouse holding it, to ${zone.name}.`);
+        if (!maker) throw new Error(`${zone.name} sends what it makes nowhere: link it to a warehouse.`);
+        builder.applyBundle('makerFeed', { input: store, maker }, { shared: { inputPerUnit: zone.maker.perUnit } });
+    }
     return assemble(parts, { builder, settings, categories });
 }

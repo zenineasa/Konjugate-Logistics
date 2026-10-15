@@ -1155,7 +1155,7 @@ try {
     assert.deepEqual(parsed.errors, []);
     const all = await pins();
     assert.deepEqual([...parsed.sites.ports, ...parsed.sites.zones, ...parsed.sites.towns].map((site) => site.name).sort(), all.map((pin) => pin.name).sort());
-    assert.match(csv, /^Harbour shop,store,[-\d.]+,[-\d.]+,20,,,,,Warehouse 1,,,$/m);
+    assert.match(csv, /^Harbour shop,store,[-\d.]+,[-\d.]+,20,,,,,Warehouse 1,,,,$/m);
 
     // 10. The session, kept with the project, restores the network on reopening.
     const kept = { pins: await pins(), links: (await links()).map((link) => [link.from, link.to, link.basis]) };
@@ -1300,6 +1300,46 @@ try {
     assert.equal(await modeOf(supply.id), 'water');
     assert.ok(await page.evaluate((id) => window.logisticsToolboxState.links.find((link) => link.id === id).leg?.kilometres > 20, supply.id), 'routed along the river again');
     assert.ok(await stateOf(() => window.logisticsToolboxState.vehicles.some((type) => type.mode === 'water')));
+    noErrors();
+
+    // 12c. A maker: placed with 7, its recipe on its card (the first category made from the second, assumed, then
+    // chosen and undone), what it lacks said in the Network step, then linked and built into a model that makes one
+    // category from another.
+    host.session = null;
+    await openWindow(page, host);
+    await page.click('#sampleButton');
+    await page.waitForSelector('#stepNetwork:not([hidden])', { timeout: 30000 }).catch(fail);
+    await settled();
+    for (const [key, point] of [['1', { lat: -29.72, lon: -19.88 }], ['7', { lat: -29.9, lon: -19.7 }], ['3', { lat: -29.76, lon: -19.5 }], ['4', { lat: -29.85, lon: -19.69 }]]) {
+        await page.keyboard.press(key);
+        await clickAt(point);
+    }
+    await page.keyboard.press('Escape');
+    await settled();
+    const [mill, maker] = await pins();
+    assert.equal(maker.role, 'maker');
+    assert.equal(await page.locator('#map .site.maker').count(), 1, 'drawn as a maker');
+    await clickAt(maker);
+    assert.equal(await page.inputValue('#recipeMakes'), 'ambient');
+    assert.equal(await page.inputValue('#recipeUses'), 'chilled');
+    assert.match(await page.textContent('#selectionCard .recipe'), /Recipe assumed.*Chilled keeps 10 days and Ambient keeps\./s);
+    assert.match(await page.textContent('#networkStatus'), /Maker 1 makes from Chilled, and nothing brings it any: link a supplier of Chilled, or a warehouse, to it\./);
+    await page.selectOption('#recipeUses', 'frozen');
+    await settled();
+    assert.deepEqual(await stateOf(() => window.logisticsToolboxState.pins.find((pin) => pin.role === 'maker').recipe), { makes: 'ambient', uses: 'frozen', basis: 'user' });
+    await page.keyboard.press('Control+z');
+    await settled();
+    assert.deepEqual(await stateOf(() => window.logisticsToolboxState.pins.find((pin) => pin.role === 'maker').recipe), { makes: 'ambient', uses: 'chilled', basis: 'assumed' }, 'and undone');
+    // Linked from the supplier, from the maker's card: built, the maker's lanes in the model.
+    await clickAt(maker);
+    await page.selectOption('#selectionCard [data-add-link="in"]', mill.id);
+    await settled();
+    assert.doesNotMatch(await page.textContent('#networkStatus'), /nothing brings it any/);
+    await page.click('#buildButton');
+    await page.waitForSelector('#buildStatus .notice.ok, #buildStatus .notice.error', { timeout: 60000 }).catch(fail);
+    assert.equal(await page.locator('#buildStatus .notice.error').count(), 0, await page.textContent('#buildStatus'));
+    const makerLanes = await stateOf(() => window.logisticsToolboxState.built.lanes.map((lane) => lane.name).filter((name) => /Maker 1/.test(name)));
+    assert.ok(makerLanes.includes('Road Supplier 1 → Maker 1: Chilled') && makerLanes.includes('Road Maker 1 → Warehouse 1: Ambient'), makerLanes.join(', '));
     noErrors();
 
     // 13. A searched region: the roads and place names alone; ports fetched only when asked for, with their activity.

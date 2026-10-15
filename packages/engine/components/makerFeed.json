@@ -1,0 +1,255 @@
+{
+    "copyright": "Copyright © 2026 Zenin Easa Panthakkalakath",
+    "id": "makerFeed",
+    "kind": "bundle",
+    "name": "Maker feed",
+    "domains": [
+        "logistics"
+    ],
+    "color": "#b39d5c",
+    "description": "Feeds a Maker from the warehouse that holds its input (a bakery's flour store): what the maker wants to make, as far as the input in stock allows (at most the stock per draw-down time, over the input per unit made), is started. Matched edges draw the input it uses from the store and count it at the maker, start that much making, and clear it from the maker's orders to make; a last edge feeds the maker's wanted making, times the input per unit, into the store's demand forecast, so the store orders its input as the maker makes. Input per unit made is in the input's units for each unit of what is made (pallets of flour for each pallet of bread). Select the warehouse and the maker, then click this bundle.",
+    "endpoints": [
+        {
+            "id": "input",
+            "label": "Input store"
+        },
+        {
+            "id": "maker",
+            "label": "Maker"
+        }
+    ],
+    "sharedParameters": [
+        {
+            "key": "inputPerUnit",
+            "name": "Input per unit made",
+            "symbol": "inputPerUnit",
+            "value": 1,
+            "unit": "",
+            "scope": "instance"
+        },
+        {
+            "key": "drawDownDays",
+            "name": "Stock draw-down time",
+            "symbol": "drawDownDays",
+            "value": 1,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
+            "key": "smoothingDays",
+            "name": "Demand smoothing time",
+            "symbol": "smoothingDays",
+            "value": 5,
+            "unit": "day",
+            "scope": "project"
+        },
+        {
+            "key": "secondsPerDay",
+            "name": "Seconds per day",
+            "symbol": "secondsPerDay",
+            "value": 86400,
+            "unit": "s/day",
+            "scope": "project"
+        }
+    ],
+    "edges": [
+        {
+            "name": "Use input",
+            "from": "maker",
+            "to": "input",
+            "ports": {
+                "source": "makeRate",
+                "target": "stock"
+            },
+            "output": {
+                "role": "target",
+                "state": "stock"
+            },
+            "latex": "-\\frac{\\mathrm{inputPerUnit} \\cdot \\min(\\mathrm{sourceMakeRate}, \\frac{\\max(0, \\mathrm{targetStock})}{\\mathrm{inputPerUnit} \\cdot \\mathrm{drawDownDays}})}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Input per unit made",
+                    "symbol": "inputPerUnit",
+                    "shared": "inputPerUnit"
+                },
+                {
+                    "name": "Stock draw-down time",
+                    "symbol": "drawDownDays",
+                    "shared": "drawDownDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Count input used",
+            "from": "input",
+            "to": "maker",
+            "ports": {
+                "source": "stock",
+                "target": [
+                    "makeRate",
+                    "used"
+                ]
+            },
+            "output": {
+                "role": "target",
+                "state": "used"
+            },
+            "latex": "\\frac{\\mathrm{inputPerUnit} \\cdot \\min(\\mathrm{targetMakeRate}, \\frac{\\max(0, \\mathrm{sourceStock})}{\\mathrm{inputPerUnit} \\cdot \\mathrm{drawDownDays}})}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Input per unit made",
+                    "symbol": "inputPerUnit",
+                    "shared": "inputPerUnit"
+                },
+                {
+                    "name": "Stock draw-down time",
+                    "symbol": "drawDownDays",
+                    "shared": "drawDownDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Start making",
+            "from": "input",
+            "to": "maker",
+            "ports": {
+                "source": "stock",
+                "target": [
+                    "makeRate",
+                    "making1"
+                ]
+            },
+            "output": {
+                "role": "target",
+                "state": "making1"
+            },
+            "latex": "\\frac{\\min(\\mathrm{targetMakeRate}, \\frac{\\max(0, \\mathrm{sourceStock})}{\\mathrm{inputPerUnit} \\cdot \\mathrm{drawDownDays}})}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Input per unit made",
+                    "symbol": "inputPerUnit",
+                    "shared": "inputPerUnit"
+                },
+                {
+                    "name": "Stock draw-down time",
+                    "symbol": "drawDownDays",
+                    "shared": "drawDownDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Clear orders",
+            "from": "input",
+            "to": "maker",
+            "ports": {
+                "source": "stock",
+                "target": [
+                    "makeRate",
+                    "toMake"
+                ]
+            },
+            "output": {
+                "role": "target",
+                "state": "toMake"
+            },
+            "latex": "-\\frac{\\min(\\mathrm{targetMakeRate}, \\frac{\\max(0, \\mathrm{sourceStock})}{\\mathrm{inputPerUnit} \\cdot \\mathrm{drawDownDays}})}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Input per unit made",
+                    "symbol": "inputPerUnit",
+                    "shared": "inputPerUnit"
+                },
+                {
+                    "name": "Stock draw-down time",
+                    "symbol": "drawDownDays",
+                    "shared": "drawDownDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Count made",
+            "from": "input",
+            "to": "maker",
+            "ports": {
+                "source": "stock",
+                "target": [
+                    "makeRate",
+                    "made"
+                ]
+            },
+            "output": {
+                "role": "target",
+                "state": "made"
+            },
+            "latex": "\\frac{\\min(\\mathrm{targetMakeRate}, \\frac{\\max(0, \\mathrm{sourceStock})}{\\mathrm{inputPerUnit} \\cdot \\mathrm{drawDownDays}})}{\\mathrm{secondsPerDay}}",
+            "parameters": [
+                {
+                    "name": "Input per unit made",
+                    "symbol": "inputPerUnit",
+                    "shared": "inputPerUnit"
+                },
+                {
+                    "name": "Stock draw-down time",
+                    "symbol": "drawDownDays",
+                    "shared": "drawDownDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        },
+        {
+            "name": "Demand signal",
+            "from": "maker",
+            "to": "input",
+            "ports": {
+                "source": "makeRate",
+                "target": "forecast"
+            },
+            "output": {
+                "role": "target",
+                "state": "forecast"
+            },
+            "latex": "\\frac{\\mathrm{inputPerUnit} \\cdot \\mathrm{sourceMakeRate}}{\\mathrm{secondsPerDay} \\cdot \\mathrm{smoothingDays}}",
+            "parameters": [
+                {
+                    "name": "Input per unit made",
+                    "symbol": "inputPerUnit",
+                    "shared": "inputPerUnit"
+                },
+                {
+                    "name": "Demand smoothing time",
+                    "symbol": "smoothingDays",
+                    "shared": "smoothingDays"
+                },
+                {
+                    "name": "Seconds per day",
+                    "symbol": "secondsPerDay",
+                    "shared": "secondsPerDay"
+                }
+            ]
+        }
+    ]
+}

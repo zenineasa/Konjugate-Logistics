@@ -83,6 +83,18 @@
             "entry": "examples/portWarehouseNetwork.kjt",
             "guide": "examples/portWarehouseNetwork.md",
             "thumbnail": "examples/portWarehouseNetwork.png"
+        },
+        {
+            "kind": "component",
+            "componentId": "maker",
+            "apiVersion": 1,
+            "entry": "components/maker.json"
+        },
+        {
+            "kind": "component",
+            "componentId": "makerFeed",
+            "apiVersion": 1,
+            "entry": "components/makerFeed.json"
         }
     ],
     "permissions": []

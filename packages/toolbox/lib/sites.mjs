@@ -2,14 +2,15 @@
 
 // A CSV of the user's own sites, the network they place on the map saved as a table, or one made in a spreadsheet:
 //
-//   name,kind,latitude,longitude,teuPerDay,floorArea,population,capacity,cover,from,mix,leadDays,makes
+//   name,kind,latitude,longitude,teuPerDay,floorArea,population,capacity,cover,from,mix,leadDays,makes,recipe
 //   Harbour terminal,port,24.81,54.65,420,,,,,,,,
 //   Dairy,supplier,24.90,54.90,30,,,,,,Chilled:100,Chilled:0.5,45
 //   Our depot,warehouse,24.95,55.02,,18000,,4000,3,Harbour terminal|Dairy,,,
 //   Mall store,store,25.27,55.30,35,,,60,2,Our depot,Ambient:70|Chilled:30,,
 //
-// `kind` is a site's role: supplier, port, warehouse, store, dark store or customer area (customer, town and depot
-// are read too). teuPerDay is a supplier's or port's volume, or a store's or customer area's demand; floorArea (m²)
+// `kind` is a site's role: supplier, port, warehouse, maker, store, dark store or customer area (customer, town and
+// depot are read too; plant and production site as makers). A maker's `recipe` says what it makes from what, and how much
+// of it for each pallet: "Bread from Flour:0.8"; its teuPerDay is what it makes a day. teuPerDay is a supplier's or port's volume, or a store's or customer area's demand; floorArea (m²)
 // sizes a warehouse; population weights a customer area without a fixed demand; capacity (pallets) and cover (days of
 // stock it aims to hold) are a warehouse's, store's or dark store's. `from` names the sites it is supplied
 // from, separated by |, so a saved network keeps its links. `mix` is a source's or a demand site's own mix of product
@@ -23,12 +24,15 @@ const roles = {
     port: 'port', terminal: 'port',
     warehouse: 'warehouse', depot: 'warehouse', 'distribution centre': 'warehouse', 'distribution center': 'warehouse', dc: 'warehouse',
     store: 'store', shop: 'store', 'dark store': 'darkStore', darkstore: 'darkStore',
+    // A mill or a bakery may be a supplier as well as a maker: only words that say a site makes one thing from another.
+    maker: 'maker', plant: 'maker', 'production site': 'maker',
     customer: 'customerArea', 'customer area': 'customerArea', customers: 'customerArea', town: 'customerArea', city: 'customerArea'
 };
 // The model's groups: sources (ports and suppliers), warehouses (zones) and demand (towns).
-export const groupOfRole = { supplier: 'ports', port: 'ports', warehouse: 'zones', store: 'towns', darkStore: 'towns', customerArea: 'towns' };
+// A maker is read with the warehouses: it holds what it uses as one does (network.mjs makes it a source too).
+export const groupOfRole = { supplier: 'ports', port: 'ports', warehouse: 'zones', maker: 'zones', store: 'towns', darkStore: 'towns', customerArea: 'towns' };
 const kindOfGroup = { ports: 'port', zones: 'zone', towns: 'town' };
-export const roleNames = { supplier: 'supplier', port: 'port', warehouse: 'warehouse', store: 'store', darkStore: 'dark store', customerArea: 'customer area' };
+export const roleNames = { supplier: 'supplier', port: 'port', warehouse: 'warehouse', maker: 'maker', store: 'store', darkStore: 'dark store', customerArea: 'customer area' };
 
 const aliases = {
     name: ['name', 'site', 'label'], kind: ['kind', 'type', 'category'],
@@ -36,8 +40,13 @@ const aliases = {
     teuPerDay: ['teuperday', 'teu/day', 'teu', 'volume', 'demand'], floorArea: ['floorarea', 'floor area', 'area', 'm2', 'sqm'],
     population: ['population', 'pop', 'weight'], capacity: ['capacity', 'storage', 'storage capacity', 'storagecapacity'],
     cover: ['cover', 'cover days', 'stock cover', 'coverdays'], from: ['from', 'supplied from', 'served from', 'sources'],
-    mix: ['mix', 'categories', 'category mix'], leadDays: ['leaddays', 'lead days', 'lead time', 'leadtime'], makes: ['makes', 'can make', 'most it can make']
+    mix: ['mix', 'categories', 'category mix'], leadDays: ['leaddays', 'lead days', 'lead time', 'leadtime'], makes: ['makes', 'can make', 'most it can make'],
+    recipe: ['recipe', 'makes from']
 };
+// A maker's recipe as the CSV writes it: "Bread from Flour:0.8", what it makes, what it uses and how much of it for
+// each pallet made.
+const recipePattern = /^\s*(.+?)\s+from\s+(.+?)\s*:\s*([0-9]*\.?[0-9]+)\s*$/i;
+export const recipeText = (made, used, perUnit) => `${made} from ${used}:${perUnit}`;
 
 // "Ambient:70|Chilled:30" as { Ambient: 70, Chilled: 30 }; a part that is no name and number is returned as wrong.
 function namedNumbers(text, separator) {
@@ -105,7 +114,7 @@ export function parseSites(text) {
         const lat = number(cell('latitude'));
         const lon = number(cell('longitude'));
         if (!name) return errors.push(`Line ${lineNumber}: the site has no name.`);
-        if (!kind) return errors.push(`Line ${lineNumber}: "${cell('kind')}" is not a kind of site. Use supplier, port, warehouse, store, dark store or customer area.`);
+        if (!kind) return errors.push(`Line ${lineNumber}: "${cell('kind')}" is not a kind of site. Use supplier, port, warehouse, maker, store, dark store or customer area.`);
         if (!(lat >= -90 && lat <= 90) || !(lon >= -180 && lon <= 180)) return errors.push(`Line ${lineNumber}: ${name} needs a latitude between -90 and 90 and a longitude between -180 and 180.`);
         const teuPerDay = number(cell('teuPerDay'));
         const floorArea = number(cell('floorArea'));
@@ -115,7 +124,12 @@ export function parseSites(text) {
         for (const [label, value] of [['teuPerDay', teuPerDay], ['floorArea', floorArea], ['population', population], ['capacity', capacity], ['cover', cover]]) {
             if (Number.isNaN(value) || (value !== null && value < 0)) errors.push(`Line ${lineNumber}: ${label} for ${name} is not a number of zero or more.`);
         }
-        const stocked = ['warehouse', 'store', 'darkStore'].includes(role);
+        const stocked = ['warehouse', 'maker', 'store', 'darkStore'].includes(role);
+        // A maker's recipe: what it makes, from what, how much of it for each pallet.
+        const recipeCell = String(cell('recipe') ?? '').trim();
+        const recipe = recipeCell ? recipePattern.exec(recipeCell) : null;
+        if (recipeCell && (!recipe || !(Number(recipe[3]) > 0))) errors.push(`Line ${lineNumber}: "${recipeCell}" for ${name} is not a recipe, as in Bread from Flour:0.8.`);
+        if (recipeCell && role !== 'maker') warnings.push(`Line ${lineNumber}: only a maker has a recipe, so ${name}'s is not used.`);
         if (!stocked && (capacity > 0 || cover > 0)) warnings.push(`Line ${lineNumber}: a ${roleNames[role]} holds no stock, so its capacity and cover are not used.`);
         const separator = delimiter === ';' ? /\|/ : /[|;]/;
         const from = String(cell('from') ?? '').split(separator).map((item) => item.trim()).filter(Boolean);
@@ -126,16 +140,17 @@ export function parseSites(text) {
         for (const part of [...mix.wrong, ...lead.wrong]) errors.push(`Line ${lineNumber}: "${part}" for ${name} is not a category and a number, as in Chilled:30.`);
         if (Number.isNaN(makes) || (makes !== null && makes < 0)) errors.push(`Line ${lineNumber}: makes for ${name} is not a number of zero or more.`);
         if (role === 'warehouse' && Object.keys(mix.values).length) warnings.push(`Line ${lineNumber}: a warehouse carries what passes through it, so its mix is not used.`);
-        if (role !== 'supplier' && (Object.keys(lead.values).length || makes > 0)) warnings.push(`Line ${lineNumber}: only a supplier has lead times and a most it can make, so ${name}'s are not used.`);
+        if (role !== 'supplier' && role !== 'maker' && (Object.keys(lead.values).length || makes > 0)) warnings.push(`Line ${lineNumber}: only a supplier or a maker has lead times and a most it can make, so ${name}'s are not used.`);
         const site = {
             id: `user:${kind}:${lineNumber}`, kind, role, name, lat, lon, source: 'your sites', user: true, ...(from.length ? { from } : {}),
             ...(role !== 'warehouse' && Object.keys(mix.values).length ? { mix: mix.values } : {}),
-            ...(role === 'supplier' && Object.keys(lead.values).length ? { leadDaysBy: lead.values } : {}), ...(role === 'supplier' && makes > 0 ? { makes } : {}),
+            ...(role === 'supplier' && Object.keys(lead.values).length ? { leadDaysBy: lead.values } : {}), ...((role === 'supplier' || role === 'maker') && makes > 0 ? { makes } : {}),
+            ...(role === 'maker' && recipe && Number(recipe[3]) > 0 ? { recipe: { makes: recipe[1].trim(), uses: recipe[2].trim(), perUnit: Number(recipe[3]) }, ...(teuPerDay > 0 ? { teuPerDay } : {}) } : role === 'maker' && teuPerDay > 0 ? { teuPerDay } : {}),
             ...(stocked && capacity > 0 ? { capacity } : {}), ...(stocked && cover > 0 ? { coverDays: cover } : {})
         };
         if (kind === 'port') sites.ports.push({ ...site, ...(role === 'supplier' ? { supplier: true } : {}), ...(teuPerDay > 0 ? { teuPerDay, teuPerDayBasis: 'user' } : {}), significance: Infinity });
         if (kind === 'zone') {
-            if (teuPerDay) warnings.push(`Line ${lineNumber}: a warehouse's teuPerDay is not used; its flow follows the customers it serves.`);
+            if (teuPerDay && role !== 'maker') warnings.push(`Line ${lineNumber}: a warehouse's teuPerDay is not used; its flow follows the customers it serves.`);
             sites.zones.push({ ...site, floorAreaSquareMetres: floorArea ?? null, floorAreaBasis: floorArea ? 'user' : null, significance: Infinity });
         }
         if (kind === 'town') sites.towns.push({ ...site, ...(teuPerDay > 0 ? { teuPerDay, teuPerDayBasis: 'user' } : {}), population: population ?? null, populationBasis: population ? 'user' : null, significance: Infinity });
@@ -152,12 +167,14 @@ export function writeSites(pins, links = [], categories = []) {
     const byId = new Map(pins.map((pin) => [pin.id, pin]));
     const own = (pin, key) => (pin.fields?.[key]?.basis === 'user' && Number(pin.fields[key].value) > 0 ? Number(pin.fields[key].value) : '');
     const rows = pins.map((pin) => {
-        const volume = own(pin, pin.role === 'supplier' ? 'supply' : pin.role === 'port' ? 'teuPerDay' : 'demand');
+        const volume = own(pin, pin.role === 'supplier' || pin.role === 'maker' ? 'supply' : pin.role === 'port' ? 'teuPerDay' : 'demand');
         const from = links.filter((link) => link.to === pin.id && byId.has(link.from)).map((link) => byId.get(link.from).name);
         // Its own mix, every category named (0 for one it does not carry), and its own lead times.
-        const mix = pin.role !== 'warehouse' && pin.mix ? categories.map((category) => `${category.name}:${Math.max(0, Number(pin.mix[category.id]) || 0)}`).join('|') : '';
+        const mix = pin.role !== 'warehouse' && pin.role !== 'maker' && pin.mix ? categories.map((category) => `${category.name}:${Math.max(0, Number(pin.mix[category.id]) || 0)}`).join('|') : '';
         const lead = pin.role === 'supplier' ? categories.filter((category) => Number(pin.leadDays?.[category.id]) > 0).map((category) => `${category.name}:${Number(pin.leadDays[category.id])}`).join('|') : '';
-        return [pin.name, roleNames[pin.role], Number(pin.lat.toFixed(6)), Number(pin.lon.toFixed(6)), volume, own(pin, 'floorArea'), own(pin, 'population'), own(pin, 'capacity'), own(pin, 'cover'), from.join('|'), mix, lead, pin.role === 'supplier' ? own(pin, 'makes') : ''].map(quote).join(',');
+        const named = (id) => categories.find((category) => category.id === id)?.name;
+        const recipe = pin.role === 'maker' && pin.recipe && named(pin.recipe.makes) && named(pin.recipe.uses) ? recipeText(named(pin.recipe.makes), named(pin.recipe.uses), Number(pin.fields?.perUnit?.value) || 1) : '';
+        return [pin.name, roleNames[pin.role], Number(pin.lat.toFixed(6)), Number(pin.lon.toFixed(6)), volume, own(pin, 'floorArea'), own(pin, 'population'), own(pin, 'capacity'), own(pin, 'cover'), from.join('|'), mix, lead, pin.role === 'supplier' || pin.role === 'maker' ? own(pin, 'makes') : '', recipe].map(quote).join(',');
     });
-    return `name,kind,latitude,longitude,teuPerDay,floorArea,population,capacity,cover,from,mix,leadDays,makes\n${rows.join('\n')}\n`;
+    return `name,kind,latitude,longitude,teuPerDay,floorArea,population,capacity,cover,from,mix,leadDays,makes,recipe\n${rows.join('\n')}\n`;
 }

@@ -97,14 +97,17 @@ function checkGoods({ name, document, series }) {
     const lanes = ofType('Road lane');
     const warehouses = ofType('Warehouse');
     const towns = ofType('Demand zone');
-    const suppliers = ofType('Supplier');
+    // A maker makes to order as a supplier does; what it makes enters the model through it, and what it uses (from its
+    // store, another category's goods) leaves it there.
+    const makers = ofType('Maker');
+    const suppliers = [...ofType('Supplier'), ...makers];
     assert.ok((ports.length || suppliers.length) && lanes.length && warehouses.length && towns.length, `${name}: the model has every kind of node.`);
     const loaded = (lane) => sum(['loaded1', 'loaded2', 'loaded3'].map((stage) => series(`${lane}.${stage}`)));
     const making = (supplier) => sum(['making1', 'making2', 'making3', 'stock'].map((stage) => series(`${supplier}.${stage}`)));
     // What a node holds of the goods, less what has entered the model through it.
     const held = new Map([
         ...ports.map((port) => [port, [series(`${port}.queue`), series(`${port}.stock`), series(`${port}.arrived`).map((value) => -value)]]),
-        ...suppliers.map((supplier) => [supplier, [making(supplier), series(`${supplier}.made`).map((value) => -value)]]),
+        ...suppliers.map((supplier) => [supplier, [making(supplier), series(`${supplier}.made`).map((value) => -value), ...(makers.includes(supplier) ? [series(`${supplier}.used`)] : [])]]),
         // What a warehouse or a stock room wasted (goods past their shelf life) left the model through it.
         ...lanes.map((lane) => [lane, [loaded(lane)]]), ...warehouses.map((warehouse) => [warehouse, [series(`${warehouse}.stock`), series(`${warehouse}.spoiled`)]]),
         ...towns.map((town) => [town, [series(`${town}.delivered`)]])
@@ -168,7 +171,7 @@ function checkRest({ name, document, series }, { fleetsChange = false } = {}) {
 
 // Every state that is not a running total holds still.
 export function checkSteady({ name, document, series }) {
-    const cumulative = /^(arrived|handled|delivered|ordered|made|lost|spoiled|transportCost|fleetCost|holdingCost|backlogCost)$/;
+    const cumulative = /^(arrived|handled|delivered|ordered|made|used|lost|spoiled|transportCost|fleetCost|holdingCost|backlogCost)$/;
     for (const node of document.nodes) {
         for (const state of node.states) {
             if (cumulative.test(state.symbol)) continue;

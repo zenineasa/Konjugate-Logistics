@@ -4,7 +4,7 @@ The Logistics toolbox for Konjugate: a component library (`packages/engine`) and
 
 Read first:
 
-1. [docs/direction.md](docs/direction.md): where the toolbox is going (a general supply network, milestones A to I) and why.
+1. [docs/direction.md](docs/direction.md): where the toolbox is going (a general supply network, milestones A to J) and why.
 2. [docs/handover.md](docs/handover.md): the current state, the code map, how scenarios run, and what is easy to get wrong.
 
 Commands: `npm test` (unit), `npm run test:engine` (conservation, needs Konjugate's built engine; `KONJUGATE_ENGINE=export` runs each model as Konjugate's code export writes it, in Python, where there is no engine build for the platform), `npm run test:interaction` (the real app, slow). Konjugate's checkout is expected at `../konjugate` (or `KONJUGATE_DIR`).

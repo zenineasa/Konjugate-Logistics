@@ -18,7 +18,7 @@ import { checkedMapLink, checksumUrlOf, mapAge, mapServers } from './lib/mapServ
 import { bytesText, keptAs, proposeSource } from './lib/mapSource.mjs';
 import { cleanCurrency, differs, money, moneyIn, outNoise, runningCostWords, sameSeries, shortDays, storesParts, unchangedText } from './lib/summary.mjs';
 import { createHoliday, describeHoliday, holidayProblem } from './lib/holidays.mjs';
-import { completeFields, createPin, isCandidate, kindOf, openNetwork, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, setCandidate, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
+import { completeFields, createPin, defaultRecipe, isCandidate, kindOf, openNetwork, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, setCandidate, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
 import { calibration, calibrationAdvised, calibrationMinimum, formatDuration, googleMapsUrl, howLabels, modelHours, openStreetMapUrl, parseTravelTimes, suspectTime, timeFrom, whenLabels, writeTravelTimes } from './lib/travelTimes.mjs';
 import { affectedAcross, closureAcross, diversionAcross, mergeSeries, siteView } from './lib/builtView.mjs';
 import { calendarKinds, calendarOf, dayNames, describeCalendar, kindsFor, setHours, wholeCalendar } from './lib/calendars.mjs';
@@ -1378,9 +1378,15 @@ function selectAll() {
     renderNetwork();
 }
 
+// A maker's recipe, where it has none: the first category made from the second, assumed until chosen on its card.
+function withRecipe(pin) {
+    if (pin.role === 'maker' && !pin.recipe && defaultRecipe(state.categories)) pin.recipe = { ...defaultRecipe(state.categories), basis: 'assumed' };
+    if (pin.role !== 'maker') delete pin.recipe;
+    return pin;
+}
 function addPin(role, point) {
     checkpoint(`placing a ${roles[role].label.toLowerCase()}`);
-    const pin = createPin(role, point, { pins: state.pins });
+    const pin = withRecipe(createPin(role, point, { pins: state.pins }));
     state.pins.push(pin);
     setSelection([{ kind: 'pin', id: pin.id }]);
     networkChanged();
@@ -2189,7 +2195,7 @@ function focusTravelTime() {
 // ---- the keyboard ------------------------------------------------------------------------------------------
 // Every action has a button or a menu item; these are the quicker ways, listed under ? (and in each menu and tooltip).
 const shortcuts = [
-    ['1 to 6', 'Place a supplier, port, warehouse, store, dark store or customer area (again to stop)'],
+    ['1 to 7', 'Place a supplier, port, warehouse, store, dark store, customer area or maker (again to stop)'],
     ['Escape', 'Stop placing, cancel a link, close a menu, or clear the selection'],
     [keys.deleteKeys, 'Delete what is selected'],
     [keys.undo, 'Undo'], [keys.redo, 'Redo'],
@@ -2235,7 +2241,7 @@ document.addEventListener('keydown', (event) => {
     else if (mod && key === 'd') duplicateSelected();
     else if (mod) handled = false;
     else if (event.key === 'Delete' || event.key === 'Backspace') deleteSelected();
-    else if (/^[1-6]$/.test(event.key)) { const role = roleIds[Number(event.key) - 1]; setAddRole(map.addKind === role ? null : role); }
+    else if (/^[1-7]$/.test(event.key)) { const role = roleIds[Number(event.key) - 1]; setAddRole(map.addKind === role ? null : role); }
     else if ((event.key === 'Enter' || event.key === 'F2') && state.selected?.kind === 'pin') rename(state.selected.id);
     else if (key === 'l' && state.selected?.kind === 'pin') startLinking(state.selected.id);
     else if (key === 'v') cycleVehicles();
@@ -2344,6 +2350,7 @@ $('#contextMenu').addEventListener('keydown', (event) => {
 function changeRole(pin, role) {
     checkpoint(`making ${pin.name} a ${roles[role].label.toLowerCase()}`);
     Object.assign(pin, createPin(role, pin, { id: pin.id, name: pin.name, source: pin.source, basis: pin.basis, candidate: pin.candidate ?? null }));
+    withRecipe(pin);
     $('#selectionCard').dataset.for = '';
     networkChanged();
 }
@@ -2408,6 +2415,7 @@ function renderCard() {
                 const placeholder = field.key === 'teuPerDay' ? (found?.activity ? 'from PortWatch' : `${number(state.portVolume ?? 100)} assumed`) : field.key === 'capacity' ? 'no limit' : field.key === 'makes' ? 'half as much again' : '';
                 return `<div class="field" title="${escape(field.detail)}"><label for="field-${field.key}">${escape(field.label)}</label><span><input type="number" min="0"${field.max ? ` max="${field.max}"` : ''} step="any" id="field-${field.key}" data-field="${field.key}" value="${value.value ?? ''}" placeholder="${escape(placeholder)}"> <span class="muted">${escape(field.unit)}</span></span><span class="basis ${value.basis ?? ''}">${escape(basisLabel[value.basis] ?? '')}</span></div><div class="detail help">${escape(field.detail)}</div>`;
             }).join('')}
+            ${renderRecipe(pin)}
             ${renderMix(pin)}
             ${renderHours(pin)}
             ${pin.role === 'warehouse' ? `<label class="row small" title="A candidate is not built into the model: A new site, under Scenarios, compares the network as it is with the network with it open"><input type="checkbox" id="pinCandidate" ${isCandidate(pin) ? 'checked' : ''}> A candidate: not open yet, to compare</label>` : ''}
@@ -2429,6 +2437,7 @@ function renderCard() {
             networkChanged();
         }));
         wireMix(pin, card);
+        wireRecipe(pin, card);
         wireHours(pin, card);
         $('#pinCandidate')?.addEventListener('change', (event) => {
             checkpoint(event.target.checked ? `making ${pin.name} a candidate` : `opening ${pin.name}`);
@@ -2508,6 +2517,28 @@ function setBackup(link, backup) {
     if (backup) { link.backup = true; delete link.share; } else delete link.backup;
     $('#selectionCard').dataset.for = '';
     networkChanged();
+}
+
+// A maker's recipe on its card: what it makes, and from what (how much of it for each pallet is a field above). Each
+// category's shelf life is said, as the reason a maker is worth having: flour keeps months where bread keeps days.
+function renderRecipe(pin) {
+    if (pin.role !== 'maker') return '';
+    const recipe = pin.recipe ?? {};
+    const options = (chosen) => state.categories.map((category) => `<option value="${escape(category.id)}" ${category.id === chosen ? 'selected' : ''}>${escape(category.name)}</option>`).join('');
+    const keeps = (id) => { const category = state.categories.find((item) => item.id === id); const days = Number(category?.fields.shelfDays?.value); return category ? `${category.name} ${days > 0 ? `keeps ${number(days)} day${days === 1 ? '' : 's'}` : 'keeps'}` : null; };
+    const said = [keeps(recipe.uses), keeps(recipe.makes)].filter(Boolean);
+    return `<div class="recipe"><b>Recipe</b> <span class="basis ${recipe.basis === 'user' ? 'user' : 'assumed'}">${recipe.basis === 'user' ? 'yours' : 'assumed'}</span>
+        <div class="field"><label for="recipeMakes">Makes</label><select id="recipeMakes" data-recipe="makes">${options(recipe.makes)}</select></div>
+        <div class="field"><label for="recipeUses">From</label><select id="recipeUses" data-recipe="uses">${options(recipe.uses)}</select></div>
+        <div class="detail help">It holds what it makes from in its own store, ordered as it makes, and sends what it makes to the warehouses it is linked to.${said.length ? ` ${escape(listed(said))}.` : ''}</div></div>`;
+}
+function wireRecipe(pin, card) {
+    card.querySelectorAll('[data-recipe]').forEach((select) => select.addEventListener('change', () => {
+        checkpoint(`changing what ${pin.name} makes`);
+        pin.recipe = { ...(pin.recipe ?? {}), [select.dataset.recipe]: select.value, basis: 'user' };
+        card.dataset.for = '';
+        networkChanged();
+    }));
 }
 
 // The hours a site keeps, on its card: when a store is open, when a store or a warehouse receives and when a warehouse
@@ -2685,6 +2716,7 @@ $('#sitesButton').addEventListener('click', async () => {
         if (answer.report?.errors?.length) throw new Error(answer.report.errors.join(' '));
         checkpoint('loading your sites');
         const loaded = networkFromSites(answer.data.sites, state.pins, state.categories);
+        loaded.pins.forEach(withRecipe);
         state.pins.push(...loaded.pins);
         state.links.push(...loaded.links);
         const warnings = [...(answer.report?.warnings ?? []), ...loaded.problems];

@@ -338,3 +338,46 @@ test('a network linked as gravity would link it builds the same model as the cur
     assert.equal(linked.document.nodes.length, gravity.document.nodes.length);
     assert.equal(linked.document.edges.length, gravity.document.edges.length);
 });
+
+test('a maker and a train reach the builder whole through the importer: the maker\'s recipe and making time, the train\'s mode', async () => {
+    const { createCategory, defaultCategoryCatalogue, setMix } = await import('../../packages/toolbox/lib/categories.mjs');
+    const { withModeType } = await import('../../packages/toolbox/lib/vehicles.mjs');
+    const router = await windowRouter();
+    const add = (pins, role, point, options = {}) => { const pin = createPin(role, point, { pins, ...options }); pins.push(pin); return pin; };
+    // A maker built as the window builds it: it was dropped to a warehouse of the same name ("Two sites are named").
+    const categories = [createCategory({ id: 'bread', name: 'Bread', share: 50 }), createCategory({ id: 'flour', name: 'Flour', share: 50, shelfDays: 180 })];
+    const pins = [];
+    const mill = add(pins, 'supplier', { lat: -29.72, lon: -19.88 }, { name: 'Mill', fields: { supply: 32 } });
+    setMix(mill, 'bread', 0, categories);
+    const bakery = add(pins, 'maker', { lat: -29.9, lon: -19.7 }, { name: 'Bakery', fields: { supply: 40, perUnit: 0.8 } });
+    bakery.recipe = { makes: 'bread', uses: 'flour', basis: 'user' };
+    const depot = add(pins, 'warehouse', { lat: -29.76, lon: -19.5 }, { name: 'Depot' });
+    const shop = add(pins, 'store', { lat: -29.85, lon: -19.69 }, { name: 'Shop', fields: { demand: 40 } });
+    setMix(shop, 'flour', 0, categories);
+    const link = (from, to, more = {}) => ({ id: linkId(from.id, to.id), from: from.id, to: to.id, basis: 'user', ...more });
+    const links = [link(mill, bakery), link(bakery, depot), link(depot, shop)];
+    routeLinks(pins, links, router);
+    const catalogue = defaultCatalogue();
+    const made = await importRegion({ files: roadsOnly(), helpers, options: { step: 'buildNetwork', network: networkSelection(pins, links, { catalogue, categories }) } });
+    assert.equal(made.ok, true, JSON.stringify(made.report));
+    // Its making time its own half a day, assumed: not the category's supplier lead time.
+    const making = made.data.provenance.find((item) => item.entity === 'Bakery: Bread' && item.parameter === 'Making time');
+    assert.deepEqual([making.value, making.basis], [0.5, 'assumed']);
+    // Chilled goods on a link run by a plain train go by the refrigerated train the catalogue has: found by its mode,
+    // which the importer kept (when it dropped it, no type ran by rail, and the build was refused).
+    const chain = [];
+    const dairy = add(chain, 'supplier', { lat: -29.72, lon: -19.88 }, { name: 'Dairy', fields: { supply: 30 } });
+    const hub = add(chain, 'warehouse', { lat: -29.9, lon: -19.7 }, { name: 'Hub' });
+    add(chain, 'store', { lat: -29.85, lon: -19.69 }, { name: 'Corner shop', fields: { demand: 30 } });
+    const railLinks = [link(dairy, hub, { mode: 'rail' }), link(hub, chain[2])];
+    routeLinks(chain, railLinks, router);
+    railLinks[0].leg = { kilometres: 20, hours: 0.4, basis: 'routed' };
+    railLinks[0].ends = 'given';
+    const trains = withModeType(defaultCatalogue(), 'rail');
+    trains.push({ ...structuredClone(trains.at(-1)), id: 'reeferTrain', name: 'Refrigerated train', refrigerated: true });
+    const network = networkSelection(chain, railLinks, { catalogue: trains, categories: defaultCategoryCatalogue() });
+    const carried = await importRegion({ files: roadsOnly(), helpers, options: { step: 'buildNetwork', network } });
+    assert.equal(carried.ok, true, JSON.stringify(carried.report));
+    const chilled = carried.data.lanes.find((lane) => lane.name === 'Rail Dairy → Hub: Chilled');
+    assert.deepEqual(chilled.vehicles.map((item) => item.name), ['Refrigerated train']);
+});

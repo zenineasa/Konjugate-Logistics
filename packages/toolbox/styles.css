@@ -6,7 +6,7 @@
     --text: #d4e5f0; --bright: #f2f8fc; --muted: #8caec4;
     --accent: #38bdf8; --accent-ink: #041f2d; --ok: #34d399; --warn: #fbbf24; --danger: #f87171;
     --port: #38bdf8; --zone: #f59e0b; --town: #a78bfa; --lane: #5eead4; --road: #527c99; --rail: #8d7ea3;
-    --supplier: #4ade80; --warehouse: #f59e0b; --store: #f472b6; --darkStore: #c084fc; --customerArea: #a78bfa; --link: #fde68a;
+    --supplier: #4ade80; --maker: #d4a373; --warehouse: #f59e0b; --store: #f472b6; --darkStore: #c084fc; --customerArea: #a78bfa; --link: #fde68a;
     --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
     --panel-width: 420px;
 }
@@ -200,6 +200,7 @@ details summary:hover { text-decoration: underline; }
 #map .site.port { fill: var(--port); stroke: var(--port); }
 #map .site.supplier { fill: var(--supplier); stroke: var(--supplier); }
 #map .site.warehouse { fill: var(--warehouse); stroke: var(--warehouse); }
+#map .site.maker { fill: var(--maker); stroke: var(--maker); }
 #map .site.store { fill: var(--store); stroke: var(--store); }
 #map .site.darkStore { fill: var(--darkStore); stroke: var(--darkStore); }
 #map .site.customerArea { fill: rgba(167, 139, 250, 0.35); stroke: var(--customerArea); }
@@ -241,6 +242,7 @@ details summary:hover { text-decoration: underline; }
 .swatch.town { background: var(--town); border-radius: 50%; }
 .swatch.supplier { width: 0; height: 0; background: none; border-left: 5px solid transparent; border-right: 5px solid transparent; border-bottom: 9px solid var(--supplier); }
 .swatch.warehouse { background: var(--warehouse); transform: rotate(45deg); }
+.swatch.maker { background: var(--maker); clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); }
 .swatch.store { background: var(--store); border-radius: 50%; }
 .swatch.darkStore { background: var(--darkStore); border-radius: 50%; box-shadow: inset 0 0 0 3px var(--darkStore), inset 0 0 0 5px #08121a; }
 .swatch.customerArea { background: rgba(167, 139, 250, 0.4); border: 1px solid var(--customerArea); border-radius: 50%; }

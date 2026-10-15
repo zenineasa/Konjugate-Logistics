@@ -139,8 +139,10 @@ export function vehicleProblem(type) {
 // What kind of link it is, for its vehicles: supply (source to warehouse), transfer (warehouse to warehouse), to a
 // store or dark store, or to a customer area (no vehicles); null for a link that cannot be.
 export function linkKind(fromRole, toRole) {
-    if (['supplier', 'port'].includes(fromRole) && toRole === 'warehouse') return 'supply';
-    if (fromRole === 'warehouse' && toRole === 'warehouse') return 'transfer';
+    // A maker is a source of what it makes (to a warehouse, or to another maker that uses it) and takes what it uses as
+    // a warehouse does (from a source, or from a warehouse).
+    if (['supplier', 'port', 'maker'].includes(fromRole) && ['warehouse', 'maker'].includes(toRole)) return 'supply';
+    if (fromRole === 'warehouse' && ['warehouse', 'maker'].includes(toRole)) return 'transfer';
     if (fromRole === 'warehouse' && toRole === 'store') return 'store';
     if (fromRole === 'warehouse' && toRole === 'darkStore') return 'darkStore';
     if (fromRole === 'warehouse' && toRole === 'customerArea') return 'customerArea';

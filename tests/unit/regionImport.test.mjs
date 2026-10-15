@@ -224,7 +224,7 @@ test('a CSV of the user\'s own sites is read with loose headers, and bad lines a
     const bad = parseSites('name,kind,latitude,longitude\n,port,1,2\nA,shipyard,1,2\nB,port,95,2\n');
     assert.deepEqual(bad.errors, [
         'Line 2: the site has no name.',
-        'Line 3: "shipyard" is not a kind of site. Use supplier, port, warehouse, store, dark store or customer area.',
+        'Line 3: "shipyard" is not a kind of site. Use supplier, port, warehouse, maker, store, dark store or customer area.',
         'Line 4: B needs a latitude between -90 and 90 and a longitude between -180 and 180.'
     ]);
     assert.deepEqual(parseSites('name,latitude\nA,1').errors, ['The header has no kind column.', 'The header has no longitude column.']);
