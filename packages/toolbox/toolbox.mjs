@@ -574,7 +574,7 @@ async function loadRoads({ keepNetwork = false } = {}) {
     state.router = createNetworkRouter(answer.data.graph);
     // Railways and navigable waterways, where they were loaded: links by rail and by water are routed along them.
     // A mode loaded with none in the area is null: its links say there is none here, not that it should be loaded again.
-    state.lines = Object.fromEntries(Object.keys(answer.data.lineKilometres ?? {}).map((mode) => [mode, answer.data.graphs?.[mode] ? createNetworkRouter(answer.data.graphs[mode]) : null]));
+    state.lines = Object.fromEntries(['rail', 'water'].filter((mode) => answer.data.lineKilometres?.[mode] !== undefined).map((mode) => [mode, answer.data.graphs?.[mode] ? createNetworkRouter(answer.data.graphs[mode]) : null]));
     state.routerMilliseconds = performance.now() - started;
     state.portVolume ??= answer.data.defaults.portTeuPerDay;
     $('#portVolume').value = state.portVolume;
@@ -620,7 +620,9 @@ function renderCoverage() {
         // Where railways and water were loaded: how much of each a link by rail or by water may run on.
         ...['rail', 'water'].filter((mode) => state.roads.lineKilometres?.[mode] !== undefined).map((mode) => [
             mode === 'rail' ? 'Railways' : 'Waterways for barges',
-            state.roads.lineKilometres[mode] > 0 ? `${number(state.roads.lineKilometres[mode])} km${mode === 'water' ? ' (by their class or as marked for ships)' : ''}` : mode === 'rail' ? 'none mapped here' : 'none marked as navigable for freight here', null
+            state.roads.lineKilometres[mode] > 0
+                ? `${number(state.roads.lineKilometres[mode])} km${mode === 'water' ? ' (by their class or as marked for ships)' : ` of line${state.roads.lineKilometres.railService > 0 ? `, and ${number(state.roads.lineKilometres.railService)} km of sidings and yards (routed over, not drawn)` : ''}`}`
+                : mode === 'rail' ? 'none mapped here' : 'none marked as navigable for freight here', null
         ])
     ].map(([title, text, value]) => `<div class="item"><b>${title}${level(value)}</b><span>${escape(text)}</span></div>`).join('');
     const notes = state.roads.notices ?? [];
@@ -2615,7 +2617,7 @@ function renderLinkTime(link) {
         <div class="field"><label for="linkTime">Your time</label><span><input type="text" id="linkTime" data-time-input="${escape(link.id)}" value="${escape(link.time ? clock(link.time.hours) : '')}" placeholder="${escape(clock(estimate))}" title="${escape(how || 'Loading, the drive and unloading: 1:25, 85 min or 1 h 25 min (T)')}"></span><span class="basis ${link.time ? 'user' : 'assumed'}">${link.time ? 'yours' : 'routed'}</span></div>
         <div class="field"><label for="linkTimeWhen">When</label><select id="linkTimeWhen" data-time-when="${escape(link.id)}">${Object.entries(whenLabels).map(([key, label]) => `<option value="${key}" ${(link.time?.when ?? 'any') === key ? 'selected' : ''}>${escape(label)}</option>`).join('')}</select></div>
         ${suspect ? `<div class="detail flag">⚠ ${escape(suspect)}</div>` : ''}
-        <div class="detail">${link.time ? `${escape(how.charAt(0).toUpperCase() + how.slice(1))}. ` : `Empty: the route's ${escape(formatDuration(estimate))}, gates included. `}${linkMode(link) !== 'road' ? '' : `Read it off <button class="link" type="button" data-directions="google" data-for="${escape(link.id)}">Google Maps ↗</button> or <button class="link" type="button" data-directions="osm" data-for="${escape(link.id)}">OpenStreetMap ↗</button>.`}</div></div>`;
+        <div class="detail">${link.time ? `${escape(how.charAt(0).toUpperCase() + how.slice(1))}. ` : `Empty: ${escape(formatDuration(timedLeg(link).hours))} ${linkMode(link) === 'road' ? 'on the road' : `on the ${modes[linkMode(link)].noun}`} and ${escape(formatDuration(estimate - timedLeg(link).hours))} at the gates (loading and unloading, assumed), ${escape(formatDuration(estimate))} in all. `}${linkMode(link) !== 'road' ? '' : `Read it off <button class="link" type="button" data-directions="google" data-for="${escape(link.id)}">Google Maps ↗</button> or <button class="link" type="button" data-directions="osm" data-for="${escape(link.id)}">OpenStreetMap ↗</button>.`}</div></div>`;
 }
 
 function wireLinkVehicles(link) {
@@ -3402,6 +3404,7 @@ function renderScenario({ fetchTransits = false } = {}) {
     if (!downSites().length && state.scenarioTab === 'siteDown') state.scenarioTab = 'roadClosure';
     // Low water where links go by water (or by rail: a train may be loaded short too).
     offerScenario('lowWater', lowWaterLanes('all').length);
+    renderLowWaterWords();
     if (!lowWaterLanes('all').length && state.scenarioTab === 'lowWater') state.scenarioTab = 'roadClosure';
     renderDependence();
     // After a fresh build, fetch the chokepoint's transits; when restoring a session (perhaps offline), show only what was kept.
@@ -3864,6 +3867,19 @@ function scenarioSettings() {
         lowWater: { lanes: $('#lowWaterLanesSelect').value || null, share: Number($('#lowWaterShareInput').value), mode: $('#lowWaterModeSelect').value }
     };
 }
+// The low-water scenario in the words of what it is offered for: low water where any lane goes by water, trains loaded
+// short where only lanes by rail do (a river and barges would mean nothing to a network with none).
+const lowWaterIsRail = () => !lowWaterLanes('water').length && lowWaterLanes('all').length > 0;
+function renderLowWaterWords() {
+    const rail = lowWaterIsRail();
+    $('#scenarioSelect option[value="lowWater"]').textContent = rail ? 'Trains loaded short' : 'Low water';
+    $('#lowWaterIntro').textContent = rail
+        ? 'Trains may load only part of what they can carry for a while: a weight limit on a bridge, or shorter trains while a line is worked on. Trains already loaded arrive with what they carry.'
+        : 'A river runs low for a while: barges may load only part of what they can carry. Vehicles already loaded arrive with what they carry.';
+    $('#lowWaterShareRow').title = rail
+        ? 'How much of its capacity a train may load meanwhile. The figure is yours.'
+        : 'How much of its capacity a vehicle may load while the water is low: on the Rhine it follows the level at gauges such as Kaub. The figure is yours: nothing here reads a gauge.';
+}
 // The lanes by water (and by rail) a low-water scenario may choose: 'water' every lane by water, 'all' those by rail
 // too, or one, 'lane:<name>'. Standby lanes carry nothing to cut.
 function lowWaterLanes(choice) {
@@ -4110,7 +4126,7 @@ function scenarioRun(id, start, runTime, status) {
         const meanwhile = { wait: 'orders waiting for room', moreVehicles: 'each hiring enough vehicles to carry what it did', otherSources: elsewhere.length ? `the rest ordered from ${listed(elsewhere)}` : 'its orders waiting: no other lane leads to its site' }[settings.lowWater.mode];
         return {
             supplied: { byParameter: plan.supplied }, lanes: [...new Set([...low.map((lane) => lane.name), ...plan.supplied.orderShare.entities.map(view().siteOf)])],
-            describe: `Low water on ${which} ${days}: vehicles load ${settings.lowWater.share}% of what they can carry, ${meanwhile}.`
+            describe: `${low.every((lane) => lane.mode === 'rail') ? 'Trains loaded short' : 'Low water'} on ${which} ${days}: ${low.every((lane) => lane.mode === 'rail') ? 'trains' : 'vehicles'} load ${settings.lowWater.share}% of what they can carry, ${meanwhile}.`
         };
     }
     if (id === 'fleetChange') {

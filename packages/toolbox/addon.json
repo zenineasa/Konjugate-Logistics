@@ -108,8 +108,8 @@
             },
             {
                 "scenarioId": "lowWater",
-                "name": "Low water",
-                "description": "A river runs low for a while, and barges may load only part of what they can carry (or trains part of theirs). The lanes carry less, hire more vehicles, or their sites order the rest from their other sources. Watch the river port's stock fall, the vehicles on its lanes and their costs.",
+                "name": "Low water, or trains loaded short",
+                "description": "A river runs low for a while, and barges may load only part of what they can carry; or trains may, under a weight limit or on shorter trains while a line is worked on. The lanes carry less, hire more vehicles, or their sites order the rest from their other sources. Watch the river port's stock fall, the vehicles on its lanes and their costs.",
                 "forkAt": 864000,
                 "runTime": 7776000,
                 "effects": [

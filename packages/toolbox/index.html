@@ -268,9 +268,9 @@
                         <div class="muted small" id="closureHint"></div>
                     </div>
                     <div class="scenarioPanel" data-panel="lowWater" hidden>
-                        <p class="muted small">A river runs low for a while: barges may load only part of what they can carry. Vehicles already loaded arrive with what they carry.</p>
+                        <p class="muted small" id="lowWaterIntro">A river runs low for a while: barges may load only part of what they can carry. Vehicles already loaded arrive with what they carry.</p>
                         <label class="row small">On <select id="lowWaterLanesSelect"></select></label>
-                        <div class="row small" title="How much of its capacity a vehicle may load while the water is low: on the Rhine it follows the level at gauges such as Kaub. The figure is yours: nothing here reads a gauge.">
+                        <div class="row small" id="lowWaterShareRow" title="How much of its capacity a vehicle may load while the water is low: on the Rhine it follows the level at gauges such as Kaub. The figure is yours: nothing here reads a gauge.">
                             <label>Each loads <input type="number" id="lowWaterShareInput" min="5" max="95" step="5" value="40"> % of what it can carry</label>
                         </div>
                         <label class="row small">Meanwhile <select id="lowWaterModeSelect">

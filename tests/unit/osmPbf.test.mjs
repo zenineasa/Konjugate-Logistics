@@ -254,6 +254,11 @@ test('railways, waterways and water are read when asked for: a lake of two ways 
     // a waterway a barge may take.
     assert.equal(Math.round(buildLineGraph(readOverpass(answers.rail), 'rail').kilometres), 5);
     assert.equal(Math.round(buildLineGraph(readOverpass(answers.water), 'water').kilometres), 4);
+    // The roads step says how much is running line (drawn) and how much sidings and yards (routed over besides).
+    const { default: importRegion } = await import('../../packages/toolbox/importers/region.mjs');
+    const step = await importRegion({ files: [...answers.roads.map((text) => ({ role: 'roads', name: 'roads.json', text })), ...answers.rail.map((text) => ({ role: 'rail', name: 'rail.json', text }))], helpers: {}, options: { step: 'roads' } });
+    assert.deepEqual(step.data.lineKilometres, { rail: 4, railService: 1 });
+    assert.equal(step.data.map.rail.length, 1, 'the main line drawn, not its siding');
     // Not asked for, none is read, and the roads are the same.
     const plain = readExtract(data, { bbox: wide, roadLevel: 'major', inflate: inflateSync });
     assert.deepEqual([plain.roads.map((road) => road.id), plain.rail, plain.water], [[100, 104], [], []]);

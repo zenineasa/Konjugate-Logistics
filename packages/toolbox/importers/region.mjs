@@ -526,6 +526,12 @@ async function roadsStep(answers, options, helpers) {
         if (!lines[mode]) continue;
         const built = buildLineGraph(lines[mode], mode);
         lineCoverage[mode] = Math.round(built.kilometres);
+        // Of the railways, the running lines the map draws, and the sidings and yards routed over besides.
+        if (mode === 'rail') {
+            const running = Math.round(buildLineGraph(lines.rail.filter((feature) => isRunningLine(feature.tags)), 'rail').kilometres);
+            lineCoverage.rail = running;
+            lineCoverage.railService = Math.max(0, Math.round(built.kilometres) - running);
+        }
         if (built.mainVertices.length) graphs[mode] = compactRoadGraph(built, { tolerance: 25 });
     }
     // The window may receive 8 MB from an importer: roads beyond that are too many to place a network on in one go.
@@ -537,7 +543,8 @@ async function roadsStep(answers, options, helpers) {
         ok: true,
         data: {
             step: 'roads', map, graph, graphs,
-            // Kilometres of railway and of waterway a barge may take, where they were loaded (absent where not).
+            // Kilometres of railway (its running lines, and `railService` of sidings and yards besides) and of waterway a
+            // barge may take, where they were loaded (absent where not).
             lineKilometres: lineCoverage,
             coverage: { roads: discovered.coverage.roads, places: map.places.length },
             notices: discovered.notices.filter((notice) => notice.kind === 'roads'),

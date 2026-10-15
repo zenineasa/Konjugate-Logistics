@@ -1228,6 +1228,8 @@ try {
     const riverLeg = await page.evaluate((id) => window.logisticsToolboxState.links.find((link) => link.id === id).leg, supply.id);
     assert.match(await page.textContent('#selectionCard'), new RegExp(`${riverLeg.kilometres.toFixed(1)} km, ${(riverLeg.kilometres / 12).toFixed(1)} h along the navigable waterway at the barge's speed\\. Your link\\.`));
     assert.equal(await page.locator('#selectionCard [data-directions]').count(), 0);
+    // Its time, empty, said as the line's and the gates' (a short ride with two hours at the gates reads oddly otherwise).
+    assert.match(await page.textContent('#selectionCard .travelTime'), /Empty: [\d\w ]+ on the navigable waterway and 2 h at the gates \(loading and unloading, assumed\), [\d\w ]+ in all\./);
     assert.match(await page.textContent('#selectionCard .vehicleChoice'), /Barge/);
     assert.equal(await page.locator(`#map path.link.by-water[data-link="${supply.id}"]`).count(), 1);
     assert.deepEqual([await page.isVisible('#legendWater'), await page.isVisible('#legendRail')], [true, false], 'the legend says what blue is');
@@ -1272,7 +1274,10 @@ try {
     await page.waitForSelector('#buildStatus .notice.ok, #buildStatus .notice.error', { timeout: 60000 }).catch(fail);
     assert.match(await page.textContent('#buildStatus'), /^1 supplier, 1 road lane, 1 lane by water, 1 store and customer area served/);
     assert.ok(await stateOf(() => window.logisticsToolboxState.built.lanes.some((lane) => /^Water Supplier 1 → Warehouse 1/.test(lane.name) && lane.mode === 'water' && lane.vehicles[0].name === 'Barge')));
+    // Offered as low water, a lane going by water.
+    assert.equal(await page.textContent('#scenarioSelect option[value="lowWater"]'), 'Low water');
     await page.selectOption('#scenarioSelect', 'lowWater');
+    assert.match(await page.textContent('#lowWaterIntro'), /^A river runs low/);
     assert.equal(await page.isVisible('#lowWaterShareInput'), true);
     assert.match(await page.textContent('#lowWaterHint'), /^Supplier 1 → Warehouse 1: [\d.]+ pallets a day on \d+ vehicles?\. Each carries what its vehicles can at that share/);
     await page.selectOption('#lowWaterModeSelect', 'moreVehicles');
@@ -1591,7 +1596,7 @@ try {
         // Its water and railways are read with its roads and kept: the pond drawn (the sample's lakes gone with the sample),
         // and the railway there for links by rail.
         assert.equal(await page.locator('#map path.water.lake.osm').count(), 1);
-        assert.match(await page.textContent('#coverageSummary'), /Railways\s*\d+ km/);
+        assert.match(await page.textContent('#coverageSummary'), /Railways\s*\d+ km of line/);
         assert.ok(await stateOf(() => Boolean(window.logisticsToolboxState.lines.rail)));
         // Water was read too, and the town has none a barge may take: known as none here, not as not loaded.
         assert.deepEqual(await stateOf(() => ['water' in window.logisticsToolboxState.lines, window.logisticsToolboxState.lines.water]), [true, null]);
