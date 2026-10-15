@@ -16,7 +16,7 @@ import { createNetworkRouter } from './lib/routing.mjs';
 import { compareSites } from './lib/siteComparison.mjs';
 import { checkedMapLink, checksumUrlOf, mapAge, mapServers } from './lib/mapServers.mjs';
 import { bytesText, keptAs, proposeSource } from './lib/mapSource.mjs';
-import { cleanCurrency, differs, money, moneyIn, outNoise, sameSeries, shortDays, storesParts, unchangedText } from './lib/summary.mjs';
+import { cleanCurrency, differs, money, moneyIn, outNoise, runningCostWords, sameSeries, shortDays, storesParts, unchangedText } from './lib/summary.mjs';
 import { createHoliday, describeHoliday, holidayProblem } from './lib/holidays.mjs';
 import { completeFields, createPin, isCandidate, kindOf, openNetwork, linkId, linkProblem, networkFromSites, networkProblems, networkSelection, pinFromCandidate, roleIds, setCandidate, roles, routeLinks, setField, suggestLinks } from './lib/network.mjs';
 import { calibration, calibrationAdvised, calibrationMinimum, formatDuration, googleMapsUrl, howLabels, modelHours, openStreetMapUrl, parseTravelTimes, suspectTime, timeFrom, whenLabels, writeTravelTimes } from './lib/travelTimes.mjs';
@@ -4540,11 +4540,9 @@ function scenarioHeadline(result) {
         if (totals.wait && totals.wait.scenario - totals.wait.baseline > 0.01) parts.push(`orders waited ${number(totals.wait.scenario, 2)} days on average (${number(totals.wait.baseline, 2)})`);
     }
     const cost = runningCost(totals);
-    const change = cost.scenario - cost.baseline;
-    const share = Math.abs(change) / Math.max(1e-9, cost.baseline);
     // Cheaper to run because less was carried is no saving: said, where sales were lost and costs fell.
     const lostSales = totals.lost ? totals.lost.scenario - totals.lost.baseline > 0.05 : false;
-    const costs = result.absolute ? `running costs of ${number(cost.scenario)} since day ${number(result.start)}` : share < 0.005 ? 'running costs as in the baseline' : `running costs ${change > 0 ? 'up' : 'down'} ${number(Math.abs(change))} (${number(share * 100, share < 0.1 ? 1 : 0)}%) against the baseline${change < 0 && lostSales ? ', as less was carried' : ''}`;
+    const costs = result.absolute ? `running costs of ${number(cost.scenario)} since day ${number(result.start)}` : runningCostWords(totals, { lostSales });
     return `${parts.map((part, index) => (index && !part.startsWith('and ') ? `, ${part}` : index ? ` ${part}` : part)).join('')}; ${costs}.`;
 }
 

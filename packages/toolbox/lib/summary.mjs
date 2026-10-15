@@ -96,4 +96,24 @@ export const unchangedText = 'This run is the baseline\'s in every figure, to th
 // Whether a figure of one run differs from another's by more than noise: by more than `noise`, and by more than
 // `relative` of the other's (half a percent, for amounts). A share is compared by `noise` alone: 0.4 points of demand
 // met is a difference, though it is under half a percent of 99%.
+// The running costs in a scenario's headline, against the baseline: the total as it changed, and each part of it
+// (transport, the fleet, holding stock) that moved by a twentieth or more, so the headline does not call costs the same
+// above a line that went up by a third (trains loaded short: transport up 34%, the whole up 0.4%, 15 October 2026).
+// `totals` holds { transport, fleet, holding } as { scenario, baseline }; `lostSales`: sales were lost, so a fall in
+// cost is said to be from carrying less.
+export const costParts = [['transport', 'transport'], ['fleet', 'the fleet'], ['holding', 'holding stock']];
+export function runningCostWords(totals, { lostSales = false } = {}) {
+    const sum = (side) => costParts.reduce((total, [key]) => total + (totals[key]?.[side] ?? 0), 0);
+    const [scenario, baseline] = [sum('scenario'), sum('baseline')];
+    const change = scenario - baseline;
+    const share = Math.abs(change) / Math.max(1e-9, baseline);
+    const percent = (value) => `${Number((value * 100).toFixed(value < 0.1 ? 1 : 0)).toLocaleString('en')}%`;
+    const moved = costParts.map(([key, words]) => [words, totals[key]])
+        .filter(([, value]) => value?.baseline > 0 && Math.abs(value.scenario - value.baseline) / value.baseline >= 0.05)
+        .map(([words, value]) => `${words} ${value.scenario > value.baseline ? 'up' : 'down'} ${percent(Math.abs(value.scenario - value.baseline) / value.baseline)}`);
+    const whole = share < 0.0005 ? 'running costs as in the baseline'
+        : `running costs ${change > 0 ? 'up' : 'down'} ${number(Math.abs(change))} (${percent(share)}) against the baseline${change < 0 && lostSales ? ', as less was carried' : ''}`;
+    return moved.length ? `${whole}, ${listed(moved)}` : whole;
+}
+
 export const differs = (now, then, noise, relative = 0.005) => Math.abs(now - then) > Math.max(noise, relative * Math.abs(then));

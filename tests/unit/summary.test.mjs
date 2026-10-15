@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cleanCurrency, differs, money, moneyIn, sameSeries, shortDays, storesParts, unchangedText } from '../../packages/toolbox/lib/summary.mjs';
+import { cleanCurrency, differs, money, moneyIn, runningCostWords, sameSeries, shortDays, storesParts, unchangedText } from '../../packages/toolbox/lib/summary.mjs';
 
 const day = 86400;
 
@@ -79,4 +79,16 @@ test('a store empty for hours and short for weeks is said to be both, so the day
     // Several stores: the longest out, and the longest short where that is longer.
     assert.equal(say([store('A', 0.3, 2), store('B', 0.2, 22.5), store('C', 0, 9)], 80), '2 stores ran out, A longest at 0.3 days; 3 were short, B longest at 22.5 days, losing 80 pallets of sales');
     assert.equal(say([store('A', 6, 6), store('B', 4, 4.2)], 80), '2 stores ran out, A longest at 6.0 days, losing 80 pallets of sales');
+});
+
+test('the headline\'s running costs say the parts that moved, not "as in the baseline" above transport up a third', () => {
+    // Trains loaded short at Lugano (15 October 2026): transport 3,103 to 4,149, the whole up 0.4%.
+    const lugano = { transport: { baseline: 3103, scenario: 4149 }, fleet: { baseline: 240000, scenario: 240000 }, holding: { baseline: 20000, scenario: 20000 } };
+    assert.equal(runningCostWords(lugano), 'running costs up 1,046 (0.4%) against the baseline, transport up 34%');
+    // Nothing moved: as in the baseline.
+    const same = { transport: { baseline: 100, scenario: 100 }, fleet: { baseline: 50, scenario: 50 } };
+    assert.equal(runningCostWords(same), 'running costs as in the baseline');
+    // Down, sales lost: from carrying less; two parts moved.
+    const less = { transport: { baseline: 1000, scenario: 700 }, fleet: { baseline: 1000, scenario: 1000 }, holding: { baseline: 200, scenario: 100 } };
+    assert.equal(runningCostWords(less, { lostSales: true }), 'running costs down 400 (18%) against the baseline, as less was carried, transport down 30% and holding stock down 50%');
 });
