@@ -83,6 +83,13 @@ export function mapLayers(layers, bbox) {
 // and rivers are good to about a kilometre: a backdrop, under OpenStreetMap's own water where that is loaded. A wide
 // region leaves out its smaller rivers (by Natural Earth's scale rank), which would only clutter it.
 export const geographyAttribution = 'Coast, water and borders: Natural Earth';
+// Natural Earth's lakes and rivers to draw under a map whose own water (OpenStreetMap's, linesLayers) is `water`: none
+// where any of its own is loaded, as Natural Earth's coarse shores would show beside the true ones (a lake that reaches
+// into the area is read whole from OpenStreetMap, so none is lost); all of them otherwise.
+export function backdropWater(geography, water) {
+    const own = Boolean(water && (water.areas?.length || water.rivers?.length));
+    return own ? { lakes: [], rivers: [] } : { lakes: geography?.lakes ?? [], rivers: geography?.rivers ?? [] };
+}
 export function riverRankFor(spanKm) {
     return spanKm <= 300 ? 12 : spanKm <= 1000 ? 9 : 7;
 }

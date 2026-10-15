@@ -12,7 +12,7 @@ import { breakPeriods, findShift, historyWindow, matchPorts, portwatchActivityUr
 import { buildRegionModel } from '../../packages/toolbox/lib/regionModel.mjs';
 import { closureModes, closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan } from '../../packages/toolbox/lib/scenarios.mjs';
 import { clipLine, clipRing, decode, tileName, tilesFor } from '../../packages/toolbox/lib/geography.mjs';
-import { geographyLayers } from '../../packages/toolbox/lib/mapData.mjs';
+import { backdropWater, geographyLayers } from '../../packages/toolbox/lib/mapData.mjs';
 import { createRouter } from '../../packages/toolbox/lib/roadGraph.mjs';
 import { parseSites } from '../../packages/toolbox/lib/sites.mjs';
 import { loadTemplates, ModelBuilder } from '../../scripts/templatePlacement.mjs';
@@ -1054,6 +1054,11 @@ test('geography tiles are named by their corner, and rings and lines are cut to 
     assert.deepEqual([near.lakes.length, near.lakes[0].length, near.rivers.map((river) => river.rank)], [1, 2, [3, 10]], 'the far lake left out, the island kept');
     const wide = geographyLayers([water], { south: 20, north: 30, west: 50, east: 60 });
     assert.deepEqual(wide.rivers.map((river) => river.rank), [3], 'a region 1,100 km across leaves out the small river');
+    // Natural Earth's water is a backdrop: where OpenStreetMap's own is loaded it is not drawn (its coarse shores would
+    // show beside the true ones, as on Lugano's lakes, 15 October 2026); where none is, it is.
+    assert.deepEqual(backdropWater(near, null), { lakes: near.lakes, rivers: near.rivers });
+    assert.deepEqual(backdropWater(near, { areas: [], rivers: [] }), { lakes: near.lakes, rivers: near.rivers }, 'loaded, but none there');
+    assert.deepEqual(backdropWater(near, { areas: [[[46, 9], [46, 9.1], [46.1, 9.1]]], rivers: [] }), { lakes: [], rivers: [] });
 });
 
 test('a routed lane gives the roads it follows, and lanes sharing a road are drawn as one corridor carrying both', async () => {

@@ -1444,6 +1444,10 @@ try {
             ways.push({ id: 1000 + line, nodes: Array.from({ length: side }, (_unused, column) => at(line, column).id), tags: { highway: edge ? 'primary' : 'tertiary', name: `Row ${line}` } });
             ways.push({ id: 2000 + line, nodes: Array.from({ length: side }, (_unused, row) => at(row, line).id), tags: { highway: edge ? 'primary' : 'tertiary', name: `Column ${line}` } });
         }
+        // A pond in the middle of the town and a railway along its south edge, read with the roads.
+        nodes.push({ id: 950, lat: 40.012, lon: 10.012 }, { id: 951, lat: 40.012, lon: 10.018 }, { id: 952, lat: 40.018, lon: 10.018 }, { id: 953, lat: 40.018, lon: 10.012 });
+        nodes.push({ id: 960, lat: 39.998, lon: 10.0 }, { id: 961, lat: 39.998, lon: 10.05 });
+        ways.push({ id: 3000, nodes: [950, 951, 952, 953, 950], tags: { natural: 'water', name: 'Town Pond' } }, { id: 3001, nodes: [960, 961], tags: { railway: 'rail', usage: 'main' } });
         const town = { south: 39.99, west: 9.99, north: 40.06, east: 10.06 };
         const requestsBefore = host.requests.length;
         await page.click('#sampleButton');
@@ -1519,6 +1523,7 @@ try {
         assert.equal(await page.locator('#readingBar').count(), 0, 'the bar goes when the reading is done');
         assert.ok(host.progress.some((item) => /^Reading the roads of continent\.osm\.pbf$/.test(item.message)), 'the importer said how far it had got');
         assert.equal(await page.textContent('#fetchProgress li.done'), 'Roads and city streets12 roads and 1 place names, from continent.osm.pbf');
+        await page.waitForFunction((name) => document.querySelector('#dataAgeText').textContent.startsWith(`Roads read from ${name} `), 'continent.osm.pbf', { timeout: 30000 }).catch(fail);
         assert.equal(await page.textContent('#dataAgeText'), 'Roads read from continent.osm.pbf (yours): as fresh as the file.');
         // More around it is read again from the file in hand, with no dialog, whatever the public server would take.
         await area(300, 'major');
@@ -1540,6 +1545,7 @@ try {
         await page.click('#addMapButton');
         await page.waitForFunction(() => /from west\.osm\.pbf and east\.osm\.pbf$/.test(document.querySelector('#fetchProgress li.done')?.textContent ?? ''), null, { timeout: 30000 }).catch(fail);
         assert.match(await page.textContent('#fetchProgress li.done'), /^Roads and city streets\d+ roads and 1 place names, from west\.osm\.pbf and east\.osm\.pbf$/);
+        await page.waitForFunction((name) => document.querySelector('#dataAgeText').textContent.startsWith(`Roads read from ${name} `), 'west.osm.pbf and east.osm.pbf', { timeout: 30000 }).catch(fail);
         assert.match(await page.textContent('#dataAgeText'), /^Roads read from west\.osm\.pbf and east\.osm\.pbf \(yours\): OpenStreetMap as of \d+ \w+ \d{4}\.$/);
         assert.ok(!(await host.call('restoreSession', {})).inputs.some((input) => input.role === 'extract'), 'the files are not kept with the session, only what was read from them');
         // The step says what is kept, and that one may be out of date.
@@ -1578,9 +1584,15 @@ try {
         await page.click('#useMapsButton');
         await page.waitForFunction(() => document.querySelector('#fetchProgress li.done')?.textContent === 'Roads and city streets12 roads and 1 place names, from gridtown.osm.pbf');
         assert.equal(await page.isVisible('#manageMaps'), false);
+        await page.waitForFunction((name) => document.querySelector('#dataAgeText').textContent.startsWith(`Roads read from ${name} `), 'gridtown.osm.pbf', { timeout: 30000 }).catch(fail);
         assert.match(await page.textContent('#dataAgeText'), /^Roads read from gridtown\.osm\.pbf \(from OpenStreetMap France\): OpenStreetMap as of \d+ \w+ \d{4}\.$/);
         assert.equal(await page.isVisible('#dataAgeFresh'), false);
         assert.ok(await page.locator('#map path.road').count() >= 12);
+        // Its water and railways are read with its roads and kept: the pond drawn (the sample's lakes gone with the sample),
+        // and the railway there for links by rail.
+        assert.equal(await page.locator('#map path.water.lake.osm').count(), 1);
+        assert.match(await page.textContent('#coverageSummary'), /Railways\s*\d+ km/);
+        assert.ok(await stateOf(() => Boolean(window.logisticsToolboxState.lines.rail)));
         assert.deepEqual(host.requests.slice(requestsBefore).filter((url) => /overpass/.test(url)), []);
         // Two sites placed on it are linked by its streets.
         await page.click('[data-add="warehouse"]');

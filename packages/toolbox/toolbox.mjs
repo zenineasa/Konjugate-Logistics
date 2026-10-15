@@ -693,8 +693,11 @@ async function readFromFile({ choose = true } = {}) {
             }
             throw new Error(reason);
         }
-        // A new region replaces the last one's data, suggestions included (your own sites file stays).
-        for (const role of allRoles.filter((item) => item !== 'roads' && item !== 'places')) await call(api.clearFile(importerId, role));
+        // A new region replaces the last one's data, suggestions included (your own sites file stays). What the read gave
+        // stays: its roads and place names, and its water and railways where it found any (where it found none, the last
+        // area's are cleared with the rest).
+        const read = new Set(['roads', 'places', ...['water', 'rail'].filter((role) => answer.data.coverage?.[role] > 0)]);
+        for (const role of allRoles.filter((item) => !read.has(item))) await call(api.clearFile(importerId, role));
         state.roadLevel = answer.data.roadLevel;
         $('#roadLevelSelect').value = state.roadLevel;
         state.available.clear();

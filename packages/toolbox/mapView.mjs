@@ -17,6 +17,7 @@
 
 import { boundsWith } from './lib/geo.mjs';
 import { choosePlaceLabels } from './lib/labels.mjs';
+import { backdropWater } from './lib/mapData.mjs';
 import { addsToSelection, commandHeld, isMenuClick, platformKeys } from './lib/platform.mjs';
 
 const svgNamespace = 'http://www.w3.org/2000/svg';
@@ -156,8 +157,9 @@ export class MapView {
         // holes in it; a river is wider the larger Natural Earth ranks it.
         if (map.geography) {
             element('path', { d: map.geography.land.map((ring) => path(ring, true)).join(''), class: 'land', 'fill-rule': 'evenodd' }, this.base);
-            for (const lake of map.geography.lakes ?? []) scaled(element('path', { d: lake.map((ring) => path(ring, true)).join(''), class: 'water lake', 'fill-rule': 'evenodd' }, this.base), 0.8);
-            for (const river of map.geography.rivers ?? []) scaled(element('path', { d: path(river.points), class: 'water river' }, this.base), river.rank <= 4 ? 1.6 : river.rank <= 7 ? 1.1 : 0.7);
+            const backdrop = backdropWater(map.geography, map.water);
+            for (const lake of backdrop.lakes) scaled(element('path', { d: lake.map((ring) => path(ring, true)).join(''), class: 'water lake', 'fill-rule': 'evenodd' }, this.base), 0.8);
+            for (const river of backdrop.rivers) scaled(element('path', { d: path(river.points), class: 'water river' }, this.base), river.rank <= 4 ? 1.6 : river.rank <= 7 ? 1.1 : 0.7);
             for (const line of map.geography.coast) scaled(element('path', { d: path(line), class: 'coast' }, this.base), 1);
             for (const border of map.geography.borders) {
                 scaled(element('path', { d: path(border.points), class: `border${border.settled ? '' : ' unsettled'}` }, this.base), 1.2, border.settled ? null : '5 4');
