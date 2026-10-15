@@ -1674,6 +1674,40 @@ try {
         await page.waitForFunction(() => window.logisticsToolboxState.extractFile?.stored?.length === 1, null, { timeout: 30000 }).catch(fail);
         assert.equal(await stateOf(() => window.logisticsToolboxState.extractFile.name), 'alderland-latest.osm.pbf');
         noErrors();
+        // The same extract downloaded by hand (Geofabrik's dated name) and added as a file of yours is known for what it
+        // is: read from, not downloaded again. With a second of Geofabrik's extracts reaching the area and not kept, the
+        // download is proposed, and choosing your map instead names it.
+        await page.click('#manageMapsButton');
+        const removeAlder = `#mapList [data-remove-map="${await page.evaluate(() => window.logisticsToolboxState.library.find((file) => file.name === 'alderland-latest.osm.pbf').id)}"]`;
+        await page.click(removeAlder);
+        await page.click(removeAlder);
+        await page.waitForFunction(() => !window.logisticsToolboxState.library.some((file) => file.name === 'alderland-latest.osm.pbf'));
+        host.chosen.store = [await onDisk('alderland-261013.osm.pbf', host.downloads[alderUrl])];
+        await page.click('#addMapButton');
+        await page.waitForFunction(() => window.logisticsToolboxState.library.some((file) => file.name === 'alderland-261013.osm.pbf' && file.details?.bounds));
+        await page.click('#manageMapsDone');
+        await page.fill('#marginInput', '110');
+        await page.dispatchEvent('#marginInput', 'change');
+        await page.waitForFunction(() => /^From your map: .+\(OpenStreetMap as of \d+ \w+ \d{4}\)$/.test(document.querySelector('#sourceText').textContent), null, { timeout: 30000 }).catch(fail);
+        assert.match(await page.textContent('#sourceWhy'), /^Your maps cover this area/);
+        assert.equal(await page.isVisible('#downloadLoadButton'), false, 'not downloaded again');
+        // A neighbour's extract reaching into the area, not kept: its download proposed, your map an alternative that
+        // says what it lacks; chosen, the card names it.
+        const eastUrl = 'https://download.geofabrik.de/africa/east-alderland-latest.osm.pbf';
+        host.mapIndex.features.push({ type: 'Feature', properties: { id: 'east-alderland', parent: 'africa', name: 'East Alderland', urls: { pbf: eastUrl } }, geometry: { type: 'Polygon', coordinates: [[[-18.9, -30.6], [-17.5, -30.6], [-17.5, -29.2], [-18.9, -29.2], [-18.9, -30.6]]] } });
+        host.downloads[eastUrl] = writeOsmPbf({ nodes: alderNodes.slice(0, 2), ways: [], bounds: { south: -30.6, west: -18.9, north: -29.2, east: -17.5 } });
+        // The index is kept a week: the one fetched before this extract was added is let go, as a week later it would be.
+        await host.cache.clear();
+        await page.evaluate(() => { window.logisticsToolboxState.covering = null; });
+        await page.fill('#marginInput', '130');
+        await page.dispatchEvent('#marginInput', 'change');
+        await page.waitForFunction(() => /^From Geofabrik: East Alderland, Africa, with your /.test(document.querySelector('#sourceText').textContent), null, { timeout: 30000 }).catch(fail);
+        await page.click('#changeSourceButton');
+        assert.match(await page.textContent('#sourceChoices li:has([data-source="kept"])'), /^From your map: .+Part of this area only: East Alderland, Africa is not kept\.$/);
+        await page.click('#sourceChoices [data-source="kept"]');
+        assert.match(await page.textContent('#sourceText'), /^From your map: .+\S/, 'named, not left empty after the colon');
+        assert.doesNotMatch(await page.textContent('#sourceText'), /: $/);
+        noErrors();
     }
 
     console.log(`✓ logistics network window: the sample region loads its roads alone; ${placements.length} pins placed from the palette are linked and routed as suggested; every action works from a button or menu, a drag or a right click, and the keyboard, and undoes; a moved store re-routes its one link in ${routing.milliseconds < 1 ? 'under a millisecond' : `${routing.milliseconds.toFixed(0)} ms`}; links are drawn, refused with a reason, deleted and not suggested again; the model is built from the pins and links, a copy for each of its three categories (${built.match(/\d+ nodes/)[0]}), its stores holding stock and its links on the vehicles chosen on their cards, from their menus and with V;${process.env.KONJUGATE_ENGINE === 'export' ? ' a store whose road closes runs out of stock a supplier short and late is ringed on the map, a closed store keeps its stock and loses its sales and the failures of suppliers and warehouses are ranked by what they cost;' : ''} ports and towns are suggested only when asked for and adopted; the network saves as a CSV and loads back; the session restores it, and an earlier session is migrated; shortcuts behave and read as Windows and Linux users and Mac users expect; a network is kept with the project before any build; an area loaded is kept on the computer and loads again with nothing fetched, fresh on request, and the cache clears; a searched region fetches its roads and place names alone, and ports only when asked for.`);

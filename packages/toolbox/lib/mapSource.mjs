@@ -10,9 +10,23 @@ export const largeAcross = { major: 120, city: 30 };
 const coversRect = (outer, inner) => outer && inner.south >= outer.south && inner.north <= outer.north && inner.west >= outer.west && inner.east <= outer.east;
 const overlapsRect = (a, b) => a && !(b.north < a.south || b.south > a.north || b.east < a.west || b.west > a.east);
 
-// The kept map a covering extract is: the one downloaded from its address, or kept with its index id.
+// What a map file is named for, without its date or its "latest" and its ending: "switzerland" for Geofabrik's
+// switzerland-latest.osm.pbf and for the switzerland-261013.osm.pbf a user downloaded by hand.
+export const mapStem = (name) => decodeURIComponent(String(name ?? '').split('/').pop()).toLowerCase().replace(/(-(latest|\d{6}))?(-free)?\.osm\.pbf$/, '');
+// Whether two boxes are much the same area: they overlap by more than half of what they cover together. Unknown (either
+// missing) counts as agreeing.
+function sameArea(a, b) {
+    if (!a || !b) return true;
+    const overlap = Math.max(0, Math.min(a.north, b.north) - Math.max(a.south, b.south)) * Math.max(0, Math.min(a.east, b.east) - Math.max(a.west, b.west));
+    const size = (box) => (box.north - box.south) * (box.east - box.west);
+    return overlap / (size(a) + size(b) - overlap) > 0.5;
+}
+// The kept map a covering extract is: the one downloaded from its address, or kept with its index id; else a file of
+// the user's of the same name (a Geofabrik extract downloaded by hand) whose own bounds are much the extract's.
 export function keptAs(kept, map) {
-    return kept.find((file) => file.origin?.url === map.url || (map.id && file.details?.indexId === map.id)) ?? null;
+    return kept.find((file) => file.origin?.url === map.url || (map.id && file.details?.indexId === map.id))
+        ?? kept.find((file) => file.origin?.kind !== 'download' && mapStem(file.name) === mapStem(map.url) && sameArea(file.details?.bounds, map.bounds))
+        ?? null;
 }
 
 // `bbox` the area, `across` its width in km, `level` 'major' or 'city', `serverLimit` the most the server is asked for

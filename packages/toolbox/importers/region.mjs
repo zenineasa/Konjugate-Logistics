@@ -478,7 +478,7 @@ function mapsCoveringStep(file, options) {
     let index;
     try { index = readMapIndex(file.text); } catch (error) { return failure(error.message); }
     const { maps, uncovered } = mapsCovering(index, bbox);
-    return { ok: true, data: { step: 'mapsCovering', maps: maps.map(({ id, name, parent, url, checksumUrl, area }) => ({ id, name, parent, url, checksumUrl, area: Math.round(area) })), uncovered }, report: { errors: [], warnings: [] } };
+    return { ok: true, data: { step: 'mapsCovering', maps: maps.map(({ id, name, parent, url, checksumUrl, bounds, area }) => ({ id, name, parent, url, checksumUrl, bounds, area: Math.round(area) })), uncovered }, report: { errors: [], warnings: [] } };
 }
 
 async function roadsStep(answers, options, helpers) {

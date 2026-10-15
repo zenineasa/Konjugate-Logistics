@@ -53,7 +53,10 @@ export function readMapIndex(answer) {
         // The outer ring of each polygon: the holes of a country's outline (an enclave) are not worth the cost here.
         const rings = polygons.map((polygon) => polygon[0]).filter((ring) => Array.isArray(ring) && ring.length >= 3);
         if (!rings.length) return [];
-        return [{ id: properties.id, name: properties.name, parent: properties.parent ? names.get(properties.parent) ?? properties.parent : null, url, checksumUrl: checksumUrlOf(url), rings, area: rings.reduce((sum, ring) => sum + ringArea(ring), 0) }];
+        // Its bounds too, to know a copy of it kept under another name (a file of the user's).
+        const points = rings.flat();
+        const bounds = { south: Math.min(...points.map((point) => point[1])), west: Math.min(...points.map((point) => point[0])), north: Math.max(...points.map((point) => point[1])), east: Math.max(...points.map((point) => point[0])) };
+        return [{ id: properties.id, name: properties.name, parent: properties.parent ? names.get(properties.parent) ?? properties.parent : null, url, checksumUrl: checksumUrlOf(url), rings, bounds, area: rings.reduce((sum, ring) => sum + ringArea(ring), 0) }];
     });
 }
 

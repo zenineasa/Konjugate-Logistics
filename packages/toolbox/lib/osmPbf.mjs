@@ -272,7 +272,9 @@ export function readExtract(bytes, { bbox, roadLevel = 'major', inflate, places:
     const ways = [];
     const refs = new Numbers();
     const withNodes = [];
-    const withWays = [];
+    // The blocks that hold ways, each with the lowest and highest way id in it: the ways a relation is made of are read
+    // again from those blocks alone whose ids could hold them, a handful, not every block of ways.
+    const wayBlocks = [];
     // Relations of water: { id, tags, members: [{ ref, role }] }, and the ids of the ways they are made of.
     const relations = [];
     const memberWays = new Set();
@@ -322,19 +324,27 @@ export function readExtract(bytes, { bbox, roadLevel = 'major', inflate, places:
         blocks += 1;
         const { strings, groups } = block(blob.data());
         const interesting = new Set(keysOfInterest.map((key) => strings.indexOf(key)).filter((at) => at >= 0));
+        // A tag's value by its key, comparing the block's string indices, not decoded strings.
+        const keyIndex = new Map(['highway', 'railway', 'waterway', 'natural', 'water', 'name', 'type'].map((key) => [key, strings.indexOf(key)]));
+        const tagIn = (keys, values) => (name) => {
+            const wanted = keyIndex.get(name);
+            if (wanted < 0) return undefined;
+            const at = keys.indexOf(wanted);
+            return at < 0 ? undefined : strings.at(values[at]);
+        };
         let hasNodes = false;
-        let hasWays = false;
+        let lowestWay = Infinity;
+        let highestWay = -Infinity;
         for (const group of groups) {
             while (group.more) {
                 const [field, wire] = group.tag();
                 if (field === 1 || field === 2) { hasNodes = true; group.skip(wire); continue; }
                 if (field === 3 && wire === 2) {
-                    hasWays = true;
-                    if (!interesting.size) { group.skip(wire); continue; }
                     const { id, keys, values, nodeIds } = readWay(group.sub());
-                    if (!nodeIds || !keys.some((key) => interesting.has(key))) continue;
-                    const tag = (name) => { const at = keys.findIndex((key) => strings.at(key) === name); return at < 0 ? undefined : strings.at(values[at]); };
-                    const kind = wayKind(tag, wantedRoads, layers);
+                    if (id < lowestWay) lowestWay = id;
+                    if (id > highestWay) highestWay = id;
+                    if (!nodeIds || !interesting.size || !keys.some((key) => interesting.has(key))) continue;
+                    const kind = wayKind(tagIn(keys, values), wantedRoads, layers);
                     if (!kind) continue;
                     keep(id, kind, tagsOf(strings, keys, values, kind === 'road' ? roadTags : lineTags[kind]), nodeIds);
                     continue;
@@ -358,7 +368,7 @@ export function readExtract(bytes, { bbox, roadLevel = 'major', inflate, places:
                         else if (part === 10 && partWire === 2) types = packed(relation.sub(), (reader) => reader.varint());
                         else relation.skip(partWire);
                     }
-                    const tag = (name) => { const at = keys.findIndex((key) => strings.at(key) === name); return at < 0 ? undefined : strings.at(values[at]); };
+                    const tag = tagIn(keys, values);
                     if (wayKind(tag, new Set(), { water: true }) !== 'water' || (tag('type') && tag('type') !== 'multipolygon')) continue;
                     const members = ids.map((ref, at) => ({ ref, role: strings.at(roles[at]) ?? '', type: types[at] })).filter((member) => member.type === 1).map(({ ref, role }) => ({ ref, role }));
                     if (!members.length) continue;
@@ -370,16 +380,23 @@ export function readExtract(bytes, { bbox, roadLevel = 'major', inflate, places:
             }
         }
         if (hasNodes) withNodes.push(index);
-        if (hasWays) withWays.push(index);
+        if (highestWay >= lowestWay) wayBlocks.push({ index, lowest: lowestWay, highest: highestWay });
     }
     if (!sawHeader) throw new Error('This is not an OpenStreetMap extract (.osm.pbf): it has no header.');
     // The ways the relations of water are made of: read again from the blocks that hold ways.
     if (memberWays.size) {
-        const wayBlocks = new Set(withWays);
+        const members = [...memberWays].sort((a, b) => a - b);
+        const holds = ({ lowest, highest }) => {
+            let low = 0;
+            let high = members.length;
+            while (low < high) { const middle = (low + high) >> 1; if (members[middle] < lowest) low = middle + 1; else high = middle; }
+            return low < members.length && members[low] <= highest;
+        };
+        const needed = new Set(wayBlocks.filter(holds).map((item) => item.index));
         index = -1;
         for (const blob of blobs(bytes, inflate)) {
             index += 1;
-            if (!wayBlocks.has(index)) continue;
+            if (!needed.has(index)) continue;
             const { groups } = block(blob.data());
             for (const group of groups) {
                 while (group.more) {

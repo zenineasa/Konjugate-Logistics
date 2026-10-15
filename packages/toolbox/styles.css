@@ -65,9 +65,10 @@ input[type="number"] { width: 72px; }
 .chosen { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin: 8px 0; }
 .chosenName { color: var(--bright); font-weight: 600; }
 .progress { list-style: none; padding: 0; margin: 8px 0; font-size: 12px; }
-.progress li { display: flex; justify-content: space-between; padding: 3px 0; color: var(--muted); border-bottom: 1px solid rgba(30, 57, 77, 0.4); }
+.progress li { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; color: var(--muted); border-bottom: 1px solid rgba(30, 57, 77, 0.4); }
 .progress li.done { color: var(--text); }
 .progress li.failed { color: var(--danger); }
+.progress li .state { text-align: right; overflow-wrap: anywhere; }
 .notice { border-radius: 6px; padding: 8px 10px; margin: 6px 0; font-size: 12px; border-left: 3px solid var(--border-strong); background: var(--surface); line-height: 1.4; }
 .notice.warning { border-left-color: var(--warn); }
 .notice.error { border-left-color: var(--danger); color: #ffd9d9; }

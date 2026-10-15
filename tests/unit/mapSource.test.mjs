@@ -61,3 +61,24 @@ test('with no index to look in, a kept map whose bounds hold the area may cover 
 test('sizes read as a person reads them', () => {
     assert.deepEqual([bytesText(1141 * 1024 ** 2), bytesText(548 * 1024 ** 2), bytesText(3463632), bytesText(500), bytesText(0), bytesText(null)], ['1.1 GB', '548 MB', '3 MB', '1 KB', null, null]);
 });
+
+test('a Geofabrik extract downloaded by hand and added as a file of yours is known for what it is, by its name and its bounds', async () => {
+    const { keptAs, mapStem } = await import('../../packages/toolbox/lib/mapSource.mjs');
+    assert.deepEqual(['switzerland-261013.osm.pbf', 'switzerland-latest.osm.pbf', 'https://download.geofabrik.de/europe/italy/nord-ovest-latest.osm.pbf', 'Nord-Ovest-261013.osm.pbf'].map(mapStem), ['switzerland', 'switzerland', 'nord-ovest', 'nord-ovest']);
+    // As kept on 14 October 2026: uploads, with the bounds their headers give.
+    const swiss = { id: 'c'.repeat(32), name: 'switzerland-261013.osm.pbf', origin: { kind: 'upload', name: 'switzerland-261013.osm.pbf' }, details: { bounds: { south: 45.8164, west: 5.9544, north: 47.8084, east: 10.4921 } } };
+    const italy = { id: 'd'.repeat(32), name: 'nord-ovest-261013.osm.pbf', origin: { kind: 'upload', name: 'nord-ovest-261013.osm.pbf' }, details: { bounds: { south: 43.4393, west: 5.5347, north: 47.0601, east: 10.5026 } } };
+    const withBounds = (map, bounds) => ({ ...map, bounds });
+    const swissMap = withBounds(switzerland, { south: 45.81, west: 5.95, north: 47.81, east: 10.5 });
+    const italyMap = withBounds(nordOvest, { south: 43.43, west: 5.53, north: 47.07, east: 10.51 });
+    assert.equal(keptAs([swiss, italy], swissMap), swiss);
+    assert.equal(keptAs([swiss, italy], italyMap), italy);
+    // Lugano with both kept: read from them, no download proposed (it was: "From Geofabrik: Switzerland and Nord-Ovest, 1.1 GB").
+    const proposal = proposeSource({ bbox: lugano, across: 40, level: 'city', serverLimit: 40, kept: [swiss, italy], covering: { maps: [swissMap, italyMap], uncovered: 0 }, sizes });
+    assert.deepEqual([proposal.kind, proposal.use.map((file) => file.name), proposal.download, proposal.sure], ['kept', ['switzerland-261013.osm.pbf', 'nord-ovest-261013.osm.pbf'], [], true]);
+    // A file of the same name that covers somewhere else is not taken for it.
+    const elsewhere = { ...swiss, details: { bounds: { south: 10, west: 10, north: 11, east: 11 } } };
+    assert.equal(keptAs([elsewhere], swissMap), null);
+    // Nor is a download from another address of the same name (it is known by its own address).
+    assert.equal(keptAs([{ ...swiss, origin: { kind: 'download', url: 'https://download.openstreetmap.fr/extracts/europe/switzerland-latest.osm.pbf' } }], swissMap), null);
+});

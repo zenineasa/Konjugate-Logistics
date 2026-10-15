@@ -1040,7 +1040,11 @@ function renderSource(proposal) {
     let text = '';
     if (kind === 'working') text = '<span class="muted">Looking for the maps that cover it…</span>';
     else if (kind === 'hand') text = `From ${escape(state.extractFile.name)}`;
-    else if (kind === 'kept') text = `From your map${proposal.use.length === 1 ? '' : 's'}: ${escape(sourceNames(proposal.use))}${dates(proposal.use).length ? ` (OpenStreetMap as of ${dayOfDate(dates(proposal.use)[0])})` : ''}`;
+    else if (kind === 'kept') {
+        // Proposed, the maps that cover it; chosen instead, every kept map that reaches it.
+        const files = proposal.kind === 'kept' ? proposal.use : proposal.overlapping;
+        text = `From your map${files.length === 1 ? '' : 's'}: ${escape(sourceNames(files))}${dates(files).length ? ` (OpenStreetMap as of ${dayOfDate(dates(files)[0])})` : ''}`;
+    }
     else if (kind === 'download') text = `From Geofabrik: ${escape(sourceNames(proposal.download))}${proposal.use.length ? `, with your ${escape(sourceNames(proposal.use))}` : ''}<br><span class="muted small">${proposal.bytes ? `${bytesText(proposal.bytes)}, ` : ''}downloaded once and kept</span>`;
     else if (kind === 'server') text = 'From OpenStreetMap\'s server';
     else text = '<span class="danger">No way to these roads yet</span>';
@@ -1052,7 +1056,10 @@ function renderSource(proposal) {
 }
 const choiceText = {
     server: () => ['From OpenStreetMap\'s server', 'Asked for this area now; slow for a large one.'],
-    kept: (proposal) => [`From your map${proposal.overlapping.length === 1 ? '' : 's'}: ${sourceNames(proposal.overlapping)}`, 'They may not hold all of this area.'],
+    // Offered when they do not cover it all, or when which maps do is not known: said which.
+    kept: (proposal) => [`From your map${proposal.overlapping.length === 1 ? '' : 's'}: ${sourceNames(proposal.overlapping)}`, proposal.download.length
+        ? `Part of this area only: ${sourceNames(proposal.download)} ${proposal.download.length === 1 ? 'is' : 'are'} not kept.`
+        : 'Whether they hold all of this area is not known: Geofabrik\'s index of maps could not be read.'],
     download: (proposal) => [`Download from Geofabrik: ${sourceNames(proposal.download)}`, `${proposal.bytes ? `${bytesText(proposal.bytes)}, ` : ''}kept on this computer.`],
     file: () => ['A file of yours…', 'A .osm.pbf file from your disk, copied in and kept.']
 };
