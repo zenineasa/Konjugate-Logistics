@@ -573,7 +573,8 @@ async function loadRoads({ keepNetwork = false } = {}) {
     const started = performance.now();
     state.router = createNetworkRouter(answer.data.graph);
     // Railways and navigable waterways, where they were loaded: links by rail and by water are routed along them.
-    state.lines = Object.fromEntries(Object.entries(answer.data.graphs ?? {}).map(([mode, graph]) => [mode, createNetworkRouter(graph)]));
+    // A mode loaded with none in the area is null: its links say there is none here, not that it should be loaded again.
+    state.lines = Object.fromEntries(Object.keys(answer.data.lineKilometres ?? {}).map((mode) => [mode, answer.data.graphs?.[mode] ? createNetworkRouter(answer.data.graphs[mode]) : null]));
     state.routerMilliseconds = performance.now() - started;
     state.portVolume ??= answer.data.defaults.portTeuPerDay;
     $('#portVolume').value = state.portVolume;
@@ -1624,7 +1625,10 @@ function cycleVehicles() {
 function modeRefusal(link, mode) {
     const kind = kindOfLink(link);
     if (!carriesVehicles(kind)) return 'Deliveries to a customer area have no vehicles of their own: they go by a delivery service.';
-    return modeProblem(mode, kind) ?? (mode !== 'road' && !state.lines?.[mode] ? `No ${modes[mode].noun === 'railway' ? 'railways are' : 'navigable waterways are'} loaded for this area: load the area again to fetch them.` : null);
+    if (modeProblem(mode, kind) || mode === 'road' || state.lines?.[mode]) return modeProblem(mode, kind);
+    // Loaded, and none here; or not loaded at all.
+    if (state.lines && mode in state.lines) return mode === 'rail' ? 'No railway is mapped in the area loaded.' : 'No waterway in the area loaded is marked as navigable for freight (by its CEMT class, or for ships).';
+    return `No ${mode === 'rail' ? 'railways are' : 'navigable waterways are'} loaded for this area: load the area again to fetch them.`;
 }
 // The links given carried by `mode`, each made the user's, its vehicles its mode's (a freight train or a barge is added
 // to the catalogue, its figures assumed, when it has none): one step to undo. Links that may not are left as they are,

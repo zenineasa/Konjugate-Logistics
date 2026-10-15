@@ -250,8 +250,9 @@ test('railways, waterways and water are read when asked for: a lake of two ways 
     const drawn = waterOf(readOverpass(answers.water));
     assert.deepEqual(drawn.areas.map((area) => [area.name, area.rings.map((ring) => ring.length)]), [['Mill Pond', [4]], ['Lago', [5, 4]]]);
     assert.deepEqual([drawn.lines.map((line) => [line.name, line.freight]), drawn.open], [[['Grand River', 'IV']], 0]);
-    // The railway's graph keeps the main line and leaves the siding out; the river is a waterway a barge may take.
-    assert.equal(Math.round(buildLineGraph(readOverpass(answers.rail), 'rail').kilometres), 4);
+    // The railway's graph has the main line and its siding (a branch may join the line only through one); the river is
+    // a waterway a barge may take.
+    assert.equal(Math.round(buildLineGraph(readOverpass(answers.rail), 'rail').kilometres), 5);
     assert.equal(Math.round(buildLineGraph(readOverpass(answers.water), 'water').kilometres), 4);
     // Not asked for, none is read, and the roads are the same.
     const plain = readExtract(data, { bbox: wide, roadLevel: 'major', inflate: inflateSync });

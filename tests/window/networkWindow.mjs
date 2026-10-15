@@ -1593,6 +1593,9 @@ try {
         assert.equal(await page.locator('#map path.water.lake.osm').count(), 1);
         assert.match(await page.textContent('#coverageSummary'), /Railways\s*\d+ km/);
         assert.ok(await stateOf(() => Boolean(window.logisticsToolboxState.lines.rail)));
+        // Water was read too, and the town has none a barge may take: known as none here, not as not loaded.
+        assert.deepEqual(await stateOf(() => ['water' in window.logisticsToolboxState.lines, window.logisticsToolboxState.lines.water]), [true, null]);
+        assert.match(await page.textContent('#coverageSummary'), /Waterways for barges\s*none marked as navigable for freight here/);
         assert.deepEqual(host.requests.slice(requestsBefore).filter((url) => /overpass/.test(url)), []);
         // Two sites placed on it are linked by its streets.
         await page.click('[data-add="warehouse"]');

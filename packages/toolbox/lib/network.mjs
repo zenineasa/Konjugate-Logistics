@@ -237,7 +237,8 @@ export function routeLinks(pins, links, router, lines = {}) {
         const ends = `${mode === 'road' ? '' : `${mode}|`}${from.lat},${from.lon}|${to.lat},${to.lon}`;
         if (link.leg && link.ends === ends) continue;
         if (mode === 'road') link.leg = router.route(from, to);
-        else if (!lines[mode]) link.leg = { problem: 'none' };
+        // Not loaded at all, or loaded and none there (`lines[mode]` null): said apart, as loading again helps only the first.
+        else if (!lines[mode]) link.leg = { problem: mode in lines ? 'empty' : 'none' };
         else {
             const along = lines[mode].routeAlong(from, to, modes[mode].reach);
             link.leg = along.leg ?? along;

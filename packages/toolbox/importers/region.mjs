@@ -24,7 +24,7 @@ import { holidaysForModel } from '../lib/holidays.mjs';
 import { portwatchAttribution } from '../lib/portwatch.mjs';
 import { tilesFor } from '../lib/geography.mjs';
 import { geographyAttribution, geographyLayers, linesLayers, mapLayers } from '../lib/mapData.mjs';
-import { buildLineGraph, isFreightRail, waterOf } from '../lib/modes.mjs';
+import { buildLineGraph, isRunningLine, waterOf } from '../lib/modes.mjs';
 import { ModelBuilder } from '../lib/modelBuilder.mjs';
 import { buildRegionModel, regionModelDefaults } from '../lib/regionModel.mjs';
 import { generateOperator, parseOperator } from '../lib/operator.mjs';
@@ -515,7 +515,8 @@ async function roadsStep(answers, options, helpers) {
         return failure(`The railways and water could not be read: ${error.message}`);
     }
     const water = lines.water ? waterOf(lines.water) : null;
-    const railLines = (lines.rail ?? []).filter((feature) => isFreightRail(feature.tags) && feature.line);
+    // Drawn: the running lines; routed over (buildLineGraph): every track, sidings and yards too.
+    const railLines = (lines.rail ?? []).filter((feature) => isRunningLine(feature.tags) && feature.line);
     const drawn = linesLayers({ water, rail: railLines.map((feature) => feature.line) }, bbox);
     map.rail = drawn.rail;
     if (drawn.water) map.water = drawn.water;

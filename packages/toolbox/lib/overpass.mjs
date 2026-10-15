@@ -20,7 +20,7 @@ export function overpassQueries(bbox, { roadLevel = 'major' } = {}) {
         ports: `${head}(nwr["landuse"="port"]${box};nwr["industrial"="port"]${box};nwr["harbour"="yes"]${box};nwr["seamark:type"="harbour"]${box};nwr["leisure"="marina"]${box};nwr["seamark:type"="anchorage"]${box};nwr["seamark:type"="anchor_berth"]${box};);out geom qt;`,
         logistics: `${head}(way["building"="warehouse"]${box};nwr["industrial"~"^(warehouse|logistics|distribution)$"]${box};)->.w;.w out bb qt;(way["landuse"="industrial"]${box};relation["landuse"="industrial"]${box};)->.l;.l out geom qt;`,
         roads: `${head}way["highway"~"^(${roadLevel === 'city' ? cityRoads : majorRoads})$"]${box};out geom qt;`,
-        rail: `${head}(way["railway"="rail"]["service"!~"^(siding|spur|yard)$"]${box};)->.r;.r out geom qt;(nwr["railway"="yard"]${box};nwr["landuse"="railway"]${box};nwr["railway"="station"]["usage"="freight"]${box};)->.y;.y out center qt;`,
+        rail: `${head}(way["railway"="rail"]${box};)->.r;.r out geom qt;(nwr["railway"="yard"]${box};nwr["landuse"="railway"]${box};nwr["railway"="station"]["usage"="freight"]${box};)->.y;.y out center qt;`,
         places: `${head}node["place"~"^(city|town|suburb|quarter)$"]${box};out qt;`,
         // Water to draw (lakes, reservoirs and rivers mapped as areas, named or of those kinds, and rivers and canals as
         // lines) and the waterways a barge may route over (rivers, canals and fairways, their navigability in their tags).

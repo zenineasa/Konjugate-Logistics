@@ -35,10 +35,11 @@ export function modeProblem(mode, kind) {
     return `A link to a ${kind === 'darkStore' ? 'dark store' : kind === 'store' ? 'store' : 'customer area'} goes by road: ${modes[mode].name.toLowerCase()} carries from suppliers and ports to warehouses, and between warehouses.`;
 }
 
-// Why a link by rail or by water could not be routed, as the router said (routing.mjs, routeAlong; or 'none' when no
-// line of the mode was loaded), in words naming its sites.
+// Why a link by rail or by water could not be routed, as the router said (routing.mjs, routeAlong; 'none' when no
+// line of the mode was loaded, 'empty' when they were and the area has none), in words naming its sites.
 export function modeLegProblem(leg, mode, from, to) {
     const { noun, reach } = modes[mode];
+    if (leg.problem === 'empty') return mode === 'rail' ? `No railway is mapped in the area loaded, so ${from} → ${to} cannot go by rail.` : `No waterway in the area loaded is marked as navigable for freight (by its CEMT class, or for ships), so ${from} → ${to} cannot go by water.`;
     if (leg.problem === 'none') return `No ${noun} is loaded for this area, so ${from} → ${to} cannot go by ${mode}: load the area again to fetch the ${noun === 'railway' ? 'railways' : 'waterways'}.`;
     if (leg.problem === 'apart') return `No ${noun} loaded joins ${from} and ${to}: the ${noun === 'railway' ? 'lines' : 'waterways'} at the two ends do not meet in the area loaded.`;
     const site = leg.end === 'from' ? from : to;
@@ -60,9 +61,13 @@ export function freightClass(tags = {}) {
     return null;
 }
 
-// Railways a freight train may run on: OpenStreetMap's main, branch and industrial lines, not sidings, spurs, yards or
-// crossovers (a site within reach of the line is at it), and not those disused, abandoned, preserved or for trams.
-export const isFreightRail = (tags = {}) => tags.railway === 'rail' && !/^(siding|spur|yard|crossover)$/.test(tags.service ?? '') && !/^(tourism|military)$/.test(tags.usage ?? '');
+// Railways a freight train may run on: OpenStreetMap's railway lines, not those for tourism, the military or trams.
+// Sidings, spurs, yards and crossovers are tracks too, and are how an industrial branch joins the main line (in the
+// Vedeggio valley by Lugano only through them, 15 October 2026): left out, the branch was an island and a link from a
+// site beside it could not be routed. So they are routed over, and a site may be at its own siding; the map draws the
+// running lines alone (`isRunningLine`), as the tracks of a yard would only clutter it.
+export const isFreightRail = (tags = {}) => tags.railway === 'rail' && !/^(tourism|military)$/.test(tags.usage ?? '');
+export const isRunningLine = (tags = {}) => isFreightRail(tags) && !/^(siding|spur|yard|crossover)$/.test(tags.service ?? '');
 
 // Joins lines that meet end to end into closed rings (a lake drawn as several ways, as most large ones are). `lines` are
 // arrays of { lat, lon }; a line already closed is a ring as it is. Returns { rings, open } (how many pieces could not
