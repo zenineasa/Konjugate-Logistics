@@ -2,6 +2,8 @@
 
 A logistics extension for [Konjugate](https://github.com/zenineasa/Konjugate), the open-source, graph-native simulation engine. It models how goods move from suppliers and ports through warehouses to stores and customers, on the vehicles that carry them, as stocks and flows that Konjugate integrates over time.
 
+[![Break It Before the World Does | Series | Konjugate Logistics](assets/ForReadme/youtubeVideoThumbnail.png)](https://www.youtube.com/watch?v=l-rHUY-JdoY)
+
 ## Status
 
 Early development. Where it is going: [docs/direction.md](docs/direction.md) (a general supply network, milestones A to I; the first two, sites with roles on a map and their links, are built as [docs/mapFirst.md](docs/mapFirst.md) describes). Picking up the work: [docs/handover.md](docs/handover.md). Showing it to someone: [docs/walkthrough.md](docs/walkthrough.md), a script on an invented grocery network in Bangalore. What exists today:
