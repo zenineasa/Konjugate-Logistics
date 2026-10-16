@@ -13,8 +13,11 @@ const { createPackageArchive } = await import(pathToFileURL(konjugateModule('src
 const packageDirectory = join(logisticsRoot, 'packages', 'engine');
 const outputDirectory = join(logisticsRoot, 'out');
 
-// package.json is the single source of the version, so release tags always match the packages.
-const { version } = JSON.parse(await readFile(join(logisticsRoot, 'package.json'), 'utf8'));
+// package.json is the single source of the version, so release tags always match the packages, and of the lowest Konjugate they
+// have been tested on (see Konjugate's docs/packageDevelopment.md, Compatibility). It is required: a package that forgets it
+// would silently claim to run on any Konjugate.
+const { version, minimumKonjugateVersion } = JSON.parse(await readFile(join(logisticsRoot, 'package.json'), 'utf8'));
+if (!minimumKonjugateVersion) throw new Error('package.json must declare minimumKonjugateVersion, the lowest Konjugate these packages have been tested on.');
 const manifest = { ...JSON.parse(await readFile(join(packageDirectory, 'plugin.json'), 'utf8')), version };
 const files = {};
 // Example models are generated from the templates by scripts/buildModels.mjs and shipped with a
@@ -42,7 +45,7 @@ for (const contribution of manifest.contributes) {
 const archive = createPackageArchive({
     packageManifest: {
         format: 'konjugate-package', formatVersion: 1, packageType: 'plugin',
-        packageId: manifest.pluginId, name: manifest.name, version: manifest.version,
+        packageId: manifest.pluginId, name: manifest.name, version: manifest.version, minimumKonjugateVersion,
         contents: { manifest: 'plugin.json' }
     },
     contributionManifest: manifest,
@@ -75,7 +78,7 @@ for (const [kind, answer] of Object.entries(syntheticRegion())) toolboxFiles[`sa
 const toolboxArchive = createPackageArchive({
     packageManifest: {
         format: 'konjugate-package', formatVersion: 1, packageType: 'addon',
-        packageId: toolboxManifest.addonId, name: toolboxManifest.name, version: toolboxManifest.version,
+        packageId: toolboxManifest.addonId, name: toolboxManifest.name, version: toolboxManifest.version, minimumKonjugateVersion,
         contents: { manifest: 'addon.json' }
     },
     contributionManifest: toolboxManifest,
