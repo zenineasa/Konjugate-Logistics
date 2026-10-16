@@ -2,7 +2,7 @@
 
 A logistics extension for [Konjugate](https://github.com/zenineasa/Konjugate), the open-source, graph-native simulation engine. It models how goods move from suppliers and ports through warehouses to stores and customers, on the vehicles that carry them, as stocks and flows that Konjugate integrates over time.
 
-[![Break It Before the World Does | Series | Konjugate Logistics](assets/ForReadme/youtubeVideoThumbnail.png)](https://www.youtube.com/watch?v=l-rHUY-JdoY)
+[![Break It Before the World Does | Series | Konjugate Logistics](assets/ForReadme/youtubeVideoThumbnail.png)](https://www.youtube.com/watch?v=X8D1G_xipbI)
 
 ## Status
 
