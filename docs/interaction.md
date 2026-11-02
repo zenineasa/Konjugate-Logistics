@@ -86,6 +86,7 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 | Keep a map file on this computer | Download and load on the place card; or Manage maps: Add files of yours (.osm.pbf only), or a link and Download, with each server's downloads a link away | | |
 | Read roads from kept maps | Load roads on the place card when they cover the area; or tick them under Manage maps and Read roads from the maps ticked | | |
 | Update or remove a kept map | Update, or Remove pressed twice, under Manage maps | | |
+| Continue or give up a download that stopped | Resume, or Discard pressed twice, under Unfinished downloads in Manage maps; or the same Download or Download and load again, which continues it | | |
 | Open or close Manage maps | Manage maps at the foot of the Map step; Done | | Escape closes it |
 | Clear the maps kept on this computer | Clear at the foot of the Map step | | |
 | Make a supplier short or late | A supplier short or late, in the Scenarios step's picker: which supplier, of which goods, how short, how late and what its warehouses do meanwhile; Run | Its menu on the map, "Make it late or short…", which opens that scenario with it chosen | |

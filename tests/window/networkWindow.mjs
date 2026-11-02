@@ -1616,6 +1616,41 @@ try {
         await page.click(`#mapList [data-update-map="${gridtownId}"]`);
         await page.waitForFunction((id) => /is updated/.test(document.querySelector('#mapLibraryStatus').textContent) && !document.querySelector(`#mapList [data-map="${id}"]`), gridtownId);
         assert.equal((await rows()).filter((row) => row[1] === 'gridtown.osm.pbf').length, 1, 'one copy, the new one');
+        // A download that drops keeps what arrived: listed under Manage maps, resumed from the byte where it stopped (only the
+        // rest asked for), or discarded on a second press.
+        const droppedUrl = 'https://download.openstreetmap.fr/extracts/europe/dropped.osm.pbf';
+        host.downloads[droppedUrl] = host.downloads['https://download.openstreetmap.fr/extracts/europe/gridtown.osm.pbf'];
+        const half = Math.floor(host.downloads[droppedUrl].length / 2);
+        host.dropAt[droppedUrl] = half;
+        await page.fill('#mapLinkInput', droppedUrl);
+        await page.click('#mapLinkButton');
+        await page.waitForSelector('#partialList li[data-partial]');
+        assert.match(await page.textContent('#mapLibraryStatus'), /connection reset\. What arrived is kept: downloading it again continues from there, or Manage maps can resume or discard it\.$/);
+        assert.match(await page.textContent('#mapLibrarySummary'), /1 download unfinished$/);
+        assert.match(await page.textContent('#partialList .about'), /^.+ of .+ · from OpenStreetMap France, stopped \d+ \w+ \d{4}$/);
+        assert.equal((await rows()).filter((row) => row[1] === 'dropped.osm.pbf').length, 0, 'half a file is not a map');
+        host.rangesAsked.length = 0;
+        await page.click('#partialList [data-resume-download]');
+        await page.waitForFunction(() => document.querySelector('#partialBox').hidden && /dropped\.osm\.pbf is downloaded/.test(document.querySelector('#mapLibraryStatus').textContent));
+        assert.deepEqual(host.rangesAsked, [half], 'only the rest was asked for');
+        assert.ok(host.progress.some((item) => item.stage === 'download' && item.resumedFrom === half), 'the window was told where it continued from');
+        assert.match(await page.textContent('#mapLibraryStatus'), /its checksum matched/);
+        const droppedRemove = `#mapList [data-remove-map="${await page.evaluate(() => window.logisticsToolboxState.library.find((file) => file.name === 'dropped.osm.pbf').id)}"]`;
+        await page.click(droppedRemove);
+        await page.click(droppedRemove);
+        await page.waitForFunction(() => !window.logisticsToolboxState.library.some((file) => file.name === 'dropped.osm.pbf'));
+        host.dropAt[droppedUrl] = half;
+        await page.fill('#mapLinkInput', droppedUrl);
+        await page.click('#mapLinkButton');
+        await page.waitForSelector('#partialList li[data-partial]');
+        const discard = '#partialList [data-discard-download]';
+        await page.click(discard);
+        assert.equal(await page.textContent(discard), 'Discard for good?');
+        assert.equal(await page.locator('#partialList li[data-partial]').count(), 1, 'not on the first press');
+        await page.click(discard);
+        await page.waitForFunction(() => document.querySelector('#partialBox').hidden);
+        assert.deepEqual((await host.call('partialDownloads', {})).partials, []);
+        assert.doesNotMatch(await page.textContent('#mapLibrarySummary'), /unfinished/);
         // Removed on a second press, not the first.
         const removeEast = `#mapList [data-remove-map="${await page.evaluate(() => window.logisticsToolboxState.library.find((file) => file.name === 'east.osm.pbf').id)}"]`;
         await page.click(removeEast);

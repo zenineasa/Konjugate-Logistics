@@ -804,6 +804,7 @@ function showFilePlaces(places, file, why) {
 // Keeping them (dates, updating, removing, adding) is under Manage maps, a sheet over the steps.
 state.library = [];
 state.libraryTicked = new Set();
+state.partials = [];
 state.sizes = {};
 const dayOfDate = (iso) => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 const sizeText = (bytes) => bytesText(bytes) ?? '1 KB';
@@ -822,12 +823,38 @@ async function refreshLibrary() {
         state.libraryBytes = bytes;
         for (const id of [...state.libraryTicked]) if (!files.some((file) => file.id === id)) state.libraryTicked.delete(id);
         const old = files.filter((file) => mapAge(file).old).length;
-        $('#mapLibrarySummary').innerHTML = files.length ? `${files.length} kept, ${sizeText(bytes)}${old ? ` · <span class="danger">${old} may be out of date</span>` : ''}` : '';
+        // Downloads that stopped part way are kept to continue (a Konjugate that does not say so keeps none).
+        state.partials = [];
+        if (api.partialDownloads) { try { state.partials = (await call(api.partialDownloads())).partials; } catch {} }
+        const unfinished = state.partials.length ? `${state.partials.length} download${state.partials.length === 1 ? '' : 's'} unfinished` : '';
+        $('#mapLibrarySummary').innerHTML = [files.length ? `${files.length} kept, ${sizeText(bytes)}${old ? ` · <span class="danger">${old} may be out of date</span>` : ''}` : '', unfinished].filter(Boolean).join(' · ');
         renderLibrary();
+        renderPartials();
         updateSource();
     } catch (error) {
         $('#mapLibraryStatus').innerHTML = notice('error', error.message);
     }
+}
+// Downloads that stopped part way (the connection dropped, or Cancel): what arrived is kept, and Resume asks the server
+// for the rest, if its file is unchanged, else starts again. Discard gives it up, on a second press.
+function renderPartials() {
+    $('#partialBox').hidden = !state.partials.length;
+    const list = $('#partialList');
+    list.innerHTML = state.partials.map((partial) => `<li data-partial="${partial.id}">
+            <span class="what" title="${escape(partial.url)}">${escape(mapTitle({ name: partial.name, details: partial.details }))}</span>
+            <span class="actions"><button class="link small" type="button" data-resume-download="${partial.id}" title="Ask the server for the rest of it">Resume</button> <button class="link small" type="button" data-discard-download="${partial.id}" title="Give it up and free the space">Discard</button></span>
+            <span class="about">${partial.total ? `${sizeText(partial.bytes)} of ${sizeText(partial.total)}` : `${sizeText(partial.bytes)} so far`} · from ${escape(partial.server ?? new URL(partial.url).hostname)}, stopped ${dayOfDate(partial.updatedAt)}</span></li>`).join('');
+    list.querySelectorAll('[data-resume-download]').forEach((button) => button.addEventListener('click', async () => {
+        const partial = state.partials.find((item) => item.id === button.dataset.resumeDownload);
+        if (!partial || state.download) return;
+        const file = await downloadMap({ url: partial.url, server: partial.server ?? new URL(partial.url).hostname, checksumUrl: checksumUrlOf(partial.url), details: partial.details ?? {}, into: '#sheetDownloadProgress' });
+        if (file) await refreshLibrary();
+    }));
+    list.querySelectorAll('[data-discard-download]').forEach((button) => button.addEventListener('click', async () => {
+        if (button.dataset.armed !== 'yes') { button.dataset.armed = 'yes'; button.textContent = 'Discard for good?'; return; }
+        try { await call(api.discardPartialDownload(button.dataset.discardDownload)); } catch (error) { $('#mapLibraryStatus').innerHTML = notice('error', error.message); }
+        await refreshLibrary();
+    }));
 }
 function renderLibrary() {
     $('#manageMapsUsage').textContent = state.library.length ? `${state.library.length} map file${state.library.length === 1 ? '' : 's'} kept in Konjugate's own data folder, ${sizeText(state.libraryBytes)} in all. The place card proposes one when it covers the area; or tick maps and read them here.` : 'No map files kept yet. A large area\'s maps are downloaded when you load its roads; or add files of yours below.';
@@ -945,7 +972,10 @@ async function downloadMap({ url, server, checksumUrl, details, into = '#downloa
         $(status).innerHTML = notice('ok', `${file.name} is downloaded from ${server} and kept on this computer${checksumUrl ? ', its checksum matched' : ''}.`);
         return { ...file, details: { ...file.details } };
     } catch (error) {
-        $(status).innerHTML = notice(/cancelled/.test(error.message) ? 'warning' : 'error', error.message);
+        // What arrived is kept: said, and listed under Manage maps to resume or discard.
+        await refreshLibrary();
+        const kept = state.partials.some((partial) => partial.url === url);
+        $(status).innerHTML = notice(/cancelled/.test(error.message) ? 'warning' : 'error', `${error.message}${kept ? `${/[.!?]$/.test(error.message) ? '' : '.'} What arrived is kept: downloading it again continues from there, or Manage maps can resume or discard it.` : ''}`);
         return null;
     } finally {
         state.download = null;
@@ -962,8 +992,11 @@ function heardDownload(progress) {
     const seconds = Math.round((performance.now() - state.download.started) / 1000);
     const share = progress.total ? progress.done / progress.total : null;
     if (share !== null) bar.value = Math.round(share * 1000); else bar.removeAttribute('value');
-    const left = share > 0.02 && seconds > 2 ? Math.round(seconds * (1 - share) / share) : null;
-    text.textContent = `Downloading ${state.download.name}: ${number(progress.done / 1048576)}${progress.total ? ` of ${number(progress.total / 1048576)}` : ''} MB, ${seconds} s${left !== null ? `, about ${left} s to go` : ''}`;
+    // The time left follows the speed of what is fetched now, not of what was already there when it was continued.
+    const resumedFrom = progress.resumedFrom ?? 0;
+    const fetched = progress.total ? (progress.done - resumedFrom) / (progress.total - resumedFrom) : null;
+    const left = fetched > 0.02 && seconds > 2 ? Math.round(seconds * (1 - fetched) / fetched) : null;
+    text.textContent = `Downloading ${state.download.name}: ${number(progress.done / 1048576)}${progress.total ? ` of ${number(progress.total / 1048576)}` : ''} MB${resumedFrom ? ` (continued from ${number(resumedFrom / 1048576)} MB)` : ''}, ${seconds} s${left !== null ? `, about ${left} s to go` : ''}`;
 }
 async function openExternal(url, name) {
     try {

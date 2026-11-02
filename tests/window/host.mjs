@@ -75,7 +75,9 @@ export async function createHost() {
     };
     const store = createFileStore({ directory: join(scratch, 'addonFiles') });
     // What a download asks for: a file of `host.downloads` (address -> bytes), its MD5 sum beside it, or an index.
-    const fetchDownload = async (url) => {
+    // A file is sent whole, or from the byte a Range asks for; `host.dropAt[address]` cuts it once after that many bytes,
+    // as a connection that drops does.
+    const fetchDownload = async (url, options = {}) => {
         const address = new URL(url);
         if (url.endsWith('.md5')) {
             const bytes = host.downloads[url.slice(0, -4)];
@@ -83,9 +85,16 @@ export async function createHost() {
         }
         const bytes = host.downloads[address.href];
         if (!bytes) return new Response('', { status: 404 });
+        const asked = /^bytes=(\d+)-$/.exec(options.headers?.Range ?? '');
+        host.rangesAsked.push(asked ? Number(asked[1]) : null);
+        const start = asked ? Number(asked[1]) : 0;
+        const cut = host.dropAt[address.href];
+        delete host.dropAt[address.href];
+        const end = cut ? Math.min(cut, bytes.length) : bytes.length;
         const chunks = [];
-        for (let at = 0; at < bytes.length; at += 4096) chunks.push(bytes.subarray(at, at + 4096));
-        return new Response(new ReadableStream({ pull(controller) { const next = chunks.shift(); if (next) controller.enqueue(next); else controller.close(); } }), { headers: { 'content-length': String(bytes.length) } });
+        for (let at = start; at < end; at += 4096) chunks.push(bytes.subarray(at, Math.min(at + 4096, end)));
+        const stream = new ReadableStream({ pull(controller) { const next = chunks.shift(); if (next) controller.enqueue(next); else if (cut) controller.error(new Error('connection reset')); else controller.close(); } });
+        return new Response(stream, { status: asked ? 206 : 200, headers: { etag: '"test"', 'content-length': String(bytes.length - start), ...(asked ? { 'content-range': `bytes ${start}-${bytes.length - 1}/${bytes.length}` } : {}) } });
     };
     const handlers = {
         // As Konjugate's host does (addonFileStore.mjs): kept files listed, brought in, downloaded, described, removed, used.
@@ -101,12 +110,14 @@ export async function createHost() {
             for (const path of paths) kept.push(await store.putCopy({ path, details }));
             return { files: kept };
         },
-        async downloadFile({ url, server, checksumUrl, details, downloadId }) {
+        async downloadFile({ url, server, checksumUrl, details, downloadId, fresh }) {
             if (!manifest.permissions.includes('files.store')) throw new Error('This launcher was not granted files.store.');
-            const file = await store.download({ url, server, checksumUrl, details, hosts: manifest.network.hosts, fetchImpl: fetchDownload,
-                onProgress: ({ done, total }) => host.progress.push({ stage: 'download', downloadId, done, total }) });
+            const file = await store.download({ url, server, checksumUrl, details, fresh: fresh === true, hosts: manifest.network.hosts, fetchImpl: fetchDownload,
+                onProgress: ({ done, total, resumedFrom }) => host.progress.push({ stage: 'download', downloadId, done, total, resumedFrom }) });
             return { file };
         },
+        async partialDownloads() { return { partials: await store.partials() }; },
+        async discardPartialDownload({ id }) { await store.discardPartial(id); return {}; },
         async cancelDownload() { return {}; },
         async fileSize({ url }) { return { bytes: await store.size({ url, hosts: manifest.network.hosts, fetchImpl: fetchDownload }) }; },
         async describeStoredFile({ id, details }) { return { file: await store.describe(id, details) }; },
@@ -253,7 +264,7 @@ export async function createHost() {
         }
     };
     const host = {
-        files, requests, opened, chosen, cache, kept: 0, imported: null, scenarioRuns: 0, dropChanges: false, progress: [], downloads: {}, busy: 0,
+        files, requests, opened, chosen, cache, kept: 0, imported: null, scenarioRuns: 0, dropChanges: false, progress: [], downloads: {}, dropAt: {}, rangesAsked: [], busy: 0,
         get session() { return session; },
         set session(value) { session = value; },
         async call(name, args) {
@@ -303,6 +314,8 @@ export async function openWindow(page, host, { inspect = true } = {}) {
                 storedFiles: call('storedFiles'),
                 storeFiles: (details, options = {}) => window.logisticsHost('storeFiles', { details, accept: options.accept ?? null, title: options.title ?? null }),
                 downloadFile: (url, options = {}) => window.logisticsHost('downloadFile', { url, ...options }),
+                partialDownloads: call('partialDownloads'),
+                discardPartialDownload: (id) => window.logisticsHost('discardPartialDownload', { id }),
                 cancelDownload: (downloadId) => window.logisticsHost('cancelDownload', { downloadId }),
                 fileSize: (url) => window.logisticsHost('fileSize', { url }),
                 describeStoredFile: (id, details) => window.logisticsHost('describeStoredFile', { id, details }),

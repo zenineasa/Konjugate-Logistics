@@ -353,6 +353,11 @@
                 <div class="row sheetHeader"><h2 id="manageMapsTitle">Manage maps</h2><span class="spacer"></span><button class="button small" type="button" id="manageMapsDone">Done</button></div>
                 <p class="muted small" id="manageMapsUsage"></p>
                 <ul class="mapList" id="mapList"></ul>
+                <div id="partialBox" hidden>
+                    <h3>Unfinished downloads</h3>
+                    <p class="muted small">A download that stopped (the connection dropped, or you cancelled it) keeps what arrived for a week. Resume asks the server for the rest, or starts again if its file has changed.</p>
+                    <ul class="mapList partialList" id="partialList"></ul>
+                </div>
                 <button class="button small" type="button" id="useMapsButton" hidden>Read roads from the map ticked</button>
                 <div id="mapLibraryStatus"></div>
                 <ul class="progress" id="sheetDownloadProgress" hidden></ul>
