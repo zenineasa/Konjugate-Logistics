@@ -23,10 +23,10 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { buildModels } from '../../scripts/buildModels.mjs';
-import { installBuiltPackages } from '../../scripts/installDev.mjs';
+import { prepareProfile } from './profile.mjs';
 import { konjugateDir, konjugateModule } from '../../scripts/konjugatePaths.mjs';
 import { loadTemplates, ModelBuilder } from '../../scripts/templatePlacement.mjs';
 
@@ -120,6 +120,13 @@ async function launch(projectPath = null) {
     const window = await app.firstWindow();
     await window.waitForLoadState('domcontentloaded');
     await window.waitForFunction(() => typeof window.componentLibrary?.list === 'function');
+    // The project given is the one open, and no tour has opened its own over it (./profile.mjs).
+    if (projectPath) {
+        const stem = basename(projectPath, '.kjt');
+        await window.waitForFunction((expected) => document.querySelector('.documentTitle')?.textContent === expected, stem, { timeout: 30000 })
+            .catch(async () => { throw new Error(`Konjugate should open ${stem}; it shows "${await window.textContent('.documentTitle')}".`); });
+    }
+    assert.equal(await window.evaluate(() => window.__debugTour?.active?.() ?? false), false, 'No tutorial should start on launch.');
     const jobIds = () => app.evaluate(() => globalThis.logisticsJobIds);
     return { app, window, jobIds };
 }
@@ -135,7 +142,7 @@ async function startRun(window, days) {
 }
 
 try {
-    await installBuiltPackages(userData);
+    await prepareProfile(userData);
     const projectPath = join(scratch, 'network.kjt');
     await writeFile(projectPath, await encodeProjectFile(JSON.stringify({
         format: 'konjugate', version: 1, metadata: { units: 'SI' }, nodes: [], edges: [], sharedParameters: [],
@@ -212,6 +219,7 @@ try {
 
         // Run it in the app to the target time.
         await window.click('#runButton');
+        assert.equal(Number(await window.inputValue('#runGlobalTimeStep')), runConfiguration.globalTimeStep, 'The run should take the project\'s own global step.');
         await startRun(window, days);
         await window.waitForFunction(() => document.querySelector('#statusText').textContent === 'Simulation complete', null, { timeout: 120000 });
         const [jobId] = await jobIds();

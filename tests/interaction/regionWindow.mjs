@@ -20,7 +20,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { installBuiltPackages } from '../../scripts/installDev.mjs';
+import { prepareProfile } from './profile.mjs';
 import { konjugateDir, konjugateModule } from '../../scripts/konjugatePaths.mjs';
 import { syntheticPortwatch, syntheticRegion } from '../fixtures/syntheticRegion.mjs';
 
@@ -59,7 +59,7 @@ async function waitForFile(path) {
 }
 
 try {
-    await installBuiltPackages(userData);
+    await prepareProfile(userData);
     const projectPath = join(scratch, 'empty.kjt');
     await writeFile(projectPath, await encodeProjectFile(JSON.stringify({
         format: 'konjugate', version: 1, metadata: { units: 'SI' }, nodes: [], edges: [], sharedParameters: [],
