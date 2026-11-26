@@ -1309,8 +1309,7 @@ function assemble(parts, { builder, settings, categories = null }) {
         stores: all('stores'),
         // Each warehouse's, maker's store's and store's stock and the holding cost a pallet a day it is linked to in the
         // model: { node, site, store, value, from (the site whose own figure the parameter is, or null for the one every
-        // stock without a figure of its own shares) }. A stock without a figure of its own is linked to the parameter of
-        // its name that was placed first, which may be a warehouse's own (see handover.md, Known open items).
+        // stock without a figure of its own shares) }.
         holding: linkedHolding(all('holdingLinks'), builder),
         // Every delivery, a store's sales included: { name, from (the stock it draws on), to, site, category, share }.
         deliveries: all('deliveries'),

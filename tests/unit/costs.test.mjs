@@ -111,12 +111,12 @@ test('each input is the model\'s as built, which is the network\'s own figure, w
     }
     assert.match(distances.find((item) => /Store 1/.test(item.name)).note, /Carried by medium trucks and refrigerated trucks\./);
     // Holding: the warehouse's own 0.7, set on its card; the stores' stock rooms at the figure the model links them to,
-    // which here is that warehouse's own (placed first: see the next test), said to be its.
+    // the default every stock without one of its own shares (not the warehouse's own: see the next test).
     const warehouse = pins.find((pin) => pin.name === 'Warehouse 1');
     assert.deepEqual(input('holding', 'Warehouse 1'), { name: 'Warehouse 1', value: 0.7, unit: 'a pallet a day', basis: 'yours', target: { kind: 'site', id: warehouse.id, field: 'holdingCost' } });
     const rooms = input('holding', 'Stock rooms of Store 1 and Store 2');
-    assert.deepEqual([rooms.value, rooms.basis, rooms.target], [0.7, 'yours', { kind: 'site', id: warehouse.id, field: 'holdingCost' }]);
-    assert.match(rooms.note, /^Warehouse 1's own holding cost: the model links this stock room to it, as it has none of its own\. A store's card has no holding cost of its own\.$/);
+    assert.deepEqual([rooms.value, rooms.basis, rooms.target], [0.5, 'assumed', null]);
+    assert.match(rooms.note, /^The figure every stock without one of its own shares, a default\. A store's card has no holding cost of its own\.$/);
     assert.ok(!cost('holding').inputs.some((item) => /component library/.test(item.note ?? '')), 'never the library default the provenance claims');
     assert.ok(explained.knownLimits.some((item) => /A store or a dark store has no holding cost of its own/.test(item)));
     assert.ok(explained.knownLimits.some((item) => /value of a pallet sold is not yet in the model's record/.test(item)));
@@ -152,8 +152,8 @@ function holdingInDocument(built) {
 }
 
 test('a stock without a holding cost of its own is shown at the figure its node is linked to, and whose figure that is', () => {
-    // Two warehouses, the one placed first in the model with a holding cost of its own: until the model builder is put
-    // right, the stock that has none of its own (the other warehouse, the stores) is linked to it.
+    // Two warehouses, the one placed first in the model with a holding cost of its own: the stock that has none of its own
+    // (the other warehouse, the stores) is linked to the default, not to it, as it was until 26 November 2026.
     const build = ({ own }) => {
         const vehicles = defaultCatalogue();
         const pins = [];
@@ -172,7 +172,7 @@ test('a stock without a holding cost of its own is shown at the figure its node 
         const built = buildRegionModel({ builder: new ModelBuilder(templates), selection, route: router.route, links: network.links, options: { vehicles: network.vehicles, unit: network.unit } });
         return { pins, links, vehicles, built, first, second };
     };
-    let leaked = false;
+    let firstWithOwn = false;
     for (const own of [true, false]) {
         const { pins, links, vehicles, built, first, second } = build({ own });
         // The record says what the document does: every stock's value is the one its node's parameter holds.
@@ -182,29 +182,22 @@ test('a stock without a holding cost of its own is shown at the figure its node 
         const explained = explainCosts({ built, network: { pins, links, vehicles, categories: [] } });
         const rows = explained.costs.find((cost) => cost.key === 'holding').inputs;
         const row = (name) => rows.find((item) => item.name === name);
-        const firstPlaced = built.holding.find((item) => !item.store).site;
-        if (own) leaked = firstPlaced === first.name;
-        if (own && firstPlaced === first.name) {
-            // The first warehouse's own 0.9 reaches the other warehouse and both stock rooms, and each says whose it is.
+        if (own) {
+            firstWithOwn = built.holding.find((item) => !item.store).site === first.name;
+            // Its own 0.9 is its alone: the other warehouse and both stock rooms are at the default, said to be one.
             assert.deepEqual([row(first.name).value, row(first.name).basis, row(first.name).note], [0.9, 'yours', undefined]);
-            for (const name of [second.name, 'Stock rooms of Store 1 and Store 2']) {
-                assert.deepEqual([row(name).value, row(name).basis, row(name).target], [0.9, 'yours', { kind: 'site', id: first.id, field: 'holdingCost' }], name);
-                assert.match(row(name).note, new RegExp(`^${first.name}'s own holding cost: the model links`));
-            }
-            assert.ok(explained.knownLimits.some((item) => /not yet put right/.test(item)));
-            // The provenance's model-wide entry claims the library's default for that figure: the panel does not repeat it.
-            assert.equal(built.provenance.find((entry) => entry.entity === 'Every component' && entry.parameter === 'Holding cost per pallet-day').value, 0.9);
-        } else if (own) {
-            // Placed after the other: its own figure is its alone, and the rest share the default.
-            assert.deepEqual([row(first.name).value, row(first.name).basis], [0.9, 'yours']);
-            assert.deepEqual([row(second.name).value, row(second.name).basis], [0.5, 'assumed']);
+            assert.deepEqual([row(second.name).value, row(second.name).basis, row(second.name).target], [0.5, 'assumed', { kind: 'site', id: second.id, field: 'holdingCost' }]);
+            const rooms = row('Stock rooms of Store 1 and Store 2');
+            assert.deepEqual([rooms.value, rooms.basis, rooms.target], [0.5, 'assumed', null]);
+            assert.match(rooms.note, /^The figure every stock without one of its own shares, a default\./);
+            // The provenance's model-wide entry is the library's default, as it says.
+            assert.equal(built.provenance.find((entry) => entry.entity === 'Every component' && entry.parameter === 'Holding cost per pallet-day').value, 0.5);
         } else {
             for (const item of rows) assert.deepEqual([item.value, item.basis], [0.5, 'assumed'], item.name);
-            assert.ok(!explained.knownLimits.some((item) => /not yet put right/.test(item)));
         }
         assert.ok(rows.every((item) => item.value === inDocument.get(built.holding.find((each) => item.name.includes(each.site))?.node)), JSON.stringify(rows));
     }
-    assert.ok(leaked, 'the warehouse with its own figure is placed first, so the case the panel must show is the one tested');
+    assert.ok(firstWithOwn, 'the warehouse with its own figure is placed first, so the case that once leaked is the one tested');
 });
 
 test('the figures are the run shown\'s, with the run set beside it, and the notes say what they are of', () => {

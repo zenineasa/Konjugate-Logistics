@@ -109,28 +109,22 @@ export function explainCosts({ built, network = {}, result = null, compared = nu
     const distances = [...byLink.values()];
 
     // ---- holding: every warehouse and maker's store and every store's stock room, at the holding cost parameter the model
-    // links it to (`built.holding`), and whose figure that is: its own, another site's own, or the one every stock
-    // without a figure of its own shares. A session built before that record falls back on the provenance.
+    // links it to (`built.holding`), and whose figure that is: its own, or the one every stock without a figure of its
+    // own shares. A session built before that record falls back on the provenance.
     const holdingWide = modelWide(/^Holding cost per/);
     const ownNote = (name) => provenance.find((item) => item.parameter === 'Holding cost' && siteOf(item.entity, siteNames) === name) ?? null;
     const storeSites = [...new Set(stores.map((item) => item.site))];
     const holdingInputs = [];
-    let borrowed = false;
     if (Array.isArray(built.holding)) {
         // One row a site (its category copies are linked alike), the stores' stock rooms together where they agree.
         const bySite = new Map();
         for (const item of built.holding) if (!bySite.has(item.site)) bySite.set(item.site, item);
-        const linked = (item) => {
-            if (item.from === item.site) return { basis: ownNote(item.site)?.basis ?? 'user', note: '' };
-            if (item.from) {
-                borrowed = true;
-                return { basis: ownNote(item.from)?.basis ?? 'user', note: `${item.from}'s own holding cost: the model links ${item.store ? 'this stock room' : 'its stock'} to it, as it has none of its own.`, target: siteTarget(item.from, 'holdingCost') };
-            }
-            return { basis: holdingWide?.basis ?? 'assumed', note: 'The figure every stock without one of its own shares, a default.' };
-        };
+        const linked = (item) => (item.from === item.site
+            ? { basis: ownNote(item.site)?.basis ?? 'user', note: '' }
+            : { basis: holdingWide?.basis ?? 'assumed', note: 'The figure every stock without one of its own shares, a default.' });
         for (const item of [...bySite.values()].filter((each) => !each.store)) {
             const how = linked(item);
-            holdingInputs.push(entry(item.site, item.value, `a ${unit} a day`, how.basis, how.target ?? siteTarget(item.site, 'holdingCost'), how.note));
+            holdingInputs.push(entry(item.site, item.value, `a ${unit} a day`, how.basis, siteTarget(item.site, 'holdingCost'), how.note));
         }
         const rooms = new Map();
         for (const item of [...bySite.values()].filter((each) => each.store)) {
@@ -140,7 +134,7 @@ export function explainCosts({ built, network = {}, result = null, compared = nu
         }
         for (const group of rooms.values()) {
             const how = linked(group);
-            holdingInputs.push(entry(`Stock room${group.sites.length === 1 ? '' : 's'} of ${listedNames(group.sites)}`, group.value, `a ${unit} a day`, how.basis, how.target ?? null,
+            holdingInputs.push(entry(`Stock room${group.sites.length === 1 ? '' : 's'} of ${listedNames(group.sites)}`, group.value, `a ${unit} a day`, how.basis, null,
                 `${how.note ? `${how.note} ` : ''}A store's card has no holding cost of its own.`));
         }
     } else {
@@ -279,8 +273,7 @@ export function explainCosts({ built, network = {}, result = null, compared = nu
         costs: costs.filter((cost) => cost.in === 'totals' || shownSites),
         notIncluded,
         knownLimits: [
-            ...(storeSites.length ? ['A store or a dark store has no holding cost of its own: its stock room is charged the figure the model links it to, shown under Holding cost with whose it is.'] : []),
-            ...(borrowed ? ['A warehouse\'s own holding cost is linked, in the model, to stock that has none of its own: a fault in how the model is built, not yet put right. Each stock is shown at the figure it is really charged, with whose figure it is.'] : []),
+            ...(storeSites.length ? ['A store or a dark store has no holding cost of its own: its stock room is charged the figure every stock without one of its own shares, shown under Holding cost.'] : []),
             ...(storeSites.length ? ['A store\'s own value of a pallet sold is not yet in the model\'s record of where its inputs came from: the values shown are those the summary prices sales lost at.'] : [])
         ]
     };

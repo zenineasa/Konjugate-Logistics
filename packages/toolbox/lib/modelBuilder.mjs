@@ -61,7 +61,8 @@ export class ModelBuilder {
     // the one shared parameter of that symbol, created by the first placement that names it and reused by the rest (so
     // a vehicle type's capacity is one parameter for every lane and shipment it runs on, though the template declares a
     // lane's truck capacity once for the whole model); with `own`, this placement's alone (so one warehouse can have
-    // a stock cover of its own). What a user does by linking parameters in the parameters panel.
+    // a stock cover of its own), under a numbered symbol even when it is the first, so no later placement reuses it.
+    // What a user does by linking parameters in the parameters panel.
     resolveShared(declaredList = [], values = {}, as = {}) {
         const byKey = new Map();
         for (const declared of declaredList) {
@@ -73,8 +74,11 @@ export class ModelBuilder {
                 byKey.set(declared.key, existing);
                 continue;
             }
+            // A placement's own parameter never takes the symbol the placements without one of their own share by (one
+            // declared for the whole model, or an alias's): it is numbered, so they find the shared one, not this one.
+            const reserved = Boolean(alias?.own) && (declared.scope === 'project' || alias.symbol !== undefined);
             let symbol = symbolWanted;
-            for (let suffix = 2; this.sharedParameters.some((shared) => shared.symbol === symbol); suffix += 1) symbol = `${symbolWanted}${suffix}`;
+            for (let suffix = 2; (reserved && symbol === symbolWanted) || this.sharedParameters.some((shared) => shared.symbol === symbol); suffix += 1) symbol = `${symbolWanted}${suffix}`;
             const created = {
                 id: this.id(), name: alias?.name ?? this.rename(declared.name), symbol, value: alias?.value ?? values[declared.key] ?? declared.value,
                 unit: this.relabel(alias?.unit ?? declared.unit ?? ''), mode: declared.mode ?? 'constant'
