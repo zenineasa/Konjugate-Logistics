@@ -393,3 +393,13 @@ td.better { color: var(--ok); font-weight: 600; }
 .flag { color: var(--warn); cursor: help; }
 .card .travelTime input[type="text"] { width: 70px; }
 #calibrationRow { margin: 4px 0 6px; }
+
+/* How these costs are worked out: folded under the costs, each cost's rule, its inputs and what the costs leave out. */
+.costsExplained { margin: 4px 0 8px; }
+.costsExplained .costRule { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 4px; }
+.costsExplained .costRule h4 { margin: 4px 0 2px; font-size: 12px; font-weight: 600; }
+.costsExplained .costFigures { margin: 2px 0; font-variant-numeric: tabular-nums; }
+.costsExplained .costInputs td:first-child { overflow-wrap: anywhere; }
+.costsExplained .costInputs td.number { white-space: nowrap; }
+.costsExplained .costInputs .link { text-align: left; }
+.costsExplained ul { margin: 4px 0; padding-left: 18px; }

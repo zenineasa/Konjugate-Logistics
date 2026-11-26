@@ -802,6 +802,8 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
         flowsByZone.get(zoneId).push({ port: ports.find((port) => port.id === portId), rate: flows.get(key), leg: legOf(key), link: supplyLinkOf.get(key) ?? null });
     }
     const lanes = [];
+    // Each stock node and the holding cost parameter it is linked to: { node, site, shared (its id), own, store }.
+    const holdingLinks = [];
     // Each lane's ends and the roads it was routed over, for the map's corridors.
     const laneGeometry = [];
     const warehouses = new Map();
@@ -1009,6 +1011,10 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
             initialValues: { stock, onOrder, forecast: total, orderRate: total, spaceUsed: stock / capacity },
             shared: { planningLeadTime, storageCapacity: capacity, ...(shelf !== null ? { shelfDays: shelf } : {}) }, as
         });
+        // The holding cost parameter this stock is linked to, as placed: what its holding cost is worked out with
+        // (`assemble` says whose figure it is, for How these costs are worked out). It changes nothing in the model.
+        const holding = builder.lastShared?.get('holdingCostPerDay');
+        if (holding) holdingLinks.push({ node: entity, site: site.name, shared: holding.id, own: own('holdingCost'), store: what === 'sells' });
         note(site.name, 'Planned replenishment time', planningLeadTime, 'day', 'routed', 'Average order-to-arrival time over its lanes.');
         if (shelf !== null) note(site.name, 'Shelf life', shelf, 'day', scope.category.basis?.shelfDays === 'user' ? 'user' : 'assumed', `${scope.category.basis?.shelfDays === 'user' ? 'Your figure for' : 'Assumed for'} ${scope.category.name}. What it holds beyond what it expects to ${what === 'sells' ? 'sell' : 'send out'} in this time is wasted, and counted. Each site is judged on its own: time spent at a warehouse is not taken off the shelf life at a store.`);
         if (own('coverDays') || coverAs) note(site.name, 'Stock cover target', cover, 'day', own('coverDays') ? (site.coverDaysBasis ?? 'user') : 'assumed', own('coverDays') ? 'Your figure.' : `Assumed: the default for a ${what === 'sells' ? 'store' : 'warehouse'}, until you set it.`);
@@ -1180,7 +1186,7 @@ function buildScope({ builder, selection, route, links = null, settings, scope =
 
     const category = scope?.category.id ?? null;
     return {
-        provenance, warnings, parameterIndex, lanes, laneGeometry, stores, deliveries, unusedLinks, unusedZones,
+        provenance, warnings, parameterIndex, lanes, laneGeometry, stores, deliveries, unusedLinks, unusedZones, holdingLinks,
         // What each warehouse sends out and each store sells, by site id: what a category's share of a site's room goes by.
         totals: new Map([...zoneDemand, ...demand]),
         // Each port's arrivals as built: its average, and the held schedule it follows when it has one -- what a
@@ -1243,6 +1249,16 @@ export function categoryShifts(count, { width, height }, gap = 14) {
     });
 }
 
+// Which holding cost each stock is linked to, and whose figure that is: the site that placed the parameter as its own,
+// or none.
+function linkedHolding(links, builder) {
+    return links.map((link) => {
+        const shared = builder.sharedParameters.find((item) => item.id === link.shared);
+        const owner = links.find((other) => other.own && other.shared === link.shared);
+        return { node: link.node, site: link.site, store: link.store, value: shared?.value ?? null, from: owner ? owner.site : null };
+    });
+}
+
 // The model from its parts: one network, or one copy of it per category.
 function assemble(parts, { builder, settings, categories = null }) {
     const [first] = parts;
@@ -1291,6 +1307,11 @@ function assemble(parts, { builder, settings, categories = null }) {
         // The stores and dark stores that hold stock, one entry for each category they sell: { name (its shoppers' node),
         // site, category, stock (its stock room's node), role, demand }.
         stores: all('stores'),
+        // Each warehouse's, maker's store's and store's stock and the holding cost a pallet a day it is linked to in the
+        // model: { node, site, store, value, from (the site whose own figure the parameter is, or null for the one every
+        // stock without a figure of its own shares) }. A stock without a figure of its own is linked to the parameter of
+        // its name that was placed first, which may be a warehouse's own (see handover.md, Known open items).
+        holding: linkedHolding(all('holdingLinks'), builder),
         // Every delivery, a store's sales included: { name, from (the stock it draws on), to, site, category, share }.
         deliveries: all('deliveries'),
         // What the model counts, how many of it a TEU is, the vehicle types its lanes run on (null for two truck sizes)

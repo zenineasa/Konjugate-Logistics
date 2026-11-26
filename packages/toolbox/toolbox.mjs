@@ -14,6 +14,7 @@ import { portwatchActivityUrl, portwatchPortsUrl, breakPeriods } from './lib/por
 import { closurePlan, demandPlan, diversionPlan, fleetPlan, heldPath, keptOutPlan, lowWaterPlan, mostLateDays, siteDownPlan, supplierPlan } from './lib/scenarios.mjs';
 import { createNetworkRouter } from './lib/routing.mjs';
 import { compareSites } from './lib/siteComparison.mjs';
+import { explainCosts, reportedCosts } from './lib/costs.mjs';
 import { checkedMapLink, checksumUrlOf, mapAge, mapServers } from './lib/mapServers.mjs';
 import { bytesText, keptAs, proposeSource } from './lib/mapSource.mjs';
 import { cleanCurrency, differs, money, moneyIn, outNoise, runningCostWords, sameSeries, shortDays, storesParts, unchangedText } from './lib/summary.mjs';
@@ -2242,6 +2243,7 @@ const shortcuts = [
     ['V', 'Carry the selected links by the next vehicle type'],
     ['M', 'Send the selected links by the next mode they may take: road, rail or water'],
     ['T', 'Type the selected link\'s travel time (with no link selected: the Travel times list)'],
+    ['C', 'Open or fold How these costs are worked out, under a result'],
     ['Enter, in the Travel times list', 'Keep the time and go to the next link'],
     ['F', 'Fit the map to the selection, or to the network'], ['0', 'Fit the map to the region'], ['+ and -', 'Zoom'],
     [keys.menu, 'The menu of a site, a link or the map'], ['?', 'Show or hide these shortcuts']
@@ -2280,6 +2282,7 @@ document.addEventListener('keydown', (event) => {
     else if (key === 'v') cycleVehicles();
     else if (key === 'm') cycleModes();
     else if (key === 't') focusTravelTime();
+    else if (key === 'c') handled = toggleCostPanel();
     else if (event.key.startsWith('Arrow')) nudge({ ArrowLeft: -1, ArrowRight: 1 }[event.key] ?? 0, { ArrowUp: -1, ArrowDown: 1 }[event.key] ?? 0, event.shiftKey);
     else if (key === 'f') fitNetwork();
     else if (event.key === '0') map.fit();
@@ -2355,6 +2358,7 @@ function openMenu({ target, point, clientX, clientY }) {
         if (state.pins.length) item('Select every site', keys.selectAll, selectAll);
         item('Fit the map to the network', 'F', fitNetwork);
         item('Fit the map to the region', '0', () => map.fit());
+        if (costPanelShown()) item('How these costs are worked out', 'C', () => toggleCostPanel(true));
     }
     const menu = $('#contextMenu');
     menu.innerHTML = items.map((entry, index) => `<button type="button" role="menuitem" data-index="${index}" class="${entry.danger ? 'danger' : ''}"><span>${escape(entry.label)}</span>${entry.keys ? `<kbd>${escape(entry.keys)}</kbd>` : ''}</button>`).join('');
@@ -3692,7 +3696,9 @@ function renderSiteComparison() {
             <tbody>${comparison.rows.map((row) => (row.error
         ? `<tr><td>${escape(row.name)}</td><td colspan="${stressed ? 4 : 2}" class="muted">${escape(row.verdict)}</td></tr>`
         : `<tr><td>${escape(row.name)}${row === asIs ? '' : `<div class="basis">${escape(row.verdict)}</div>`}</td><td class="number${mark(row, row.monthlyCost, asIs.monthlyCost)}">${number(row.monthlyCost)}</td><td class="number">${number(row.fixedMonthly)}</td>${stressed ? `<td class="number${mark(row, row.stress.storesOut, asIs.stress?.storesOut)}">${number(row.stress.storesOut)}</td><td class="number${mark(row, row.stress.lostValue, asIs.stress?.lostValue)}">${number(row.stress.lostValue)}</td>` : ''}</tr>`)).join('')}</tbody></table>
-        <p class="muted small">Each network was built and run on its own over the same days. A store linked to a candidate and to another warehouse draws on both, by their size and nearness. Fixed costs and the cost to open are your figures: a site with none given counts for nothing. Costs are in ${escape(moneyIn(state.currency))}.</p>`;
+        <p class="muted small">Each network was built and run on its own over the same days. A store linked to a candidate and to another warehouse draws on both, by their size and nearness. Fixed costs and the cost to open are your figures: a site with none given counts for nothing. Costs are in ${escape(moneyIn(state.currency))}.</p>
+        ${costPanel('sites')}`;
+    wireCostPanel(panel);
 }
 $('#siteStressSelect').addEventListener('change', () => keepSessionSoon());
 
@@ -4652,16 +4658,16 @@ function renderScenarioResult() {
             <tbody>
                 ${totalsRow('Share of demand met', result.totals.fill, percent, { lowerIsWorse: true, noise: 0.001 }, 'Of what was ordered since the scenario started, the share sold or delivered by the end of the run')}
                 ${result.totals.lost ? totalsRow(`Sales lost (${goods()})`, result.totals.lost, (value) => number(value, 1), { noise: 0.05 }, 'Sales the stores could not make for want of stock, whose shoppers went elsewhere rather than wait') : ''}
-                ${result.totals.lostValue ? totalsRow('Value of sales lost', result.totals.lostValue, (value) => number(value), {}, 'The sales lost, at each store\'s value of a pallet sold') : ''}
+                ${result.totals.lostValue ? totalsRow(costLabel('lostValue'), result.totals.lostValue, (value) => number(value), {}, 'The sales lost, at each store\'s value of a pallet sold') : ''}
                 ${result.totals.wasted ? totalsRow(`Goods wasted (${goods()})`, result.totals.wasted, (value) => number(value, 1), { noise: 0.05 }, 'Goods past their shelf life: what a warehouse or a store held beyond what it could send out or sell in time') : ''}
-                ${[['transport', 'Transport cost'], ['fleet', 'Fleet cost'], ['holding', 'Holding cost']].map(([key, label]) => totalsRow(label, result.totals[key], (value) => number(value))).join('')}
-                ${totalsRow('Running cost', running, (value) => number(value), {}, 'Transport, fleet and holding costs together')}
+                ${['transport', 'fleet', 'holding'].map((key) => totalsRow(costLabel(key), result.totals[key], (value) => number(value))).join('')}
+                ${totalsRow(costLabel('running'), running, (value) => number(value), {}, 'Transport, fleet and holding costs together')}
             </tbody></table>` : '';
     const detailTotals = result.totals ? `
         <table><thead><tr>${totalsHead}</tr></thead>
             <tbody>
                 ${result.totals.wait ? totalsRow('Days an order waited', result.totals.wait, (value) => number(value, 2), { noise: 0.01 }, `The time an order spent waiting in a ${view()?.stores ? 'store\'s or customer area\'s' : 'town\'s'} backlog, averaged over every order since the scenario started`) : ''}
-                ${totalsRow('Backlog cost', result.totals.backlog, (value) => number(value), {}, 'A charge for every order-day spent waiting: a measure of service, not money spent')}
+                ${totalsRow(costLabel('backlog'), result.totals.backlog, (value) => number(value), {}, 'A charge for every order-day spent waiting: a measure of service, not money spent')}
             </tbody></table>` : '';
     const ports = id.startsWith('chokepoint') ? `
         <table><thead><tr><th>Port</th><th class="number">Kept out (${goods()})</th><th class="number">arrived later</th><th class="number">never arrived</th>${result.diversion ? '<th class="number">diverted here</th>' : ''}</tr></thead>
@@ -4711,7 +4717,7 @@ function renderScenarioResult() {
         <p class="small">${escape(describe)}</p>
         ${result.totals ? `<p class="headline">${escape(scenarioHeadline(result))}</p>` : ''}
         ${result.clamped?.length ? notice('warning', `Some of the values this scenario supplied lie outside what the model allows, and were held to its limits, so the run differs from what was asked: ${result.clamped.join('; ')}.`) : ''}
-        ${totals}${storesTable}${categoriesTable}${renderComparison(result)}
+        ${totals}${result.totals ? costPanel('result') : ''}${storesTable}${categoriesTable}${renderComparison(result)}
         <details class="resultDetails"${detailsWereOpen ? ' open' : ''}><summary>Details: waits, ports, lanes and stock</summary>
         ${detailTotals}${suppliersTable}${ports}${waits}${lanes}
         <table><thead><tr><th>Warehouse</th><th class="number">Lowest stock</th><th class="number">baseline</th><th class="number">day</th>${spaceShown ? '<th class="number" title="Its stock at its fullest, as a share of its storage capacity: above 100%, goods ordered before demand fell arrived with no room for them">fullest</th>' : ''}</tr></thead>
@@ -4722,12 +4728,111 @@ function renderScenarioResult() {
             <tbody>${towns.map((item) => `<tr><td><div class="nameWithSpark"><span>${escape(item.name)}</span>${drawSpark(item.scenPts, item.basePts, { stroke: 'var(--danger)' })}</div></td><td${worse(item.peak, item.baseline)}>${number(item.peak)}</td><td class="number">${number(item.baseline)}</td><td class="number">${number(item.day, 1)}</td></tr>`).join('')}</tbody></table>
         </details>
         <p class="muted small">Sales lost and goods wasted are in ${goods()}; costs and values are in ${escape(moneyIn(state.currency))}, counted from the day the scenario starts.${result.assumedValue ? ' Sales lost are priced at a value of a pallet that is assumed, a placeholder: give each store, or each category, your own.' : ''} The forked run is in the canvas beside the baseline; Show in Konjugate brings it forward.</p>`;
+    wireCostPanel($('#scenarioResult'));
     $('#compareSelect')?.addEventListener('change', () => {
         state.compareWith = $('#compareSelect').value ? Number($('#compareSelect').value) : null;
         renderScenarioResult();
         $('#compareSelect')?.focus();
         keepSessionSoon();
     });
+}
+
+// ---- how these costs are worked out ----------------------------------------------------------------------------------
+// Beside a result's costs, folded: each cost's rule in words, the inputs it used with their values and where they came
+// from, a way to the card where each is set, and what the costs leave out (lib/costs.mjs). The same under the candidate
+// site comparison. Opened from its own line, from the map's menu or with C.
+const costPanelOpen = { result: false, sites: false };
+const costLabel = (key) => reportedCosts.find((item) => item.key === key).label;
+const costNumber = (value) => (value === null || value === undefined ? 'none' : Number(value).toLocaleString('en', { maximumFractionDigits: Math.abs(value) < 10 ? 2 : 1 }));
+function explainedFor(kind) {
+    const network = { pins: state.pins, links: state.links, vehicles: state.vehicles, categories: state.categories };
+    const edited = (state.edits ?? 0) !== (state.builtEdits ?? 0);
+    if (kind === 'sites') return explainCosts({ built: state.built, network, sites: state.siteComparison, edited });
+    const result = state.scenario;
+    const latest = state.runs.find((run) => run.number === result?.run);
+    const other = result ? comparedRun(result) : null;
+    const differ = (a, b) => Boolean(a && b && a !== b);
+    return explainCosts({
+        built: state.built, network, result, edited, builtAgain: differ(latest?.builtAt, state.built?.builtAt),
+        compared: other ? { number: other.number, describe: other.describe, totals: other.totals, sameBuild: !differ(latest?.builtAt, other.builtAt) } : null
+    });
+}
+function costPanel(kind) {
+    if (!state.built) return '';
+    const explained = explainedFor(kind);
+    if (!explained) return '';
+    const keysShown = kind === 'sites' ? ['transport', 'fleet', 'holding', 'monthly', 'fixed', 'opening'] : ['transport', 'fleet', 'holding', 'running', 'lostValue', 'backlog'];
+    const result = state.scenario;
+    const other = kind === 'result' && result ? comparedRun(result) : null;
+    const figuresOf = (cost) => {
+        if (kind !== 'result' || !cost.figures) return '';
+        const parts = [`${result.absolute ? 'As planned' : 'Scenario'} ${costNumber(cost.figures.scenario)}`];
+        if ('baseline' in cost.figures) parts.push(`baseline ${costNumber(cost.figures.baseline)}`);
+        if ('compared' in cost.figures && other) parts.push(`run ${other.number} ${costNumber(cost.figures.compared)}`);
+        return `<p class="small costFigures">${escape(parts.join(' · '))}</p>`;
+    };
+    const target = (input) => (input.target ? ` data-jump-kind="${escape(input.target.kind)}" data-jump-id="${escape(input.target.id)}"${input.target.field ? ` data-jump-field="${escape(input.target.field)}"` : ''}` : '');
+    const where = { site: 'its card', link: 'the link\'s card', vehicle: 'Vehicles, in the Network step', category: 'Categories, in the Network step' };
+    const row = (input) => `<tr><td>${input.target ? `<button type="button" class="link"${target(input)} title="Show where it is set: ${escape(where[input.target.kind])}">${escape(input.name)}</button>` : escape(input.name)}${input.note ? `<div class="basis">${escape(input.note)}</div>` : ''}</td>`
+        + `<td class="number">${escape(costNumber(input.value))}${input.value === null ? '' : ` <span class="muted">${escape(input.unit)}</span>`}</td><td><span class="basis ${escape(input.basis)}">${escape(input.basis)}</span></td></tr>`;
+    const rules = explained.costs.filter((cost) => keysShown.includes(cost.key)).map((cost) => `
+        <section class="costRule" data-cost="${cost.key}"><h4>${escape(cost.label)}</h4>${figuresOf(cost)}
+            <p class="small">${escape(cost.how)}</p>
+            ${cost.inputs.length ? `<table class="costInputs"><thead><tr><th>Input</th><th class="number">value</th><th>from</th></tr></thead><tbody>${cost.inputs.map(row).join('')}</tbody></table>` : ''}
+        </section>`).join('');
+    const notes = kind === 'sites'
+        ? ['Each network compared was built on its own: a candidate\'s links are in its network alone, so their distances are not listed here. The rest are the inputs of the network as built now.', ...explained.notes]
+        : explained.notes;
+    return `<details class="costsExplained" data-panel="${kind}"${costPanelOpen[kind] ? ' open' : ''}><summary title="Or press C">How these costs are worked out</summary>
+        ${notes.map((note) => `<p class="small muted">${escape(note)}</p>`).join('')}
+        <p class="small muted">Values are in ${escape(moneyIn(state.currency))} and the network's ${escape(goods())}. Each input says where it came from: yours, assumed (a default to replace with your own), routed (over the roads) or sourced. Click an input's name to see where it is set.</p>
+        ${rules}
+        <section class="costRule notIncluded"><h4>What these costs leave out</h4><ul class="small">${explained.notIncluded.map((item) => `<li>${escape(item)}</li>`).join('')}</ul></section>
+        ${explained.knownLimits.length ? `<section class="costRule knownLimits"><h4>Known limits</h4><ul class="small">${explained.knownLimits.map((item) => `<li>${escape(item)}</li>`).join('')}</ul></section>` : ''}
+    </details>`;
+}
+function wireCostPanel(container) {
+    const panel = container?.querySelector('details.costsExplained');
+    if (!panel) return;
+    panel.addEventListener('toggle', () => { costPanelOpen[panel.dataset.panel] = panel.open; });
+    panel.querySelectorAll('[data-jump-kind]').forEach((button) => button.addEventListener('click', () => jumpToInput({ kind: button.dataset.jumpKind, id: button.dataset.jumpId, field: button.dataset.jumpField ?? null })));
+}
+// The panel in view: the site comparison's when it shows, else the result's. Opened (or folded, `open` not given) and
+// brought into view; false when there is none.
+function toggleCostPanel(open) {
+    const sites = $('#siteComparison');
+    const panel = (!sites.hidden && sites.querySelector('details.costsExplained')) || $('#scenarioResult details.costsExplained');
+    if (!panel) return false;
+    $('#stepScenario').classList.remove('collapsed');
+    panel.open = open ?? !panel.open;
+    costPanelOpen[panel.dataset.panel] = panel.open;
+    panel.scrollIntoView({ block: 'nearest' });
+    panel.querySelector('summary').focus();
+    return true;
+}
+const costPanelShown = () => Boolean((!$('#siteComparison').hidden && $('#siteComparison details.costsExplained')) || $('#scenarioResult details.costsExplained'));
+// Where an input is set: a site's or a link's card (the site or link selected), or its row in the Vehicles or the
+// Categories list; the field itself focused.
+function jumpToInput({ kind, id, field }) {
+    $('#stepNetwork').classList.remove('collapsed');
+    const focus = (selector, fallback) => {
+        const input = (selector && document.querySelector(selector)) || document.querySelector(fallback);
+        input?.scrollIntoView({ block: 'nearest' });
+        input?.focus();
+    };
+    if (kind === 'site' || kind === 'link') {
+        if (kind === 'site' ? !pinById(id) : !state.links.some((link) => link.id === id)) return;
+        select({ kind: kind === 'site' ? 'pin' : 'link', id });
+        focus(field ? `#selectionCard #field-${CSS.escape(field)}` : null, '#selectionCard input, #selectionCard select');
+    } else if (kind === 'vehicle') {
+        $('#vehicles').open = true;
+        renderVehicles();
+        focus(`#vehicle-${CSS.escape(id)}-${CSS.escape(field ?? 'costPerKm')}`, '#vehicles summary');
+    } else if (kind === 'category') {
+        $('#categories').open = true;
+        renderCategories();
+        focus(`#category-${CSS.escape(id)}-${CSS.escape(field ?? 'saleValue')}`, '#categories summary');
+    }
 }
 
 // ---- the period of history -----------------------------------------------------------------------------------------

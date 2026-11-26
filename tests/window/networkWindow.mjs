@@ -88,6 +88,15 @@ try {
     const pins = () => stateOf(() => window.logisticsToolboxState.pins.map((pin) => ({ id: pin.id, role: pin.role, name: pin.name, lat: pin.lat, lon: pin.lon })));
     const links = () => stateOf(() => window.logisticsToolboxState.links.map((link) => ({ id: link.id, from: link.from, to: link.to, basis: link.basis, routed: Boolean(link.leg) })));
     const linkPaths = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('#map path.link')].map((path) => [path.dataset.link, path.getAttribute('d')])));
+    // With WINDOW_SCREENSHOTS set to a folder, a picture of a panel, whole: the window made tall enough for it, then put back.
+    const picture = async (selector, name) => {
+        if (!process.env.WINDOW_SCREENSHOTS) return;
+        const height = await page.evaluate((what) => Math.ceil(document.querySelector(what).getBoundingClientRect().height), selector);
+        await page.setViewportSize({ width: 1500, height: Math.max(950, height + 200) });
+        await page.locator(selector).scrollIntoViewIfNeeded();
+        await page.locator(selector).screenshot({ path: join(process.env.WINDOW_SCREENSHOTS, name) });
+        await page.setViewportSize({ width: 1500, height: 950 });
+    };
     const settled = () => page.waitForFunction(() => !window.logisticsToolboxState.busy, null, { timeout: 30000 });
 
     // 1. The sample region: its roads and place names, and no suggestions until asked for.
@@ -958,6 +967,71 @@ try {
         assert.ok(lost.lost.scenario > 0 && lost.lost.baseline === 0 && Math.abs(lost.lostValue.scenario - pricedAt) < 1e-6 && lost.lostValue.scenario > 1000 * lost.lost.scenario, `four in five of the sales it could not make are lost, each category at its own value (${JSON.stringify([lost.lost, lost.lostValue])})`);
         assert.equal(await page.isVisible('#scenarioResult details.resultDetails table'), false, 'the details start folded');
         assert.match(await page.textContent('#scenarioResult details.resultDetails'), /Backlog cost/);
+        // How these costs are worked out: beside the costs, folded; each cost's rule and its inputs, with their values,
+        // where they came from and a way to where each is set; what the costs leave out. By its line, the map's menu and C.
+        const costs = '#scenarioResult details.costsExplained';
+        assert.equal(await page.locator(costs).count(), 1);
+        assert.equal(await page.textContent(`${costs} > summary`), 'How these costs are worked out');
+        assert.ok(await page.evaluate(() => document.querySelector('#scenarioResult details.costsExplained').previousElementSibling.matches('table.business')), 'right under the costs');
+        assert.equal(await page.isVisible(`${costs} .costRule`), false, 'folded to begin with');
+        await page.click(`${costs} > summary`);
+        assert.deepEqual(await page.$$eval(`${costs} .costRule[data-cost]`, (rules) => rules.map((rule) => rule.dataset.cost)), ['transport', 'fleet', 'holding', 'running', 'lostValue', 'backlog']);
+        // The figures are the result's own, and the inputs the network's: the 2,500 given to Chilled, the stores' 80% assumed.
+        const shownTotals = await stateOf(() => window.logisticsToolboxState.scenario.totals);
+        const figureOf = async (key) => (await page.textContent(`${costs} .costRule[data-cost="${key}"] .costFigures`)).split(' · ').map((part) => Number(part.replace(/^[A-Za-z ]+ /, '').replace(/,/g, '')));
+        for (const key of ['transport', 'fleet', 'holding', 'backlog', 'lostValue']) {
+            const [scenarioFigure, baselineFigure] = await figureOf(key);
+            assert.ok(Math.abs(scenarioFigure - shownTotals[key].scenario) <= 0.051 && Math.abs(baselineFigure - shownTotals[key].baseline) <= 0.051, `${key}: ${scenarioFigure}, ${baselineFigure} against ${JSON.stringify(shownTotals[key])}`);
+        }
+        const inputRow = (key, name) => page.evaluate(({ key, name }) => [...document.querySelectorAll(`#scenarioResult details.costsExplained .costRule[data-cost="${key}"] tbody tr`)].map((row) => [...row.cells].map((cell) => cell.firstChild?.textContent ?? '')).find((cells) => cells[0] === name), { key, name });
+        assert.deepEqual(await inputRow('lostValue', 'Harbour shop, Chilled: value of a pallet sold'), ['Harbour shop, Chilled: value of a pallet sold', '2,500 ', 'yours']);
+        assert.deepEqual(await inputRow('lostValue', 'Harbour shop: sales lost when out'), ['Harbour shop: sales lost when out', '80 ', 'assumed']);
+        assert.match(await page.textContent(`${costs} .notIncluded`), /Congestion.*Drivers as people.*Changes in prices/s);
+        // Known limits: a store has no holding cost of its own, and its stock room is shown at the figure the model links it to.
+        assert.match(await page.textContent(`${costs} .knownLimits`), /A store or a dark store has no holding cost of its own/);
+        const linked = await stateOf(() => window.logisticsToolboxState.built.holding.find((item) => item.store));
+        assert.match(await page.textContent(`${costs} .costRule[data-cost="holding"]`), new RegExp(`Stock rooms? of [^]*?${linked.site}[^]*?${String(linked.value).replace('.', '\\.')}`));
+        assert.match(await page.textContent(costs), /Counted from day 5 to the end of the run/);
+        await fitsPanel('the explanation of the costs');
+        await picture(costs, 'costsExplained.png');
+        // To where an input is set: a category's value in the Categories list, a store's figure on its card, a vehicle
+        // type's cost in the Vehicles list; the field itself focused.
+        await page.click(`${costs} button.link:text-is("Harbour shop, Chilled: value of a pallet sold")`);
+        assert.equal(await page.evaluate(() => [document.querySelector('#categories').open, document.activeElement.id]).then((both) => both.join()), 'true,category-chilled-saleValue');
+        await page.click(`${costs} button.link:text-is("Harbour shop: sales lost when out")`);
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'field-lostSales');
+        assert.equal(await stateOf(() => { const shown = window.logisticsToolboxState; return shown.selected.kind === 'pin' ? shown.pins.find((pin) => pin.id === shown.selected.id).name : null; }), 'Harbour shop');
+        const typeButton = page.locator(`${costs} .costRule[data-cost="fleet"] button.link`).first();
+        const typeName = (await typeButton.textContent()).replace(/: cost per day$/, '');
+        await typeButton.click();
+        const typeId = await page.evaluate((name) => window.logisticsToolboxState.vehicles.find((type) => type.name === name).id, typeName);
+        assert.equal(await page.evaluate(() => document.activeElement.id), `vehicle-${typeId}-costPerDay`);
+        await page.click(`${costs} .costRule[data-cost="transport"] button.link:text-matches(": distance$")`);
+        assert.equal(await stateOf(() => window.logisticsToolboxState.selected.kind), 'link');
+        // By the key: C folds it and opens it again, its line in focus; not while typing in a field.
+        await page.evaluate(() => document.activeElement.blur());
+        await page.keyboard.press('c');
+        assert.equal(await page.evaluate(() => document.querySelector('#scenarioResult details.costsExplained').open), false);
+        await page.keyboard.press('c');
+        assert.deepEqual(await page.evaluate(() => [document.querySelector('#scenarioResult details.costsExplained').open, document.activeElement.matches('details.costsExplained > summary')]), [true, true]);
+        await page.focus('#durationInput');
+        await page.keyboard.press('c');
+        assert.equal(await page.evaluate(() => document.querySelector('#scenarioResult details.costsExplained').open), true, 'a key typed in a field is the field\'s');
+        // By the map's menu, with its key shown beside it.
+        await page.click(`${costs} > summary`);
+        await page.keyboard.press('Escape');
+        let mapMenu = '';
+        for (const spot of [{ lat: -29.62, lon: -19.98 }, { lat: -29.98, lon: -19.98 }, { lat: -29.62, lon: -19.42 }]) {
+            const point = await screenOf(spot);
+            await page.mouse.click(point.x, point.y, { button: 'right' });
+            await page.waitForSelector('#contextMenu:not([hidden])');
+            mapMenu = await page.textContent('#contextMenu');
+            if (/Place a supplier here/.test(mapMenu)) break;
+            await page.keyboard.press('Escape');
+        }
+        assert.match(mapMenu, /How these costs are worked outC/);
+        await page.click('#contextMenu button:has-text("How these costs are worked out")');
+        assert.equal(await page.evaluate(() => document.querySelector('#scenarioResult details.costsExplained').open), true);
         // The closed road's X, solid now, and gone from the map's baseline view.
         assert.equal(await marks('closed'), 1);
         assert.equal(await marks('planned'), 0, 'one X for the road, not two');
@@ -974,6 +1048,10 @@ try {
         const [now, then, difference] = side['Value of sales lost'];
         assert.ok(Number(now[0].replace(/,/g, '')) < Number(then[0].replace(/,/g, '')) && /better/.test(difference[1]) && /^−/.test(difference[0]), `a shorter closure loses less (${JSON.stringify(side['Value of sales lost'])})`);
         assert.ok(/better/.test(side['Longest a store was out (days)'][2][1]));
+        // Still open for the new run, with run 1's figures beside it, said to be on the same build.
+        assert.equal(await page.evaluate(() => document.querySelector('#scenarioResult details.costsExplained').open), true);
+        assert.match(await page.textContent('#scenarioResult details.costsExplained .costRule[data-cost="running"] .costFigures'), /^Scenario [\d,.]+ · baseline [\d,.]+ · run 1 [\d,.]+$/);
+        assert.match(await page.textContent('#scenarioResult details.costsExplained'), /Run 1 ran on the same build, so on these inputs/);
         // Set beside nothing, then the first run again; the choice is kept with the session.
         await page.selectOption('#compareSelect', '');
         assert.equal(await page.locator('#scenarioResult .comparison table').count(), 0);
@@ -1104,6 +1182,15 @@ try {
         assert.match(withSite.verdict, /^Dearer to run by [\d,]+ a month, and one such disruption costs [\d,]+ less with it: it pays for its running if one comes more often than once every [\d.,]+ months\. Its cost to open, 50,000, is back after [\d.,]+ such disruptions\.$/);
         assert.equal(await page.locator('#siteTable tbody tr').count(), 2);
         await fitsPanel('the comparison of sites');
+        // Under the comparison too: how a month's cost, the fixed costs and the cost to open are worked out, and C opens it.
+        assert.equal(await page.locator('#siteComparison details.costsExplained').count(), 1);
+        await page.evaluate(() => document.activeElement.blur());
+        await page.keyboard.press('c');
+        assert.equal(await page.evaluate(() => document.querySelector('#siteComparison details.costsExplained').open), true);
+        assert.deepEqual(await page.$$eval('#siteComparison details.costsExplained .costRule[data-cost]', (rules) => rules.map((rule) => rule.dataset.cost)), ['transport', 'fleet', 'holding', 'monthly', 'fixed', 'opening']);
+        assert.match(await page.textContent('#siteComparison .costRule[data-cost="opening"]'), /Warehouse 3.*50,000.*yours/s);
+        await fitsPanel('the explanation of the costs of sites');
+        await picture('#siteComparison details.costsExplained', 'siteCostsExplained.png');
         assert.match(await page.textContent('#siteTable tbody tr:nth-child(2)'), /^With Warehouse 3Dearer to run by/);
         // The network on the map is the one built again: the candidate is out of the model, and the runs are as they were.
         assert.ok(!(await stateOf(() => window.logisticsToolboxState.built.lanes.some((lane) => lane.fromSite === 'Warehouse 3'))));

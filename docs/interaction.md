@@ -96,6 +96,7 @@ The command key is Ctrl on Windows and Linux and ⌘ on a Mac (see Platforms).
 | Rank the failures | The weakest link, in the Scenarios step's picker: tick what may fail, Run them all and rank; Run it beside one to run it alone | | |
 | Set a run beside another | Set beside, under the scenario's result (the run before it unless chosen; nothing to hide it) | | Tab to it, then the arrow keys |
 | Read a run's details | Details, under its result | | |
+| Read how the costs are worked out, and go to an input | How these costs are worked out, under a result's costs and under a comparison of sites; an input's name goes to where it is set (a vehicle type, a site's or a link's card, a category) | The map's menu, "How these costs are worked out" | `C` opens or folds it |
 
 ## Not yet
 
